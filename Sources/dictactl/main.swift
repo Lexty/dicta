@@ -26,10 +26,13 @@ func notify(_ message: String, agtermSocket: String?) {
     if let executable = candidates.first(where: {
         FileManager.default.isExecutableFile(atPath: $0)
     }) {
-        var arguments = ["notify", message, "--title", "dicta"]
+        var arguments = ["notify", "--title", "dicta"]
         // Addressing the agterm the chord was pressed in, rather than whichever instance answers
-        // the default socket first.
+        // the default socket first. Before `--`, because everything after it is positional.
         if let socket = agtermSocket { arguments += ["--socket", socket] }
+        // After `--`: a message beginning with a dash is a message, not a flag, and this notifier
+        // runs precisely when something has already gone wrong.
+        arguments += ["--", message]
         if run(executable, arguments) { return }
     }
     // agterm may be the thing that is broken. osascript is always there, and a failure the user
@@ -38,9 +41,13 @@ func notify(_ message: String, agtermSocket: String?) {
     _ = run("/usr/bin/osascript", ["-e", script])
 }
 
+/// An AppleScript string literal: a raw line break inside one is a syntax error, and the message
+/// this carries is often a multi-line reason.
 func quoted(_ text: String) -> String {
     "\"" + text.replacingOccurrences(of: "\\", with: "\\\\")
-        .replacingOccurrences(of: "\"", with: "\\\"") + "\""
+        .replacingOccurrences(of: "\"", with: "\\\"")
+        .replacingOccurrences(of: "\r", with: "\\r")
+        .replacingOccurrences(of: "\n", with: "\\n") + "\""
 }
 
 @discardableResult

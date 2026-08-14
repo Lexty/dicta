@@ -135,6 +135,27 @@ struct AgtermTests {
             == ["--socket", "/tmp/agterm-2.sock"])
     }
 
+    @Test("the socket is passed BEFORE the text separator, not after it")
+    func agtermSocketPrecedesTheSeparator() throws {
+        // The bug this pins: appending `--socket` to an argument list that already ends in
+        // `-- <text>` puts it past the separator, where `agtermctl session type` -- which takes
+        // exactly one positional -- answers `Error: 2 unexpected arguments`. Nothing is typed, and
+        // because that exit carries no `{"ok":false}` the failure reports as `mayBePartial`: the
+        // user is told the insertion may be partial when not one keystroke was sent. The keymap
+        // snippet passes `--socket "$AGT_SOCKET"`, so this was every injection, not an edge case.
+        let runner = StubRunner(tree: Self.oneLeftPane)
+        try Self.agterm(runner, socket: "/tmp/agterm-2.sock")
+            .inject("hello", into: Target(sessionID: "S1", pane: .left))
+
+        let arguments = try #require(runner.arguments(of: "session type"))
+        #expect(arguments == ["session", "type", "--pane", "left", "--target", "S1", "--json",
+                              "--socket", "/tmp/agterm-2.sock", "--", "hello"])
+        let separator = try #require(arguments.firstIndex(of: "--"))
+        let socket = try #require(arguments.firstIndex(of: "--socket"))
+        #expect(socket < separator)
+        #expect(arguments.count - separator == 2)
+    }
+
     // MARK: - resolution: every way it must fail closed (D6)
 
     @Test("no active pane does not start an attempt")
@@ -458,8 +479,29 @@ struct AgtermTests {
         let runner = StubRunner(tree: Self.oneLeftPane)
         Self.agterm(runner).notify("the target is gone", for: Target(sessionID: "S1", pane: .left))
 
-        #expect(runner.arguments(of: "notify the target is gone")
-            == ["notify", "the target is gone", "--title", "dicta", "--target", "S1"])
+        #expect(Self.notifyArguments(runner)
+            == ["notify", "--title", "dicta", "--target", "S1", "--", "the target is gone"])
+    }
+
+    @Test("a notification that begins with a dash is a message, not a flag")
+    func notifyDashLeadingMessage() throws {
+        // Not a hypothetical: `commandFailed` carries agtermctl's own stderr and `loadFailed` an
+        // arbitrary error description. Eaten as a flag, the invocation fails and the message is
+        // lost -- on the path whose entire job is that §7's failures are seen.
+        let runner = StubRunner(tree: Self.oneLeftPane)
+        Self.agterm(runner).notify("--target is gone", for: nil)
+
+        let arguments = try #require(Self.notifyArguments(runner))
+        #expect(arguments.last == "--target is gone")
+        #expect(arguments.firstIndex(of: "--") == arguments.count - 2)
+        // agterm accepted it, so the osascript fallback never ran.
+        #expect(runner.invocations.count == 1)
+    }
+
+    /// `StubRunner.verb` is the first two arguments, and `notify`'s second is a flag -- so the
+    /// invocation is found by its verb alone rather than by that pair.
+    static func notifyArguments(_ runner: StubRunner) -> [String]? {
+        runner.invocations.first { $0.arguments.first == "notify" }?.arguments
     }
 
     @Test("a notification agterm cannot show falls back to osascript")

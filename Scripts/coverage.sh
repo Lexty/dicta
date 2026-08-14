@@ -71,8 +71,10 @@ fi
 # The TOTAL row's line-coverage percentage. `llvm-cov export` would be sturdier than parsing a
 # table, but it emits every region of every file in the binary and the summary needs jq to reach;
 # the report's own TOTAL row is one line and is what a human reads anyway.
+# `|| true` so a missing TOTAL row is reported by the check below rather than by `set -e` exiting
+# mid-pipeline with nothing said: under `set -o pipefail` the failing grep fails the substitution.
 TOTAL_LINE="$("$COV_TOOL" report "$BIN/DictaTestRunner" \
-    -instr-profile="$WORK/dicta.profdata" Sources/DictaCore | grep '^TOTAL')"
+    -instr-profile="$WORK/dicta.profdata" Sources/DictaCore | grep '^TOTAL' || true)"
 # The percentages on the row are, in order: regions, functions, LINES, branches. Take the third by
 # counting rather than the last one on the row — branches reports as "-" today, and a toolchain that
 # starts emitting branch counters would silently move "the last percentage" onto a different metric.

@@ -213,8 +213,14 @@ public struct Agterm: Injector, Notifier, Sendable {
     /// Best effort by design, and loud by preference: if agterm cannot show it, `osascript` can.
     /// agterm may be the very thing that is broken, and §7's point is that the user finds out.
     public func notify(_ message: String, for target: Target?) {
-        var arguments = ["notify", message, "--title", "dicta"]
+        // After `--`, for the same reason `inject` is: a message is not always a fixed literal --
+        // `commandFailed` carries agtermctl's own stderr and `loadFailed` an arbitrary error
+        // description -- and one that begins with a dash would be eaten as a flag. §7's whole
+        // premise is that these are the failures nobody is watching, so losing one is the worst
+        // outcome available.
+        var arguments = ["notify", "--title", "dicta"]
         if let target { arguments += ["--target", target.sessionID] }
+        arguments += ["--", message]
         if let output = try? invoke("notify", arguments), output.succeeded { return }
         let script = "display notification \(Self.quoted(message)) with title \"dicta\""
         _ = try? runner.run("/usr/bin/osascript", ["-e", script])
@@ -246,8 +252,7 @@ public struct Agterm: Injector, Notifier, Sendable {
     // MARK: - running it
 
     private func invoke(_ verb: String, _ arguments: [String]) throws -> CommandOutput {
-        var arguments = arguments
-        if let agtermSocket { arguments += ["--socket", agtermSocket] }
+        let arguments = Self.withSocket(agtermSocket, in: arguments)
         do {
             return try runner.run(executable, arguments)
         } catch let error as AgtermError {
@@ -255,6 +260,24 @@ public struct Agterm: Injector, Notifier, Sendable {
         } catch {
             throw AgtermError.launchFailed(verb: verb, reason: "\(error)")
         }
+    }
+
+    /// `--socket` goes BEFORE the `--` separator, never after it.
+    ///
+    /// Everything past `--` is positional, and `agtermctl session type` declares exactly one
+    /// positional. Appending the socket at the end therefore turned every injection into
+    /// `Error: 2 unexpected arguments: '--socket', '…'` -- and since that exit carries no
+    /// `{"ok":false}`, `refusal(in:)` reads nothing and the failure reports as `mayBePartial`:
+    /// the user is warned the insertion may be partial when in truth not one keystroke was sent.
+    /// The keymap snippet passes `--socket "$AGT_SOCKET"`, so this was the normal path.
+    static func withSocket(_ socket: String?, in arguments: [String]) -> [String] {
+        guard let socket else { return arguments }
+        guard let separator = arguments.firstIndex(of: "--") else {
+            return arguments + ["--socket", socket]
+        }
+        var spliced = arguments
+        spliced.insert(contentsOf: ["--socket", socket], at: separator)
+        return spliced
     }
 
     // MARK: - reading what came back
@@ -283,9 +306,14 @@ public struct Agterm: Injector, Notifier, Sendable {
         (error as? AgtermError)?.description ?? "\(error)"
     }
 
+    /// An AppleScript string literal. The line breaks matter: a raw newline inside one is a syntax
+    /// error, so a multi-line reason -- agtermctl's stderr, most of the time -- would lose the
+    /// notification on the very path that exists because agterm is already broken.
     static func quoted(_ text: String) -> String {
         "\"" + text.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"") + "\""
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\r", with: "\\r")
+            .replacingOccurrences(of: "\n", with: "\\n") + "\""
     }
 
     // MARK: - the tree

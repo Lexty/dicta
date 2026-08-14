@@ -34,6 +34,10 @@ LOG="$HOME/Library/Logs/dicta.log"
 echo "==> building and installing dictactl"
 swift build -c release
 mkdir -p "$HOME/.local/bin"
+# Invariant 8 against the artifact that actually ships. `Scripts/test.sh` runs this check on the
+# DEBUG build -- the only one the gate can afford to compile -- so the release binary, which is the
+# one that opens no microphone in the user's ~/.local/bin, is checked here or nowhere.
+bash "$ROOT/Scripts/linkage.sh" --binary .build/release/dictactl
 install -m 0755 .build/release/dictactl "$HOME/.local/bin/dictactl"
 
 # --- the signed daemon bundle -------------------------------------------------------------------
@@ -66,7 +70,10 @@ launchctl kickstart -k "gui/$UID/$LABEL"
 echo
 echo "installed:"
 echo "  ~/.local/bin/dictactl"
-echo "  $APP_DEST   ($(bash "$ROOT/Scripts/bundle.sh" --print-requirement))"
+# Read off what was INSTALLED, not off the build tree's copy: this line is presented as confirming
+# what landed in ~/Applications, and the requirement is what the TCC grant is recorded against.
+echo "  $APP_DEST   ($(codesign -d -r- "$APP_DEST" 2>/dev/null \
+  | sed -n 's/^#\{0,1\} *designated => //p'))"
 echo "  $AGENT      (log: $LOG)"
 echo
 echo "next: add docs/keymap.snippet.conf to ~/.config/agterm/keymap.conf && agtermctl keymap reload"

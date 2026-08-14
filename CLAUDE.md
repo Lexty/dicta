@@ -254,6 +254,29 @@ Distilled from SPEC.md §3. Each one is a mistake already made, or one the spec 
   cannot be recalled.
 - **Injection is never retried** (§7). A retry after keystrokes have begun would double part of the
   text; the notification says the insertion *may be partial* and stops there.
+- **Every `agtermctl` flag goes BEFORE `--`, and the text after it.** `session type` declares
+  exactly one positional, so an argument appended past the separator — `--socket "$AGT_SOCKET"`,
+  which the keymap snippet passes on every chord — becomes `Error: 2 unexpected arguments` and
+  nothing is typed. Worse than the failure is how it reads: that exit carries no `{"ok":false}`, so
+  `Agterm.refusal(in:)` finds nothing and the attempt is classified `mayBePartial` — the user is
+  warned the insertion may be partial and told not to re-paste, when in truth not one keystroke was
+  sent. `Agterm.withSocket` splices the socket in front of the separator for that reason, and
+  `notify` puts its message after one so a reason beginning with a dash is a message and not a flag.
+- **`.announce(.working)` is emitted before `.drainCapture`, and the order is load-bearing.** The
+  real `AudioCapture` hands the audio over from *inside* `drain`, so `.drainCapture` re-enters and
+  runs recognition, injection and the terminal `.announce(.done)`/`.announce(.blocked)` before the
+  effect list gets its next turn. With `.working` second, that terminal announcement is immediately
+  overwritten by amber — and `active` carries no `--auto-reset`, so a finished dictation left the
+  session looking busy for ever and a failed one lost its red. `FakeCapture` deliberately does not
+  deliver by itself and therefore cannot see this; `ImmediateCapture` has the real semantics, which
+  is what the test `a capture that drains from inside drain still ends on the done indicator` uses.
+- **A toggle that means "stop" is sent as `.stop`, carrying no target.** `currentAttempt` and
+  `machine.apply` are two separate acquisitions of the daemon's lock, and an attempt can end
+  between them with no socket involved — the duration cap, the drain watchdog, a route-change fault
+  on capture's own thread. A `.toggle` carrying the live attempt's target and landing on a machine
+  that has just gone idle takes the **start** branch and opens the microphone aimed at the finished
+  attempt's pane, in another session, never re-resolved: D4's substitution through the one door
+  that resolves nothing.
 - **A config file never blocks a dictation** (§7). A missing or malformed dictionary skips the
   offending rules, applies the rest, and notifies once.
 - **No model load on the attempt path, ever** (D10, normative). The models are loaded once at daemon

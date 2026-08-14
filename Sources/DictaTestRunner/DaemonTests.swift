@@ -109,6 +109,7 @@ struct DaemonTests {
              warmupTimeout: TimeInterval = 5,
              drainTimeout: TimeInterval = 10,
              durationCap: TimeInterval = 600,
+             capture: (any Capture)? = nil,
              transcriber: (any Transcriber)? = nil,
              filter: (any Filter)? = nil,
              injector: (any Injector)? = nil,
@@ -133,7 +134,7 @@ struct DaemonTests {
                     drainTimeout: drainTimeout,
                     durationCap: durationCap
                 ),
-                capture: capture,
+                capture: capture ?? self.capture,
                 transcriber: transcriber ?? self.transcriber,
                 filter: filter ?? self.filter,
                 history: history ?? self.history,
@@ -202,6 +203,26 @@ struct DaemonTests {
         #expect(harness.notifier.announcements == [.listening, .working, .done])
         #expect(harness.notifier.messages.isEmpty)
         #expect(id == 1)
+    }
+
+    @Test("a capture that drains from inside drain still ends on the done indicator")
+    func synchronousDrainEndsOnDone() {
+        // `FakeCapture` deliberately does not deliver by itself, so every other test here reports
+        // `.drained` from OUTSIDE the effect list -- and the whole tail of the pipeline runs after
+        // the stop's effects are exhausted. The real `AudioCapture` hands the audio over from
+        // inside `drain`, which makes `.drainCapture` re-enter and run recognition, injection and
+        // the terminal announcement BEFORE the effect list gets its next turn. With `.working`
+        // emitted second, that terminal announcement was overwritten by amber -- `active` carries
+        // no `--auto-reset`, so a finished dictation left the session looking busy for ever and a
+        // failed one lost its red. `ImmediateCapture` is the fake with those semantics.
+        let harness = Harness(capture: ImmediateCapture())
+
+        harness.chord()
+        harness.chord()
+
+        #expect(harness.notifier.announcements == [.listening, .working, .done])
+        #expect(harness.notifier.announcements.last == .done)
+        #expect(harness.daemon.state == .idle)
     }
 
     @Test("raw mode skips the filter and nothing else")
@@ -873,6 +894,28 @@ struct DaemonTests {
         // 38 ms of the 150 ms budget (F4), and the target is already captured (D4): resolving again
         // could only produce a different answer, which is the one thing invariant 3 forbids.
         #expect(harness.resolver.requested == ["S1"])
+    }
+
+    @Test("a toggle that stops carries no target, so it can never become a start")
+    func stoppingToggleCarriesNoTarget() {
+        // Not a convenience: `currentAttempt` and `machine.apply` are two separate acquisitions of
+        // the daemon's lock, and an attempt can end between them without the socket being involved
+        // -- the duration cap, the drain watchdog, a route-change fault on capture's own thread. A
+        // `.toggle` carrying the live attempt's target and landing on a machine that has just gone
+        // idle takes the START branch and opens the microphone aimed at the FINISHED attempt's
+        // pane, in another session, never re-resolved. That is D4's substitution arriving through
+        // the one door that resolves nothing, so the stopping half is sent as `.stop` -- which has
+        // no target to start from and needs no session id to be honest about.
+        let harness = Harness()
+        let id = harness.startRecording()
+
+        let response = harness.send(Request(cmd: .toggle))
+        harness.capture.reportDrained(id)
+
+        #expect(response.kind == .accepted)
+        #expect(response.attempt == id)
+        #expect(harness.resolver.requested == ["S1"])
+        #expect(harness.injector.delivered.map(\.target) == [Self.target])
     }
 
     @Test("a start with no session id is refused rather than guessed at")

@@ -67,16 +67,36 @@ security unlock-keychain -p "" "$KEYCHAIN"
 echo "==> importing the identity and granting codesign access without a prompt"
 # `-P transit` is the throwaway transport password of the .p12, not a secret; `-T codesign` puts
 # codesign on the key's ACL and `set-key-partition-list` completes it so no dialog ever appears.
-security import "$TMP/id.p12" -k "$KEYCHAIN" -P "transit" -T /usr/bin/codesign -A
+#
+# Deliberately NOT `-A`, which means "allow any application to use this key without warning" and
+# would undo the one-entry ACL the line is building. `-T` plus the partition list is the whole
+# requirement: codesign signs without a prompt and nothing else on the machine can use the key.
+security import "$TMP/id.p12" -k "$KEYCHAIN" -P "transit" -T /usr/bin/codesign
 security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$KEYCHAIN" >/dev/null
 
 # codesign resolves an identity only from a keychain on the search list, so append this one, keeping
 # login and anything already there. Idempotent -- never added twice, never drops the others.
-CURRENT="$(security list-keychains -d user | sed 's/"//g' | xargs)"
-case " $CURRENT " in
-  *" $KEYCHAIN "*) : ;;
-  *) security list-keychains -d user -s $CURRENT "$KEYCHAIN" ;;
-esac
+#
+# Read into an array, one path per line, rather than into a whitespace-joined string: `-s` REPLACES
+# the list, so a keychain path containing a space -- a home directory with one is enough -- would be
+# split into two bogus entries and the user's login keychain would drop off the search path. Stock
+# /bin/bash is 3.2, so no `mapfile`, and no bare `"${ARR[@]}"` under `set -u` on an empty array.
+# `if` rather than `[ … ] && …` in both loops: under `set -e`, a loop whose LAST body command
+# returns non-zero takes the whole script down with it, and "the final keychain is not ours" is the
+# normal case.
+CURRENT=()
+while IFS= read -r line; do
+  if [ -n "$line" ]; then CURRENT+=("$line"); fi
+done < <(security list-keychains -d user \
+  | sed -e 's/"//g' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+
+FOUND=""
+for existing in ${CURRENT[@]+"${CURRENT[@]}"}; do
+  if [ "$existing" = "$KEYCHAIN" ]; then FOUND="yes"; fi
+done
+if [ -z "$FOUND" ]; then
+  security list-keychains -d user -s ${CURRENT[@]+"${CURRENT[@]}"} "$KEYCHAIN"
+fi
 
 echo "==> done -- local signing identity ready"
 security find-identity -p codesigning "$KEYCHAIN" | grep "$IDENTITY_CN"

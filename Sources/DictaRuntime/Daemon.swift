@@ -300,11 +300,18 @@ public final class Daemon: @unchecked Sendable {
     /// whether a pane must be resolved, and that costs an `agtermctl tree --json` -- 38 ms of the
     /// 150 ms budget (F4), which is not worth spending on a chord that turns out to mean "stop".
     private func begin(_ request: Request) -> Response {
-        if let live = currentAttempt {
-            // The stop branch of `toggle` ignores the event's target entirely, and the live
-            // attempt's own target is the only one D4 permits, so handing it over resolves nothing
-            // and substitutes nothing.
-            return respond(to: apply(event(for: request, target: live.target)))
+        if request.cmd == .toggle, currentAttempt != nil {
+            // A toggle with an attempt in flight means STOP, and `.stop` says so without carrying a
+            // target -- which is the point. `currentAttempt` and `machine.apply` are two separate
+            // acquisitions of `stateLock`, and an attempt can end in the window between them
+            // without going through the socket at all: the duration cap, the drain watchdog, or a
+            // route-change fault on capture's own thread. A `.toggle` landing on the machine it has
+            // just found idle takes the START branch and builds the attempt out of the FINISHED
+            // one's target -- a pane in another session, never re-resolved and never re-validated.
+            // That is exactly the substitution D4 and invariant 3 forbid, arriving through the one
+            // door that resolves nothing. `.stop` in idle is a refusal instead, which costs the
+            // user one more keypress in a window microseconds wide.
+            return respond(to: apply(.stop(mode: request.mode ?? .clean, attempt: request.attempt)))
         }
         guard let sessionID = request.sessionID, !sessionID.isEmpty else {
             return reject("\(request.cmd.rawValue) needs the session the chord fired in")

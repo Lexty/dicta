@@ -79,8 +79,11 @@ if ! security find-identity -p codesigning "$KEYCHAIN" 2>/dev/null | grep -q "$I
   bash "$ROOT/Scripts/setup-signing.sh"
 fi
 security unlock-keychain -p "" "$KEYCHAIN"
+# `|| true` so the explicit check below is the thing that reports: under `set -o pipefail` a grep
+# that matches nothing fails the whole substitution, and `set -e` would exit before the sentence
+# naming what went wrong ever ran.
 IDENTITY="$(security find-identity -p codesigning "$KEYCHAIN" \
-  | grep "$IDENTITY_CN" | grep -oE '[0-9A-F]{40}' | head -1)"
+  | grep "$IDENTITY_CN" | grep -oE '[0-9A-F]{40}' | head -1 || true)"
 if [[ -z "$IDENTITY" ]]; then
   echo "error: could not resolve the '$IDENTITY_CN' signing identity" >&2
   exit 1

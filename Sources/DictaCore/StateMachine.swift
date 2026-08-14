@@ -275,8 +275,15 @@ public struct StateMachine: Equatable, Sendable {
                           discardingCapture: true)
         case let .recording(attempt):
             phase = .draining(attempt, mode)
+            // The announcement comes FIRST, and the order is load-bearing. A real `AudioCapture`
+            // hands the audio over from inside `drain`, so `.drainCapture` re-enters and runs the
+            // whole remainder of the pipeline -- recognition, injection, and the terminal
+            // `.announce(.done)` or `.announce(.blocked)` -- before the effect list gets its next
+            // turn. With `.working` second, that terminal announcement is immediately overwritten
+            // by amber, and §6's table inverts: a finished dictation leaves the session looking
+            // busy for ever (`active` carries no `--auto-reset`) and a failed one loses its red.
             return accepted(attempt: attempt.id,
-                            effects: [.drainCapture(attempt.id), .announce(.working)])
+                            effects: [.announce(.working), .drainCapture(attempt.id)])
         case .draining, .processing, .injecting:
             // Quiet: pressing stop again because nothing visibly happened is normal behaviour, and
             // an alarming noise would punish it. Never a second delivery either (invariant 5).
