@@ -4,9 +4,13 @@ Voice dictation into **agterm**'s input line: press a chord, speak, press again,
 where you were typing. Its first purpose is dictating prompts to Claude Code and instructions to
 agents running inside agterm.
 
-Written in English per the sibling project `acta`'s convention; conversation about it is Russian.
-User-facing strings (notifications, client output) are Russian, because the only user reads them on
-a desktop notification mid-sentence.
+**English only, across the whole project, with no exceptions** — code, comments, documentation,
+commit messages, notifications, client output, test names, and `NSMicrophoneUsageDescription`, which
+macOS renders verbatim in the permission dialog. The sibling project `acta` holds the same rule for
+the same reason: an exception for "user-facing" strings sounds harmless but turns every new string
+into a judgement call about which side of the line it falls on, and it disarms the one mechanical
+check available — `grep -rP '[\x{0400}-\x{04FF}]'` is only a gate when there is nothing legitimate
+for it to find. Conversation about this project is in Russian; the repository is not.
 
 Status: **specification only. No implementation exists.** An earlier step-1 skeleton was built,
 measured, verified end to end, then deliberately deleted; it survives in git as commit `3dda6cb` and
