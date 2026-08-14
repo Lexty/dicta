@@ -14,8 +14,15 @@ import Foundation
 /// Why the frame limit is the ceiling and not some larger number of its own: the text travels
 /// twice. Once as §9's `recognised`, and once back out through the control socket when `dictactl
 /// last` asks for it — where `Wire.encode` throws above `maxFrameBytes`. Text accepted here and
-/// refused there would be text the user is told exists and can never read, so the two limits are
-/// the same limit by construction.
+/// refused there would be text the user is told exists and can never read.
+///
+/// So the ceiling is the frame limit **less an allowance for the envelope**, not the frame limit
+/// itself. The readback frame is a whole `Response` — `kind`, `state`, `attempt`, `target`, and the
+/// JSON quoting around the text — so setting the two numbers equal left text in the last few
+/// hundred bytes accepted into the record and unencodable on the way out. `ControlServer` closed
+/// the connection when that happened, and `dictactl` reported a healthy daemon as dead. The
+/// allowance covers the envelope; JSON escaping can still expand pathological text past the frame,
+/// which is why the server also answers with a short refusal instead of dropping the connection.
 ///
 /// Pure, and separate from any transcriber, because it is a rule about the seam rather than about
 /// Parakeet: any recogniser behind `Transcriber` is held to it, and a later one that decodes bytes
@@ -48,8 +55,15 @@ public enum RecognisedText {
         }
     }
 
-    /// The ceiling, shared with the wire for the reason given above.
-    public static var maxBytes: Int { Wire.maxFrameBytes }
+    /// What a `Response` costs around the text: the four other fields, their keys, the JSON braces
+    /// and the terminating newline. A kilobyte is far more than the longest `target` agterm
+    /// produces (two `surface:`/`session:` UUIDs), leaving the number obviously safe rather than
+    /// exactly right — the cost of being generous is a kilobyte of dictation nobody will reach,
+    /// and the cost of being tight is the failure described above.
+    public static let responseEnvelopeBytes = 1024
+
+    /// The ceiling: the wire's frame limit, less the envelope it has to travel inside.
+    public static var maxBytes: Int { Wire.maxFrameBytes - responseEnvelopeBytes }
 
     /// Judges bytes. This is the honest entry point for a recogniser that produces bytes rather
     /// than a `String`, and the only one from which `notUTF8` is reachable.

@@ -25,12 +25,37 @@ public enum ControlTimeouts {
     /// A local `connect(2)` either succeeds at once or fails; this only bounds the case where the
     /// daemon is alive but its accept backlog is full.
     public static let connect: TimeInterval = 0.5
-    /// How long the client waits for the answer. The daemon answers **before** doing the work — a
-    /// stop returns `processing`, it does not wait for the recogniser — so this is generous.
+    /// How long the client waits for the answer to a command that performs no work — `status`,
+    /// `last`, `abort`, `start`. These return as fast as the daemon can take its lock, so anything
+    /// past a few seconds is a daemon that is not answering rather than one that is thinking.
     public static let clientRead: TimeInterval = 3.0
+    /// How long the client waits for a command that carries the **whole remainder of an attempt**.
+    ///
+    /// The daemon does NOT answer before doing the work: `Daemon.apply` performs every effect
+    /// inline, so a `stop` returns only after drain → recognition → dictionary → sanitiser →
+    /// `agtermctl session type` have all run. Measured, that is about half a second (F1). The
+    /// exception is the first chord after a rebuild, where `ParakeetTranscriber` deliberately waits
+    /// for the one start-up model load rather than losing an utterance already in hand — 17 s of
+    /// ANE compilation, measured.
+    ///
+    /// Three seconds therefore used to expire *while the text was being delivered*, and the user
+    /// was told dicta had not answered about a dictation that in fact landed. Thirty covers the
+    /// load with room to spare and still turns a genuinely wedged daemon into a visible failure
+    /// rather than an indefinite hang.
+    public static let pipelineRead: TimeInterval = 30.0
     /// How long the server waits for a connected client to say something. Bounds a client that
     /// connects and then wanders off.
     public static let serverRead: TimeInterval = 2.0
+
+    /// The read timeout a verb deserves. `stop` and `toggle` are the two that can carry the
+    /// pipeline — `toggle` because the start-or-stop decision belongs to the daemon (D7), so the
+    /// client cannot know which direction it will resolve.
+    public static func read(for command: Command) -> TimeInterval {
+        switch command {
+        case .stop, .toggle: pipelineRead
+        case .status, .last, .start, .abort: clientRead
+        }
+    }
 }
 
 /// What can go wrong at the byte level, on either end.
@@ -212,10 +237,22 @@ public final class ControlServer: @unchecked Sendable {
     /// commands arriving at once must still resolve one after the other (D7).
     private let handlerLock = NSLock()
     private let exited = DispatchSemaphore(value: 0)
+    /// Guards everything below it. `start` and `stop` run on their caller's thread and `acceptLoop`
+    /// on its own, so all four fields are genuinely shared -- `@unchecked Sendable` silences the
+    /// compiler about that, it does not make it true. The ordering used to come from the wakeup
+    /// pipe by luck rather than by construction.
+    private let stateLock = NSLock()
     private var listenDescriptor: Int32 = -1
     private var wakeupRead: Int32 = -1
     private var wakeupWrite: Int32 = -1
     private var running = false
+
+    /// The socket file is removed by whichever of `stop` and `acceptLoop` gets there second, and
+    /// only once the loop has actually exited: unlinking the path while the loop is still accepting
+    /// on it leaves a live listener nobody can reach.
+    private var listening: (listen: Int32, wakeup: Int32)? {
+        stateLock.withLock { running ? (listenDescriptor, wakeupRead) : nil }
+    }
 
     public init(path: String,
                 readTimeout: TimeInterval = ControlTimeouts.serverRead,
@@ -269,10 +306,12 @@ public final class ControlServer: @unchecked Sendable {
             unlink(path)
             throw ServerError.bindFailed("pipe()", code: code)
         }
-        wakeupRead = pipeEnds[0]
-        wakeupWrite = pipeEnds[1]
-        listenDescriptor = descriptor
-        running = true
+        stateLock.withLock {
+            wakeupRead = pipeEnds[0]
+            wakeupWrite = pipeEnds[1]
+            listenDescriptor = descriptor
+            running = true
+        }
 
         let thread = Thread { [weak self] in self?.acceptLoop() }
         thread.name = "dev.personal.dicta.control"
@@ -285,13 +324,24 @@ public final class ControlServer: @unchecked Sendable {
     /// closing a descriptor another thread is blocked on is a race with descriptor reuse, and the
     /// symptom would be a test that passes ninety-nine times.
     public func stop() {
-        guard running else { return }
-        running = false
-        if wakeupWrite >= 0 {
-            var byte: UInt8 = 1
-            _ = Darwin.write(wakeupWrite, &byte, 1)
+        // The wakeup byte is written while the lock is held, in the same critical section that
+        // clears `running`. The accept loop closes these descriptors under the same lock on its way
+        // out, so a write that escaped the lock could land on a descriptor the kernel had already
+        // handed to somebody else -- the exact hazard this pipe exists to avoid.
+        let wasRunning = stateLock.withLock { () -> Bool in
+            guard running else { return false }
+            running = false
+            if wakeupWrite >= 0 {
+                var byte: UInt8 = 1
+                _ = Darwin.write(wakeupWrite, &byte, 1)
+            }
+            return true
         }
-        _ = exited.wait(timeout: .now() + 2)
+        guard wasRunning else { return }
+        // Only unlink once the loop has confirmed it is gone. On the timeout the loop is still
+        // accepting on this path, and removing the file underneath it would leave a listener no
+        // client can address while `dictactl` reported "dicta is not running".
+        guard exited.wait(timeout: .now() + 2) == .success else { return }
         unlink(path)
     }
 
@@ -316,7 +366,7 @@ public final class ControlServer: @unchecked Sendable {
     }
 
     private func acceptLoop() {
-        while running {
+        while let (listenDescriptor, wakeupRead) = listening {
             var descriptors = [
                 pollfd(fd: listenDescriptor, events: Int16(POLLIN), revents: 0),
                 pollfd(fd: wakeupRead, events: Int16(POLLIN), revents: 0),
@@ -354,12 +404,15 @@ public final class ControlServer: @unchecked Sendable {
             thread.stackSize = 128 * 1024
             thread.start()
         }
-        close(listenDescriptor)
-        listenDescriptor = -1
-        close(wakeupRead)
-        close(wakeupWrite)
-        wakeupRead = -1
-        wakeupWrite = -1
+        stateLock.withLock {
+            running = false
+            if listenDescriptor >= 0 { close(listenDescriptor) }
+            if wakeupRead >= 0 { close(wakeupRead) }
+            if wakeupWrite >= 0 { close(wakeupWrite) }
+            listenDescriptor = -1
+            wakeupRead = -1
+            wakeupWrite = -1
+        }
         exited.signal()
     }
 
@@ -381,7 +434,23 @@ public final class ControlServer: @unchecked Sendable {
         }
 
         let response = handlerLock.withLock { handler(incoming) }
-        guard let frame = try? Wire.encode(response) else { return }
+        // A response that will not fit a frame is answered with one that will, never by closing the
+        // connection. The client reads a close as `closedByPeer` and reports "the daemon died" — so
+        // dropping an oversized `last` here would diagnose a perfectly healthy daemon as a crashed
+        // one, which is the opposite of what the size limit exists to achieve.
+        let frame: Data
+        do {
+            frame = try Wire.encode(response)
+        } catch {
+            let apology = Response(
+                kind: .rejected,
+                state: response.state,
+                attempt: response.attempt,
+                message: "dicta's answer is too large to send back: \(Self.explain(error))"
+            )
+            guard let fallback = try? Wire.encode(apology) else { return }
+            frame = fallback
+        }
         try? Framing.write(frame, to: client)
     }
 
@@ -428,12 +497,16 @@ public enum ControlClient {
 
     /// Sends one request and reads one response. The connection is opened and closed per command:
     /// a keypress is not a session, and a persistent connection would only add a reconnect path.
+    /// `readTimeout` defaults to `nil`, meaning "the one this verb deserves" — a default argument
+    /// cannot read another argument, and hard-coding the short timeout here is what let a `stop`
+    /// time out on a dictation that was being delivered.
     public static func send(
         _ request: Request,
         to path: String = Paths.current.socket.path,
         connectTimeout: TimeInterval = ControlTimeouts.connect,
-        readTimeout: TimeInterval = ControlTimeouts.clientRead
+        readTimeout: TimeInterval? = nil
     ) throws -> Response {
+        let readTimeout = readTimeout ?? ControlTimeouts.read(for: request.cmd)
         var address: sockaddr_un
         do {
             address = try unixAddress(for: path)

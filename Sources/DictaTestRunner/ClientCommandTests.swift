@@ -277,6 +277,47 @@ struct ClientCommandTests {
         #expect(abort.request.sessionID == nil)
     }
 
+    @Test("a flag where a value belongs is a missing value, not a value spelled like a flag")
+    func aFlagIsNeverSwallowedAsAValue() {
+        // `--session` used to take "--mode" as its value and address a pane called that. Silent
+        // nonsense from the one component whose whole purpose is catching a keymap line that has
+        // drifted away from this build.
+        #expect(ClientCommand.parse(["toggle", "--session", "--mode", "clean"])
+            == .failure(.missingValue(flag: "--session")))
+        #expect(ClientCommand.parse(["stop", "--mode", "--control"])
+            == .failure(.missingValue(flag: "--mode")))
+        // The boolean flag is unaffected: it consumes nothing, so what follows still parses.
+        #expect(ClientCommand.parse(["last", "--recognised"])
+            == .success(ClientCommand.Invocation(request: Request(cmd: .last, verbatim: true))))
+    }
+
+    @Test("every usage error says which flag, verb or mode it is about")
+    func everyUsageErrorNamesItsSubject() {
+        // These sentences are not decoration: `dictactl` writes each one to stderr AND pushes it as
+        // a desktop notification, and they are all the user gets when a chord silently stops
+        // working. A message that named no subject would leave them nothing to edit.
+        let cases: [(ClientCommand.UsageError, String)] = [
+            (.noCommand, "verb"),
+            (.unknownCommand("wobble"), "wobble"),
+            (.unknownFlag("--wobble"), "--wobble"),
+            (.flagNotAccepted(flag: "--session", by: .abort), "--session"),
+            (.missingValue(flag: "--mode"), "--mode"),
+            (.missingSession(.toggle), "--session"),
+            (.unknownMode("shouty"), "shouty"),
+            (.unexpectedArgument("stray"), "stray"),
+        ]
+        for (error, subject) in cases {
+            #expect(error.description.contains(subject),
+                    "\(error) must name \(subject): \(error.description)")
+        }
+        // The one that has to name an environment variable rather than a flag, because that is what
+        // the user has to put in the keymap.
+        #expect(ClientCommand.UsageError.missingSession(.start).description
+            .contains("$AGT_SESSION_ID"))
+        #expect(ClientCommand.UsageError.flagNotAccepted(flag: "--session", by: .abort).description
+            .contains("abort"))
+    }
+
     static func invocation(_ binding: Binding) throws -> ClientCommand.Invocation {
         switch ClientCommand.parse(binding.arguments) {
         case let .success(invocation): invocation

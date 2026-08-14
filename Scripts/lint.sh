@@ -31,17 +31,27 @@ fail() {
 
 # --- files under inspection -------------------------------------------------------------------
 
-mapfile -t ALL_FILES < <(git ls-files --cached --others --exclude-standard)
+# `while read` rather than `mapfile`, and `${ARR[@]+"${ARR[@]}"}` rather than a bare `"${ARR[@]}"`:
+# macOS ships bash 3.2 as /bin/bash, which has no `mapfile` and treats an empty array's expansion as
+# an unbound variable under `set -u`. This script ran only because Homebrew's bash 5 happened to come
+# first on PATH -- a lint gate that silently needs a package the project refuses to install is the
+# same trap as the SwiftLint one it already avoids.
+ALL_FILES=()
+while IFS= read -r line; do
+    ALL_FILES+=("$line")
+done < <(git ls-files --cached --others --exclude-standard)
 
 FILES=()
 if [ "${#ALL_FILES[@]}" -gt 0 ]; then
     # -T is perl's "looks like text" heuristic; it keeps a future icon or model file from being
     # scanned as if it were source.
-    mapfile -t FILES < <(perl -e 'for (@ARGV) { print "$_\n" if -f $_ && -T $_ }' "${ALL_FILES[@]}")
+    while IFS= read -r line; do
+        FILES+=("$line")
+    done < <(perl -e 'for (@ARGV) { print "$_\n" if -f $_ && -T $_ }' "${ALL_FILES[@]}")
 fi
 
 SWIFT_FILES=()
-for f in "${FILES[@]}"; do
+for f in ${FILES[@]+"${FILES[@]}"}; do
     [[ "$f" == *.swift ]] && SWIFT_FILES+=("$f")
 done
 
@@ -69,7 +79,7 @@ for exempt in "${CYRILLIC_EXEMPT[@]}"; do
 done
 
 CYRILLIC_FILES=()
-for f in "${FILES[@]}"; do
+for f in ${FILES[@]+"${FILES[@]}"}; do
     skip=
     for exempt in "${CYRILLIC_EXEMPT[@]}"; do
         [ "$f" = "$exempt" ] && skip=1

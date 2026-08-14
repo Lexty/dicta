@@ -525,6 +525,14 @@ public final class Daemon: @unchecked Sendable {
 
         // Last, always (invariant 1): both stages above can introduce a newline, and
         // `agtermctl session type` turns a newline into a Return that SUBMITS the input line (D8).
+        // §7's filter and dictionary rows: once each per attempt, whatever the number of broken
+        // rules, and never instead of the attempt's own report. Told AFTER the outcome has been
+        // applied, so the entry that explains the notification is already on disk.
+        func reportConfigTrouble() {
+            if let degraded = book.degradedReason { notifier.notify(degraded, for: knownTarget) }
+            if let filterFailure { notifier.notify(filterFailure, for: knownTarget) }
+        }
+
         switch Sanitizer.sanitize(text) {
         case .empty:
             // An empty insertion is worse than none (§7) -- but never a silent one. A dictation the
@@ -533,6 +541,10 @@ public final class Daemon: @unchecked Sendable {
             apply(.recognised(id, .empty(reason: Self.emptiedBy(recognised: recognised,
                                                                 replaced: replaced,
                                                                 rules: replacement.applied))))
+            // A broken dictionary is reported on this branch too. It used to be told only when text
+            // survived, so a user who had just broken `replacements.conf` and then dictated into
+            // silence was told nothing about the file -- the moment the sentence is most useful.
+            reportConfigTrouble()
         case let .line(final):
             updateDraft(id) { $0.final = final }
             stateLock.withLock { pendingFinal = (id, final) }
@@ -544,11 +556,9 @@ public final class Daemon: @unchecked Sendable {
                 forget(id)
                 return
             }
-            // §7's filter and dictionary rows, told after the delivery has been arranged rather
-            // than before: an attempt the user has already cancelled does not need a report about
-            // its config files. Once each per attempt, whatever the number of broken rules.
-            if let degraded = book.degradedReason { notifier.notify(degraded, for: knownTarget) }
-            if let filterFailure { notifier.notify(filterFailure, for: knownTarget) }
+            // Told after the delivery has been arranged rather than before: an attempt the user has
+            // already cancelled does not need a report about its config files.
+            reportConfigTrouble()
         }
     }
 
@@ -762,52 +772,56 @@ public final class Daemon: @unchecked Sendable {
 
     /// Arms or disarms D15's cap. Idempotent per attempt: re-arming on every event would push the
     /// deadline away, and ten minutes of speech punctuated by chords would never reach it.
+    /// Arming happens INSIDE the critical section that records what is armed, and the reason is a
+    /// race rather than tidiness. `sync` is reached from two threads -- the socket handler and the
+    /// capture-fault thread -- so a version that cancelled under one acquisition and stored under a
+    /// second could interleave: the disarming call cancels a `nil` timer and returns, then the
+    /// arming call stores its own work afterwards. The result is a timer running against state that
+    /// says nothing is watched, which fires `faulted` at an attempt that has already moved on and
+    /// discards a live recording mid-sentence.
     private func setCap(_ attempt: AttemptID?) {
-        let changed = stateLock.withLock { () -> Bool in
-            guard capped != attempt else { return false }
+        stateLock.withLock {
+            guard capped != attempt else { return }
             capped = attempt
             capTimer?.cancel()
             capTimer = nil
-            return true
+            guard let attempt else { return }
+            capTimer = clock.schedule(after: configuration.durationCap) { [weak self] in
+                // A capture fault like any other -- discard, no injection (D16, invariant 6) --
+                // with its own §9 outcome and its own words, because "ten minutes elapsed" is the
+                // one fault the user caused and can avoid.
+                self?.faulted(attempt, kind: .durationCap, reason: FaultReason.durationCap)
+            }
         }
-        guard changed, let attempt else { return }
-        let work = clock.schedule(after: configuration.durationCap) { [weak self] in
-            // A capture fault like any other -- discard, no injection (D16, invariant 6) -- with
-            // its own §9 outcome and its own words, because "ten minutes elapsed" is the one fault
-            // the user caused and can avoid.
-            self?.faulted(attempt, kind: .durationCap, reason: FaultReason.durationCap)
-        }
-        stateLock.withLock { capTimer = work }
     }
 
+    /// One critical section, for the reason spelled out on `setCap`.
     private func setWatchdog(_ next: Watched) {
-        let previous = stateLock.withLock { () -> Watched in
-            let previous = watched
+        stateLock.withLock {
+            // Re-arming on every event would keep pushing the deadline away, so a wedged attempt
+            // that is being poked by repeated chords would never time out.
+            guard watched != next else { return }
             watched = next
-            return previous
-        }
-        // Re-arming on every event would keep pushing the deadline away, so a wedged attempt that
-        // is being poked by repeated chords would never time out.
-        guard previous != next else { return }
-        stateLock.withLock { watchdog?.cancel(); watchdog = nil }
+            watchdog?.cancel()
+            watchdog = nil
 
-        let (id, seconds, reason): (AttemptID, TimeInterval, String)
-        switch next {
-        case .nothing:
-            return
-        case let .warming(attempt):
-            (id, seconds, reason) = (attempt, configuration.warmupTimeout,
-                                     "the microphone did not start")
-        case let .draining(attempt):
-            (id, seconds, reason) = (attempt, configuration.drainTimeout,
-                                     "the microphone did not stop")
+            let (id, seconds, reason): (AttemptID, TimeInterval, String)
+            switch next {
+            case .nothing:
+                return
+            case let .warming(attempt):
+                (id, seconds, reason) = (attempt, configuration.warmupTimeout,
+                                         "the microphone did not start")
+            case let .draining(attempt):
+                (id, seconds, reason) = (attempt, configuration.drainTimeout,
+                                         "the microphone did not stop")
+            }
+            watchdog = clock.schedule(after: seconds) { [weak self] in
+                // A capture fault, in the machine's own vocabulary: discard, no injection, and
+                // reported as a hardware fault rather than as silence (§7, D16, invariant 7).
+                self?.faulted(id, kind: .hardware, reason: reason)
+            }
         }
-        let work = clock.schedule(after: seconds) { [weak self] in
-            // A capture fault, in the machine's own vocabulary: discard, no injection, and reported
-            // as a hardware fault rather than as silence (§7, D16, invariant 7).
-            self?.faulted(id, kind: .hardware, reason: reason)
-        }
-        stateLock.withLock { watchdog = work }
     }
 
     private func park(_ attempt: Attempt) {

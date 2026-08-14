@@ -202,9 +202,25 @@ struct AudioCaptureTests {
         // The daemon discards on every cancelling path, including ones where capture never opened
         // (a fault during `warming`). A capture that crashed on those would turn one lost dictation
         // into a dead daemon.
+        //
+        // "Nothing at all" is asserted, not merely survived: this used to be three statements and
+        // no `#expect`, so it passed unless the process crashed -- and with `.denied` no recording
+        // is ever created, so it exercised only the nil-guard. A real attempt is opened first,
+        // and the point is that the unrelated ids neither touch it nor produce an event of their
+        // own.
+        let events = Events()
         let capture = AudioCapture(access: { .denied })
+        capture.begin(attempt: 1) { events.append($0) }
+        #expect(events.all.count == 1, "the denied attempt reports its own fault, once")
+
         capture.drain(attempt: 99)
         capture.discard(attempt: 99)
+
+        #expect(events.all.count == 1, "an id capture never opened must produce no event")
+        // And the live-attempt bookkeeping is untouched: attempt 1's own drain still finds nothing
+        // left to report, because its fault already consumed the one-shot sink.
+        capture.drain(attempt: 1)
+        #expect(events.all.count == 1)
     }
 
     // MARK: - the words (invariant 7, §7)

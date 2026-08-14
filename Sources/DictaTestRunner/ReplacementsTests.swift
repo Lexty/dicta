@@ -161,16 +161,16 @@ struct ReplacementsTests {
     }
 
     @Test("the degraded reason names a line and says the rest still applied")
-    func degradedReasonIsActionable() {
+    func degradedReasonIsActionable() throws {
         let book = Self.dictionary("""
         good | one | 1
         nonsense
         also nonsense
         """)
-        let reason = try? #require(book.degradedReason)
-        #expect(reason?.contains("line 2") == true, "the reason must name a line: \(reason ?? "")")
-        #expect(reason?.contains("and 1 more") == true)
-        #expect(reason?.contains("1 rule still applied") == true)
+        let reason = try #require(book.degradedReason)
+        #expect(reason.contains("line 2"), "the reason must name a line: \(reason)")
+        #expect(reason.contains("and 1 more"))
+        #expect(reason.contains("1 rule still applied"))
         #expect(ReplacementDictionary.none.degradedReason == nil)
         #expect(!ReplacementDictionary.none.isDegraded)
     }
@@ -405,12 +405,23 @@ private extension Character {
 /// one has an answer.
 @Suite("dictionary file")
 struct FileDictionaryTests {
-    /// A temp directory per test; `/tmp` for the reason the other suites give.
-    static func directory() -> URL {
-        let url = URL(fileURLWithPath: "/tmp")
-            .appendingPathComponent("dicta-dict-\(UUID().uuidString.prefix(8))", isDirectory: true)
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        return url
+    /// A temp directory per test, removed when the test's own reference to it goes away; `/tmp` for
+    /// the reason the other suites give. A bare `static func directory()` handed back a URL nobody
+    /// owned, so every run left four more directories in `/tmp` -- the same `Scratch` shape
+    /// `RecordTests` uses, which leaks none.
+    final class Scratch {
+        let url: URL
+
+        init() {
+            url = URL(fileURLWithPath: "/tmp")
+                .appendingPathComponent("dicta-dict-\(UUID().uuidString.prefix(8))",
+                                        isDirectory: true)
+            try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        }
+
+        deinit { try? FileManager.default.removeItem(at: url) }
+
+        func file(_ name: String) -> URL { url.appendingPathComponent(name) }
     }
 
     @Test("an absent file is an empty dictionary, and is NOT degraded")
@@ -418,7 +429,8 @@ struct FileDictionaryTests {
         // §7 lists "missing" with "unparsable", and this is where the two part company: a file that
         // has never existed is how a user who does not want a dictionary says so, and notifying
         // them on every dictation would teach them to dismiss dicta's notifications.
-        let absent = Self.directory().appendingPathComponent("absent.conf")
+        let scratch = Scratch()
+        let absent = scratch.file("absent.conf")
         let book = FileDictionary(url: absent).load()
         #expect(book.rules.isEmpty)
         #expect(!book.isDegraded)
@@ -428,7 +440,8 @@ struct FileDictionaryTests {
 
     @Test("a file on disk parses, and its version is its mtime in the record's own format")
     func fileParsesWithItsMtime() throws {
-        let url = Self.directory().appendingPathComponent("replacements.conf")
+        let scratch = Scratch()
+        let url = scratch.file("replacements.conf")
         try "one | a | b\n".write(to: url, atomically: true, encoding: .utf8)
 
         let book = FileDictionary(url: url).load()
@@ -446,7 +459,8 @@ struct FileDictionaryTests {
 
     @Test("a file that cannot be read is degraded and names itself")
     func unreadableFileIsDegraded() throws {
-        let url = Self.directory().appendingPathComponent("locked.conf")
+        let scratch = Scratch()
+        let url = scratch.file("locked.conf")
         try "one | a | b\n".write(to: url, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: url.path)
         defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600],
@@ -463,7 +477,8 @@ struct FileDictionaryTests {
     func invalidUTF8IsDegraded() throws {
         // Repairing it would be worse than refusing it: a rule silently containing U+FFFD would
         // never fire, and the user would be left editing a file that looks right.
-        let url = Self.directory().appendingPathComponent("binary.conf")
+        let scratch = Scratch()
+        let url = scratch.file("binary.conf")
         try Data([0x6F, 0x6E, 0x65, 0x20, 0x7C, 0xFF, 0xFE, 0x7C, 0x62]).write(to: url)
 
         let book = FileDictionary(url: url).load()

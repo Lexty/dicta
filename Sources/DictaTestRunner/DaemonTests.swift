@@ -376,6 +376,10 @@ struct DaemonTests {
         }
         let fixture = Harness(transcriber: transcriber)
         harness.set(fixture)
+        // The box holds the harness, the harness holds the seam, the seam's closure holds the box:
+        // a retain cycle, so `Harness.deinit` never runs and the temp directory is never removed.
+        // Measured before this line existed: `/tmp/dicta-daemon-*` grew by one per run, forever.
+        defer { harness.set(nil) }
 
         let id = fixture.dictate()
 
@@ -398,6 +402,7 @@ struct DaemonTests {
         let injector = ReentrantInjector { seen.set(harness.value?.send(Request(cmd: .abort))) }
         let fixture = Harness(injector: injector)
         harness.set(fixture)
+        defer { harness.set(nil) } // breaks the box → harness → seam → box cycle; see above
 
         fixture.dictate()
 
@@ -715,6 +720,89 @@ struct DaemonTests {
         #expect(entry.recognised == "erm")
         #expect(entry.final.isEmpty)
         #expect(entry.rules.fired == ["filler"])
+    }
+
+    @Test("an injector that fails in its own way is still recorded as a delivery that failed")
+    func anUnexpectedInjectorErrorIsRecordedAsAFailedDelivery() throws {
+        // The generic `catch` in `deliver`. `Injector` permits any `Error`, so this branch is the
+        // one a future injector lands in, and getting its outcome wrong would mis-record which side
+        // of "nothing was typed" versus "something may have been" the attempt fell on -- the
+        // distinction §9's outcome exists to preserve.
+        let harness = Harness(injector: ExplodingInjector())
+
+        harness.dictate()
+
+        let entry = try #require(harness.history.appended.last)
+        #expect(entry.outcome == .injectionFailed)
+        #expect(entry.error?.contains("came apart") == true,
+                "the reason must reach the record: \(entry.error ?? "nothing")")
+        // Invariant 10: the text is on disk regardless, which is the only route by which it
+        // survives a delivery that failed.
+        #expect(entry.final == FakeTranscriber.sanitizedHostileText)
+        #expect(harness.daemon.state == .idle)
+        // And the user is told, rather than left to discover an empty input line.
+        #expect(harness.notifier.messages.contains { $0.contains("came apart") })
+    }
+
+    @Test("a chord names the agterm it fired in, and the daemon re-aims at that instance")
+    func theAgtermSocketReachesTheTerminalProvider() throws {
+        // D4 at instance granularity. `$AGT_SOCKET` travels on the frame (F3) precisely so a second
+        // agterm's panes are resolved against -- and typed into -- that agterm. Every other daemon
+        // test uses the fixed-terminal convenience init, so this hop was the one part of the wiring
+        // nothing exercised: dropping `adoptTerminal` would have left the suite entirely green.
+        let asked = Locked<[String?]>([])
+        let resolver = FakeTargetResolver()
+        resolver.setPane(.left)
+        let injector = FakeInjector()
+        let daemon = Daemon(
+            configuration: Daemon.Configuration(
+                socketPath: "/tmp/unused-\(UUID().uuidString).sock"),
+            capture: FakeCapture(),
+            transcriber: FakeTranscriber(),
+            history: FakeHistory(),
+            clock: FakeClock(),
+            terminal: { socket in
+                asked.set(asked.value + [socket])
+                return Daemon.Terminal(resolver: resolver, injector: injector,
+                                       notifier: FakeNotifier())
+            }
+        )
+
+        // Construction asks once, for the default instance.
+        #expect(asked.value == [nil])
+
+        _ = daemon.handle(.request(Request(cmd: .toggle, sessionID: "S1",
+                                           agtermSocket: "/tmp/a2.sock")))
+        #expect(asked.value == [nil, "/tmp/a2.sock"])
+
+        // A later chord naming a different instance re-adopts rather than keeping the first.
+        _ = daemon.handle(.request(Request(cmd: .abort)))
+        _ = daemon.handle(.request(Request(cmd: .toggle, sessionID: "S1",
+                                           agtermSocket: "/tmp/a3.sock")))
+        #expect(asked.value == [nil, "/tmp/a2.sock", "/tmp/a3.sock"])
+    }
+
+    @Test("a degraded dictionary is reported even when the attempt ends with no text")
+    func degradedDictionaryIsReportedOnTheEmptyBranchToo() throws {
+        // §7 wants the degradation notified once per attempt. It used to be told only on the branch
+        // where text survived, so a user who had just broken `replacements.conf` and then dictated
+        // into silence heard nothing about the file -- at the exact moment the sentence is most
+        // useful, because the broken file is the thing they just touched.
+        let harness = Harness()
+        harness.transcriber.setText("   ")
+        harness.dictionary.set("this line is not a rule at all")
+
+        harness.dictate()
+
+        let entry = try #require(harness.history.appended.last)
+        #expect(entry.outcome == .empty)
+        // Both sentences reach the user: what happened to the dictation, and what is wrong with the
+        // file. The dictation's own report comes first -- a complaint about a config file arriving
+        // ahead of it would read as the reason nothing was typed.
+        #expect(harness.notifier.messages.count == 2)
+        #expect(harness.notifier.messages.first == "nothing was recognised")
+        let degraded = try #require(harness.notifier.messages.last)
+        #expect(degraded.contains("line 1"), "the reason must name the line: \(degraded)")
     }
 
     @Test("silence is still reported as silence, not blamed on the dictionary")
@@ -1101,6 +1189,69 @@ struct DaemonTests {
         #expect(response.state == .idle)
     }
 
+    @Test("chords arriving together over the socket still start exactly one attempt")
+    func simultaneousChordsStartOneAttempt() throws {
+        // D7's other half, and the half nothing exercised. `StateMachineTests.toggleIsNotARace`
+        // proves the DECISION is atomic, but it proves it against a pure value, which cannot race
+        // by construction. What makes the shipping daemon safe is the server serialising handlers
+        // and the state lock behind them -- and this component has a recorded history of exactly
+        // this kind of bug (CLAUDE.md's non-overcommit pool starvation).
+        let harness = Harness()
+        try harness.daemon.start()
+        defer { harness.daemon.stop() }
+        let path = harness.daemon.configuration.socketPath
+
+        // Real threads, not a cooperative pool: `ControlClient.send` blocks, and blocking Darwin's
+        // non-overcommit workers is what starved this suite's round trips into their timeout once.
+        let ready = DispatchSemaphore(value: 0)
+        let go = DispatchSemaphore(value: 0)
+        let answers = Locked<[Response]>([])
+        let threads = (0 ..< 8).map { _ in
+            Thread {
+                ready.signal()
+                go.wait()
+                if let response = try? ControlClient.send(
+                    Request(cmd: .toggle, sessionID: "S1", mode: .clean), to: path) {
+                    answers.set(answers.value + [response])
+                }
+            }
+        }
+        for thread in threads { thread.start() }
+        for _ in threads { ready.wait() }
+        for _ in threads { go.signal() }
+
+        // Every chord is answered -- none is dropped or left to time out.
+        let deadline = Date().addingTimeInterval(10)
+        while answers.value.count < threads.count, Date() < deadline { usleep(2_000) }
+        #expect(answers.value.count == threads.count)
+
+        // Eight toggles are four start/stop pairs, not eight competing starts -- D7 resolves each
+        // chord against the state the one before it left. What must hold under contention is that
+        // the microphone is never opened twice over: every `begin` is closed out before the next
+        // one, and no id is ever begun twice.
+        var live: AttemptID?
+        var begun: [AttemptID] = []
+        for call in harness.capture.callLog {
+            switch call {
+            case let .begin(id):
+                #expect(live == nil,
+                        "attempt \(id) opened the microphone while \(live ?? 0) still held it")
+                live = id
+                begun.append(id)
+            case let .drain(id), let .discard(id):
+                #expect(live == id, "\(id) was ended without being the live attempt")
+                live = nil
+            }
+        }
+        #expect(begun.count == Set(begun).count, "an id was begun twice: \(begun)")
+        #expect(!begun.isEmpty, "the chords must have done something: \(harness.capture.callLog)")
+        // Every answer names an attempt that was actually issued -- no chord is told about one that
+        // never existed, which is what a lost update to the id counter would look like.
+        for answered in answers.value.compactMap(\.attempt) {
+            #expect(begun.contains(answered), "answered about attempt \(answered), never begun")
+        }
+    }
+
     @Test("a second daemon on a live socket refuses to start")
     func secondInstanceIsRefused() throws {
         // §7: one daemon, one microphone. A live socket means a live daemon.
@@ -1208,6 +1359,18 @@ struct DaemonTests {
 
     /// An injector that runs the test's code from INSIDE the injection, which is the only moment
     /// the daemon is in `injecting` -- the state D20's refusal is about.
+    /// An injector that fails with something that is NOT a `DeliveryFailure`. The seam permits any
+    /// `Error` (`Seams.swift`), and only `Agterm` happens to narrow it -- so the daemon's generic
+    /// `catch` is reachable by any future injector, and it is the branch that decides which side of
+    /// "nothing was typed" versus "something may have been" the attempt is recorded on.
+    final class ExplodingInjector: Injector, @unchecked Sendable {
+        struct Boom: Error, CustomStringConvertible {
+            var description: String { "the injector came apart" }
+        }
+
+        func inject(_ text: String, into target: Target) throws { throw Boom() }
+    }
+
     final class ReentrantInjector: Injector, @unchecked Sendable {
         private let lock = NSLock()
         private var texts: [String] = []

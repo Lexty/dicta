@@ -119,14 +119,6 @@ public enum Phase: Equatable, Sendable {
             attempt
         }
     }
-
-    /// The mode the stopping chord chose, once one has (D3).
-    public var mode: Mode? {
-        switch self {
-        case .idle, .warming, .recording: nil
-        case let .draining(_, mode), let .processing(_, mode), let .injecting(_, mode): mode
-        }
-    }
 }
 
 /// The answer to one event: what the client is told, and what the daemon must do.
@@ -372,6 +364,8 @@ public struct StateMachine: Equatable, Sendable {
         }
         switch phase {
         case .idle:
+            // Unreachable: `.idle` carries no attempt, so the guard above has already returned.
+            // Present because the switch is exhaustive over `Phase`, not because it is a case.
             return ignored(id)
         case .warming, .recording, .draining:
             return cancel(attempt, reason: reason, discardingCapture: true)

@@ -123,6 +123,33 @@ The client links nothing but the wire types and the socket. It never opens the m
 permission belongs to the daemon's signed bundle, and a second binary touching the device would
 fracture it (D12, §8.8). That is asserted against the linked binary itself by `Scripts/linkage.sh`.
 
+### `Dicta` — the daemon
+
+Normally started by the LaunchAgent that `Scripts/install.sh` writes, and rarely invoked by hand.
+Its own options:
+
+```
+usage: Dicta [options]
+
+options:
+  --control <path>         dicta's own control socket (defaults to the one under
+                           ~/Library/Application Support/dev.personal.dicta)
+  --agterm-socket <path>   agterm's control socket, when it is not the default one. A chord that
+                           passes "$AGT_SOCKET" overrides this per attempt; this is the fallback
+                           for a keymap that does not
+  --fetch-models           download the recognition models, then exit
+  --help                   print this
+```
+
+`--fetch-models` is a separate invocation rather than something the daemon does at start-up, and
+that is deliberate: it starts at login, on whatever network the laptop woke up on, and pulling six
+hundred megabytes there without being asked is not a thing to do quietly. A missing bundle is
+reported at start-up with this command named in the message.
+
+Two commands read the same socket from two ends, so mind which `--socket` is which: `dictactl
+--socket` is **agterm's**, and `--control` is **dicta's**. Conflating them sends dictations to
+whichever agterm answers first.
+
 ## The replacement dictionary
 
 Parakeet recognises Russian well and **transliterates English technical terms spoken inside Russian

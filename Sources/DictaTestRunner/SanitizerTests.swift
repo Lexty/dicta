@@ -130,4 +130,32 @@ struct SanitizerTests {
         }
         #expect(Sanitizer.isInjectable("a b"))
     }
+
+    @Test("CRLF is rejected, though it is a single Character equal to neither CR nor LF")
+    func crlfIsNotInjectable() {
+        // The hole this test exists for. Swift joins CR and LF into ONE grapheme cluster, so the
+        // old `Set<Character>` membership test found neither "\r" nor "\n" in "a\r\nb" and reported
+        // it injectable -- from the assertion standing immediately before the keystrokes, whose
+        // whole job is to stop a Return reaching `agtermctl session type` (D8, invariant 2).
+        #expect("a\r\nb".count == 3, "CRLF is one Character; if this changes, so does the hazard")
+        #expect(!Sanitizer.isInjectable("a\r\nb"))
+        // The sanitiser itself was never fooled -- the cluster is whitespace, so it collapses.
+        #expect(Sanitizer.sanitize("a\r\nb") == .line("a b"))
+    }
+
+    @Test("isInjectable rejects everything else the sanitiser would change, too")
+    func injectabilityIsAgreementAndNotAnApproximation() {
+        // A backstop that disagrees with the thing it backs up is not a backstop. These are text
+        // the sanitiser does not pass through unchanged, so neither does `isInjectable`.
+        #expect(!Sanitizer.isInjectable("   "), "whitespace-only sanitises to .empty")
+        #expect(!Sanitizer.isInjectable("a\u{0007}b"), "BEL is dropped by the sanitiser")
+        #expect(!Sanitizer.isInjectable(" a b "), "the sanitiser trims")
+        #expect(!Sanitizer.isInjectable("a  b"), "the sanitiser collapses runs of whitespace")
+        // And its own output always passes, or the daemon would refuse every dictation.
+        for raw in ["hello world", " a\r\nb  c ", "\u{1F600} x", "a\u{0007}b"] {
+            guard let final = Sanitizer.sanitize(raw).injectable else { continue }
+            #expect(Sanitizer.isInjectable(final),
+                    "sanitised text must survive the backstop: \(raw)")
+        }
+    }
 }

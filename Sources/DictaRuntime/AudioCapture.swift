@@ -111,7 +111,17 @@ public final class AudioCapture: Capture, @unchecked Sendable {
         let output: AVAudioFormat
 
         private let lock = NSLock()
-        private var samples: [Float] = []
+        /// Grown from a reservation rather than from nothing, because `absorb` runs **on the audio
+        /// thread**: every reallocation there is a malloc and a copy of everything recorded so far,
+        /// on a thread where a stall is an audible glitch. A minute of 16 kHz mono float is under
+        /// 4 MB and covers the overwhelming majority of dictations in one allocation; a longer one
+        /// still grows, but a handful of times rather than dozens. Reserving D15's whole ten-minute
+        /// cap would mean 38 MB up front for every two-sentence prompt, which is the worse trade.
+        private var samples: [Float] = {
+            var reserved = [Float]()
+            reserved.reserveCapacity(Int(Audio.requiredSampleRate) * 60)
+            return reserved
+        }()
         private var fault: (kind: FaultKind, reason: String)?
         /// Whether a terminal event has already left through the sink. One attempt reports exactly
         /// once: a route change that arrives while the drain is running must not turn into a second

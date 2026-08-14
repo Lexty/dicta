@@ -53,7 +53,7 @@ external filter, which this plan deliberately does not build (D9c): the `Filter`
 | filter fails, times out or returns empty | The **fallback** is tested through a filter armed to throw: `test: a failing filter falls back to replaced rather than costing the user their words`, `test: a filter fallback supersedes a dictionary degradation, and both reasons survive`, `test: a filter that fell back is recorded as such, with the text that still arrived`. That the seam is a pass-through today: `test: NoFilter is a pass-through, hazards and all`. **Step 4** owns the other two triggers — a *timeout* needs a subprocess to time out, and *returns empty* needs an engine that can return empty; the daemon today falls back only on a throw. |
 | recogniser throws, or the model is unavailable | `test: a recogniser that throws injects nothing and says so`, `test: a recogniser that throws is recorded with its error and no text`, `test: a transcriber nobody prepared refuses rather than loading on the hot path`, `test: a failed load makes every later attempt fail with the load's own reason`, `test: the self-check names exactly the files that are absent`, `test: a missing model reads as a remedy, not as a hardware fault` |
 | recogniser returns nothing but whitespace | `test: nothing recognised means no injection and a visible reason`, `test: an attempt that recognised nothing but whitespace is recorded as empty, with no text`, `test: a whitespace-only transcript is recorded as empty, with the transcript kept` |
-| recogniser returns text that is not valid UTF-8 or is longer than the frame limit | `test: recognised text over the frame limit is refused, and the record keeps the byte length`, `test: bytes that are not valid UTF-8 are refused with their length`, `test: text at the limit is accepted and one byte more is refused`, `test: the limit is measured in bytes, not in characters`, `test: the ceiling is the wire's own frame limit` |
+| recogniser returns text that is not valid UTF-8 or is longer than the frame limit | `test: recognised text over the frame limit is refused, and the record keeps the byte length`, `test: bytes that are not valid UTF-8 are refused with their length`, `test: text at the limit is accepted and one byte more is refused`, `test: the limit is measured in bytes, not in characters`, `test: text at the ceiling still fits a response frame, envelope and all` |
 | replacement dictionary missing, unparsable, or a rule is malformed | `test: a malformed rule is skipped, the rest apply, and the text still arrives`, `test: a dictionary with several broken rules is still reported exactly once`, `test: a malformed rule is skipped and every other rule still applies`, `test: an absent file is an empty dictionary, and is NOT degraded`, `test: a file that cannot be read is degraded and names itself`, `test: a file that is not valid UTF-8 is degraded rather than mojibake` |
 | a replacement produces empty text | `test: a rule that empties the text injects nothing and says the dictionary did it`, `test: a replacement that empties the text is visible as such`, `test: silence is still reported as silence, not blamed on the dictionary` |
 | capture fails while stopping | `test: a fault while stopping wins over the samples already in hand`, `test: a fault while stopping is a fault, not silence`, `test: a fault while stopping is recorded as a fault too` |
@@ -71,6 +71,28 @@ external filter, which this plan deliberately does not build (D9c): the `Filter`
 
 Two rows are the honest gaps, and both are named above rather than papered over: the OS wiring of the
 capture faults (**H3**) and the client's own desktop notification (**H1**).
+
+### One caveat on the two abort rows, stated rather than left to be discovered
+
+§6 gives `processing × abort → cancel` and `injecting × abort → refused`, and both are implemented
+in `StateMachine` and asserted above. What the tests reach them through is `Daemon.handle` **called
+directly**; the seams re-enter from inside `processing` and `injecting`, which is the only way to
+observe a state that lasts exactly one synchronous call.
+
+A chord in real life arrives through `ControlServer`, which serialises every handler call under one
+lock — and `Daemon.apply` performs recognition and injection *inline*, before it answers. So while an
+attempt is in `processing` or `injecting`, an abort chord waits for the lock rather than being
+refused or honoured, and the attempt finishes on its own. The window is about half a second in the
+steady state (F1) and up to seventeen on the first chord after a rebuild, where the transcriber
+deliberately waits for the one start-up model load rather than losing the audio.
+
+The consequence is bounded rather than dangerous: `injecting × abort` would be refused anyway (D20),
+so only `processing × abort` differs from the table, and it differs by delivering a dictation the
+user tried to cancel late. Making the two reachable means answering the command before performing
+the tail of the pipeline, which is a change to the daemon's threading and not a fix to make while
+tidying up a review. Until then the rows above are honest about `StateMachine` and about
+`Daemon.handle`, and **not** about a chord pressed during those two states — which is why this
+paragraph exists rather than a third quietly-passing test.
 
 ---
 

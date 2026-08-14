@@ -178,9 +178,23 @@ public final class ParakeetTranscriber: Transcriber, @unchecked Sendable {
     /// recognise on the strength of a warm-up would turn a recoverable oddity into a dead daemon.
     @discardableResult
     public func prepare() throws -> Summary {
-        lock.withLock {
-            if case .loading = state { return } // another prepare is already running
-            state = .loading
+        // The decision is taken inside the lock and RETURNED, rather than returned from inside the
+        // closure: `return` in a `withLock` body exits the closure, not the function, so a guard
+        // written that way loads the models anyway -- silently, and twice.
+        let alreadyWarm = lock.withLock { () -> Bool in
+            switch state {
+            case .loading, .ready:
+                return true
+            case .cold, .failed:
+                state = .loading
+                return false
+            }
+        }
+        guard !alreadyWarm else {
+            // A second caller does not get its own load. It waits for the one already running (or
+            // returns at once when it has finished) -- the models load exactly once (D10).
+            try awaitReadiness()
+            return Summary(loadSeconds: 0, warmUpSeconds: 0, warmUpError: nil)
         }
         let loadStart = Date()
         do {

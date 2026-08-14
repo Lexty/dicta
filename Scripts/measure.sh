@@ -104,6 +104,11 @@ fi
 
 # Shared by every invocation, so an attempt cannot be measured against a different daemon or a
 # different agterm than the one it was confirmed against.
+#
+# Expanded as `${ARGS[@]+"${ARGS[@]}"}` everywhere below: macOS ships bash 3.2, where a bare
+# `"${ARGS[@]}"` on an EMPTY array is an unbound variable under `set -u` and aborts the script. The
+# empty case is the ordinary one -- no `--socket`, no `--control` -- so this would fail exactly when
+# the defaults are being measured.
 ARGS=()
 if [ -n "$AGTERM_SOCKET" ]; then
     ARGS+=(--socket "$AGTERM_SOCKET")
@@ -118,7 +123,7 @@ now_ms() {
 }
 
 state() {
-    "$DICTACTL" status "${ARGS[@]}" 2>/dev/null || echo "unreachable"
+    "$DICTACTL" status ${ARGS[@]+"${ARGS[@]}"} 2>/dev/null || echo "unreachable"
 }
 
 wait_for_idle() {
@@ -134,13 +139,13 @@ wait_for_idle() {
 attempt() {
     local start finish elapsed reached
     start="$(now_ms)"
-    "$DICTACTL" toggle --mode clean --session "$SESSION" "${ARGS[@]}" >/dev/null 2>&1 || true
+    "$DICTACTL" toggle --mode clean --session "$SESSION" ${ARGS[@]+"${ARGS[@]}"} >/dev/null 2>&1 || true
     finish="$(now_ms)"
     elapsed="$(perl -e 'printf "%.1f", $ARGV[1] - $ARGV[0]' "$start" "$finish")"
     reached="$(state)"
     sleep "$SPEAK"
     # Never a second toggle: that would deliver a transcript into the input line every attempt.
-    "$DICTACTL" abort "${ARGS[@]}" >/dev/null 2>&1 || true
+    "$DICTACTL" abort ${ARGS[@]+"${ARGS[@]}"} >/dev/null 2>&1 || true
     wait_for_idle || printf 'measure: attempt did not return to idle\n' >&2
     if [ "$reached" != "recording" ]; then
         printf 'measure: attempt reached "%s", not "recording" — %s ms not counted\n' \
@@ -162,17 +167,17 @@ attempt() {
 # criterion against a number that leaves out the delivery.
 stop_attempt() {
     local start finish elapsed reached
-    "$DICTACTL" toggle --mode clean --session "$SESSION" "${ARGS[@]}" >/dev/null 2>&1 || true
+    "$DICTACTL" toggle --mode clean --session "$SESSION" ${ARGS[@]+"${ARGS[@]}"} >/dev/null 2>&1 || true
     reached="$(state)"
     if [ "$reached" != "recording" ]; then
         printf 'measure: attempt reached "%s", not "recording" — not counted\n' "$reached" >&2
-        "$DICTACTL" abort "${ARGS[@]}" >/dev/null 2>&1 || true
+        "$DICTACTL" abort ${ARGS[@]+"${ARGS[@]}"} >/dev/null 2>&1 || true
         wait_for_idle || true
         return 1
     fi
     sleep "$UTTERANCE"
     start="$(now_ms)"
-    "$DICTACTL" stop "${ARGS[@]}" >/dev/null 2>&1 || true
+    "$DICTACTL" stop ${ARGS[@]+"${ARGS[@]}"} >/dev/null 2>&1 || true
     finish="$(now_ms)"
     elapsed="$(perl -e 'printf "%.1f", $ARGV[1] - $ARGV[0]' "$start" "$finish")"
     wait_for_idle || printf 'measure: attempt did not return to idle\n' >&2

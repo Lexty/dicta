@@ -342,6 +342,16 @@ public struct Agterm: Injector, Notifier, Sendable {
 
 // MARK: - the real runner
 
+/// One pipe's bytes, handed between the draining thread and the thread that waits for it. A class
+/// with a lock rather than a captured `var`, because the closure crosses a thread boundary.
+private final class DrainedPipe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+
+    func set(_ value: Data) { lock.withLock { data = value } }
+    func get() -> Data { lock.withLock { data } }
+}
+
 /// `Process`, with the two failure modes that matter kept apart: a tool that is not installed, and
 /// one that ran and disagreed.
 public struct ProcessRunner: CommandRunner {
@@ -366,13 +376,27 @@ public struct ProcessRunner: CommandRunner {
         }
         // Read before waiting: a pipe that fills while nobody drains it wedges the child, and
         // `tree --json` on a busy machine is comfortably larger than a pipe buffer.
+        //
+        // BOTH pipes, concurrently, and that is the half that was missing. Draining stdout to EOF
+        // and only then reading stderr deadlocks whenever the child fills stderr's buffer before
+        // closing stdout: the child blocks writing, this thread blocks reading, and neither
+        // `ProcessRunner` nor `Agterm` has a timeout to break it. Since this runs inside the
+        // control socket's handler lock, one wedged `agtermctl` would wedge every chord.
+        let collected = DrainedPipe()
+        let stderrDrained = DispatchSemaphore(value: 0)
+        let stderrThread = Thread {
+            collected.set(err.fileHandleForReading.readDataToEndOfFile())
+            stderrDrained.signal()
+        }
+        stderrThread.name = "dev.personal.dicta.process.stderr"
+        stderrThread.start()
         let stdout = out.fileHandleForReading.readDataToEndOfFile()
-        let stderr = err.fileHandleForReading.readDataToEndOfFile()
+        stderrDrained.wait()
         process.waitUntilExit()
         return CommandOutput(
             status: process.terminationStatus,
             standardOutput: String(decoding: stdout, as: UTF8.self),
-            standardError: String(decoding: stderr, as: UTF8.self)
+            standardError: String(decoding: collected.get(), as: UTF8.self)
         )
     }
 }

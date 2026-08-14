@@ -78,7 +78,16 @@ public enum Sanitizer {
     /// The property the whole design leans on (invariant 2). Used by the tests, and cheap enough to
     /// assert on the real path immediately before injection — if it ever fails there, injecting
     /// would submit a half-written prompt, and refusing is strictly better.
+    ///
+    /// Defined as *agreement with the sanitiser* rather than as its own re-implementation of the
+    /// rules, and that is the whole point. The hand-written version tested `Set<Character>`
+    /// membership, and CRLF is ONE grapheme cluster in Swift — equal to neither `"\r"` nor `"\n"` —
+    /// so `"a\r\nb"` was reported injectable by the very check that exists to catch it. It also
+    /// passed whitespace-only text and a bare BEL, both of which `sanitize` removes. A backstop
+    /// that disagrees with the thing it is backing up is not a backstop.
+    ///
+    /// `sanitize` is idempotent on its own output, so text that came through it still passes here.
     public static func isInjectable(_ text: String) -> Bool {
-        !text.isEmpty && !text.contains { lineBreaks.contains($0) }
+        sanitize(text) == .line(text)
     }
 }

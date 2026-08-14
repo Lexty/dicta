@@ -474,4 +474,60 @@ struct ControlSocketTests {
             try ControlClient.send(Request(cmd: .status), to: path)
         }
     }
+
+    // MARK: - what a verb is allowed to cost
+
+    @Test("the verbs that carry the whole pipeline wait longer than the ones that do not")
+    func pipelineVerbsGetTheLongerRead() {
+        // The daemon does NOT answer before doing the work: `stop` returns only after recognition
+        // and the keystrokes. Three seconds was therefore a ceiling on the pipeline, and the first
+        // chord after a rebuild -- which waits for the one 17 s model load rather than losing the
+        // audio -- expired inside it. The user was told dicta had not answered about a dictation
+        // that had in fact just landed in their input line.
+        #expect(ControlTimeouts.read(for: .stop) == ControlTimeouts.pipelineRead)
+        // `toggle` too, because the start-or-stop decision belongs to the daemon (D7) -- the client
+        // cannot know which direction its own chord will resolve.
+        #expect(ControlTimeouts.read(for: .toggle) == ControlTimeouts.pipelineRead)
+        for quick in [Command.status, .last, .start, .abort] {
+            #expect(ControlTimeouts.read(for: quick) == ControlTimeouts.clientRead,
+                    "\(quick.rawValue) performs no work and must fail fast")
+        }
+        #expect(ControlTimeouts.pipelineRead > ControlTimeouts.clientRead)
+    }
+
+    @Test("an answer too large for a frame is refused in words, not by dropping the connection")
+    func anOversizedAnswerIsStillAnAnswer() throws {
+        // `guard let frame = try? Wire.encode(response) else { return }` closed the connection, and
+        // the client reads a close as `closedByPeer` -> "the daemon died". So the one response the
+        // size limit exists to catch was reported as a crash of a perfectly healthy daemon.
+        let huge = String(repeating: "a", count: Wire.maxFrameBytes)
+        let fixture = try Self.makeServer { _ in
+            Response(kind: .accepted, state: .idle, text: huge)
+        }
+        defer { fixture.tearDown() }
+
+        let response = try ControlClient.send(Request(cmd: .last), to: fixture.path)
+
+        #expect(response.kind == .rejected)
+        #expect(response.text == nil)
+        #expect(response.message?.contains("too large") == true,
+                "the answer must say what happened: \(response.message ?? "nothing")")
+    }
+
+    @Test("an answer at the record's own ceiling still travels")
+    func textAtTheRecordCeilingRoundTrips() throws {
+        // The other side of the same boundary, and why `RecognisedText.maxBytes` is the frame
+        // limit LESS an envelope allowance: everything the record will accept must come back out.
+        let atCeiling = String(repeating: "a", count: RecognisedText.maxBytes)
+        let fixture = try Self.makeServer { _ in
+            Response(kind: .accepted, state: .idle, attempt: 7,
+                     target: Target(sessionID: "S1", pane: .left), text: atCeiling)
+        }
+        defer { fixture.tearDown() }
+
+        let response = try ControlClient.send(Request(cmd: .last), to: fixture.path)
+
+        #expect(response.kind == .accepted)
+        #expect(response.text == atCeiling)
+    }
 }

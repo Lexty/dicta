@@ -94,6 +94,12 @@ public struct FileHistory: History, Sendable {
                     if errno == EINTR { continue }
                     throw HistoryError.cannotWrite(path: url.path, code: errno)
                 }
+                // A zero-byte write with bytes still to go makes no progress, so retrying is an
+                // infinite loop rather than a retry. §7 wants this failure LOUD; a daemon spinning
+                // silently inside an append is the one shape it must never take.
+                guard written > 0 else {
+                    throw HistoryError.cannotWrite(path: url.path, code: ENOSPC)
+                }
                 offset += written
             }
         }

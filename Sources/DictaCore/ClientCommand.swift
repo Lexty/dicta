@@ -155,7 +155,11 @@ public enum ClientCommand {
                 index += 1
                 continue
             }
-            guard index + 1 < arguments.count else {
+            // A flag where a value belongs is a missing value, not a value that happens to look
+            // like a flag. `dictactl toggle --session --mode clean` used to set the session to
+            // "--mode" and then address a pane called that -- silently, which is the one thing
+            // this parser exists to prevent.
+            guard index + 1 < arguments.count, !arguments[index + 1].hasPrefix("--") else {
                 return .failure(.missingValue(flag: argument))
             }
             values[argument] = arguments[index + 1]

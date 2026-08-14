@@ -177,7 +177,7 @@ struct TranscriberTests {
         engine.blockLoad()
         let transcriber = ParakeetTranscriber(engine: engine)
 
-        let loading = Thread { try? transcriber.prepare() }
+        let loading = Thread { _ = try? transcriber.prepare() }
         loading.start()
         // Let the load get as far as blocking. Not a synchronisation point the result depends on:
         // whether `transcribe` arrives before or after the load starts, it must still answer.
@@ -197,6 +197,41 @@ struct TranscriberTests {
         #expect(done.wait(timeout: .now() + 10) == .success)
         #expect(answer.value == "waited")
         #expect(engine.loadCount == 1)
+    }
+
+    @Test("a second prepare loads nothing more, whether the first is running or finished")
+    func prepareIsIdempotent() throws {
+        // D10 counts: "the models load exactly once". The guard that was supposed to enforce this
+        // was written as `lock.withLock { if case .loading = state { return } }` -- where `return`
+        // leaves the CLOSURE, not the function, so the body loaded anyway. Two concurrent callers
+        // each paid a 600 MB CoreML load, and a second call against a `.ready` transcriber knocked
+        // it back to `.loading` and stalled every attempt that arrived meanwhile.
+        let engine = CountingEngine(text: "once")
+        engine.blockLoad()
+        let transcriber = ParakeetTranscriber(engine: engine)
+
+        let first = Thread { _ = try? transcriber.prepare() }
+        first.start()
+        while engine.loadCount == 0 { usleep(1_000) }
+
+        // While the first load is in flight.
+        let secondDone = DispatchSemaphore(value: 0)
+        let second = Thread {
+            _ = try? transcriber.prepare()
+            secondDone.signal()
+        }
+        second.start()
+
+        engine.releaseLoad()
+        #expect(secondDone.wait(timeout: .now() + 10) == .success)
+        while !transcriber.isReady { usleep(1_000) }
+
+        // And once it has finished.
+        _ = try transcriber.prepare()
+
+        #expect(engine.loadCount == 1)
+        #expect(transcriber.isReady, "a repeat prepare must not knock a warm transcriber back")
+        #expect(try transcriber.transcribe(Audio(samples: [0.5], sampleRate: 16_000)) == "once")
     }
 
     /// A one-slot box, because the answer is written on one thread and read on another.
@@ -284,12 +319,30 @@ struct RecognisedTextTests {
         #expect(RecognisedText.validate("").failureReason == nil)
     }
 
-    @Test("the ceiling is the wire's own frame limit")
-    func theCeilingIsTheFrameLimit() {
-        // Not a limit of its own. The text goes back out through the socket when `dictactl last`
-        // asks for it, so text accepted here and refused there would be text the user is told
-        // exists and can never read.
-        #expect(RecognisedText.maxBytes == Wire.maxFrameBytes)
+    @Test("text at the ceiling still fits a response frame, envelope and all")
+    func theCeilingLeavesRoomForTheEnvelope() throws {
+        // The property that matters, asserted end to end rather than as an equality between two
+        // constants. Text goes back out through the socket when `dictactl last` asks for it, inside
+        // a whole `Response` -- `kind`, `state`, `attempt`, `target`, and the JSON quoting. When
+        // `maxBytes` was set EQUAL to `Wire.maxFrameBytes`, text in the last few hundred bytes was
+        // accepted into the record and then could not be encoded on the way out; the server dropped
+        // the connection and `dictactl` reported the live daemon as crashed.
+        let atLimit = String(repeating: "a", count: RecognisedText.maxBytes)
+        #expect(RecognisedText.validate(atLimit) == .text(atLimit))
+
+        let answer = Response(
+            kind: .accepted,
+            state: .idle,
+            attempt: 4_294_967_296,
+            target: Target(sessionID: String(repeating: "s", count: 128), pane: .left),
+            text: atLimit
+        )
+        let frame = try Wire.encode(answer)
+        #expect(frame.count <= Wire.maxFrameBytes)
+        // And the ceiling is still derived from the wire rather than invented, so raising one
+        // number moves the other.
+        #expect(RecognisedText.maxBytes
+            == Wire.maxFrameBytes - RecognisedText.responseEnvelopeBytes)
     }
 
     @Test("text at the limit is accepted and one byte more is refused")

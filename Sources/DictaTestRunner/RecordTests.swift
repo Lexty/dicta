@@ -188,6 +188,57 @@ struct RecordTests {
         var raw: Data { (try? Data(contentsOf: history.url)) ?? Data() }
     }
 
+    @Test("a record that cannot be opened says so, with the path and the reason")
+    func unwritableRecordNamesItself() throws {
+        // §7's "history append fails" row is asserted elsewhere against `FailingHistory`, which
+        // throws its own error -- so the sentence the user ACTUALLY reads when their record is
+        // unwritable, and the `strerror` behind it, had never run. This is the same technique
+        // `FileDictionaryTests.unreadableFileIsDegraded` uses.
+        let scratch = Scratch()
+        try FileManager.default.createDirectory(at: scratch.directory,
+                                                withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o500],
+                                              ofItemAtPath: scratch.directory.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700],
+                                                   ofItemAtPath: scratch.directory.path)
+        }
+
+        let thrown = #expect(throws: HistoryError.self) {
+            try scratch.history.append(Self.entry(id: 1))
+        }
+
+        let message = "\(try #require(thrown))"
+        // The path, because a user with more than one machine has more than one record; and the
+        // errno's own words, because "could not be opened" alone is not a diagnosis.
+        #expect(message.contains(scratch.history.url.path))
+        #expect(message.contains("Permission denied"), "the errno must be spelled out: \(message)")
+    }
+
+    @Test("a record that cannot be read is a clean error rather than an empty history")
+    func unreadableRecordIsAnError() throws {
+        // The distinction that matters: an ABSENT file is an empty record (a fresh install), and an
+        // unreadable one is a failure. Collapsing the two would make `dictactl last` answer "dicta
+        // has no record yet" to a user whose dictations are all still on disk.
+        let scratch = Scratch()
+        try FileManager.default.createDirectory(at: scratch.directory,
+                                                withIntermediateDirectories: true)
+        try scratch.history.append(Self.entry(id: 1))
+        try FileManager.default.setAttributes([.posixPermissions: 0o000],
+                                              ofItemAtPath: scratch.history.url.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                                   ofItemAtPath: scratch.history.url.path)
+        }
+
+        let thrown = #expect(throws: HistoryError.self) { try scratch.history.entries() }
+
+        #expect("\(try #require(thrown))".contains(scratch.history.url.path))
+        // And the absent case is still not an error.
+        let fresh = Scratch()
+        #expect(try fresh.history.entries().isEmpty)
+    }
+
     @Test("appending creates the record on demand and adds exactly one line per entry")
     func appendingIsAppendOnly() throws {
         let scratch = Scratch()
@@ -496,6 +547,9 @@ struct RecordTests {
         let injector = SnoopingInjector(messages: { holder.value?.notifier.messages.count ?? -1 })
         let harness = DaemonTests.Harness(injector: injector, history: FailingHistory())
         holder.set(harness)
+        // The box → harness → injector → closure → box cycle would keep `Harness.deinit` from ever
+        // running, leaving the temp directory behind on every run.
+        defer { holder.set(nil) }
 
         harness.dictate()
 

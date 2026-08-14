@@ -66,7 +66,7 @@ Two audits close the plan and are themselves checked by a test (`ChecklistTests`
 invariant against the assertion that goes red first, and every §7 row against a test or a named
 human item. Invariant 8 — the keypress client never opens the microphone — is the one no assertion
 can reach, so `Scripts/linkage.sh` reads it off the linked binary and `Scripts/test.sh` runs that
-first. `Scripts/coverage.sh` holds `DictaCore` to a floor of 80% (measured 96.25% of lines).
+first. `Scripts/coverage.sh` holds `DictaCore` to a floor of 80% (measured 99.33% of lines).
 
 The plan covered steps 1–3 of SPEC.md §10. Steps 4 (the filter) and 5 (the §7 audit) are the next
 work, and neither is begun: the `Filter` seam is `NoFilter`, and nothing invokes a subprocess.
@@ -277,6 +277,34 @@ Distilled from SPEC.md §3. Each one is a mistake already made, or one the spec 
   text. The limit is the wire's own (`Wire.maxFrameBytes`) on purpose: text accepted into the record
   but too large to travel back through the socket would be text `dictactl last` promises and cannot
   deliver.
+- **`Sanitizer.isInjectable` is defined as agreement with `sanitize`, never as its own copy of the
+  rules.** It used to test `Set<Character>` membership, and **CRLF is ONE grapheme cluster in Swift**
+  — equal to neither `"\r"` nor `"\n"` — so `"a\r\nb"` was reported injectable by the assertion whose
+  entire job is to stop a Return reaching `agtermctl session type`. It also passed whitespace-only
+  text and a bare BEL. `sanitize` was never fooled (the cluster is whitespace), so this was a hole in
+  the backstop rather than a live leak — which is exactly the kind that survives a long time. Any
+  future check over "characters a terminal acts on" has the same trap waiting for it.
+- **The daemon does NOT answer before doing the work.** `Daemon.apply` performs every effect inline,
+  so a `stop` returns only after drain → recognition → dictionary → sanitiser → keystrokes, all
+  inside `ControlServer`'s handler lock. The client's read timeout is therefore a ceiling on the
+  whole pipeline, which is why `ControlTimeouts.read(for:)` gives `stop` and `toggle` 30 s and
+  everything else 3 s. Two consequences worth keeping in view: a chord arriving during the one
+  start-up model load waits up to 17 s and must not be reported as an unreachable daemon; and
+  `processing × abort` / `injecting × abort` are not reachable through the socket while an attempt
+  is in flight (see the caveat in `docs/manual-checklist.md`).
+- **The record's text ceiling is the frame limit MINUS an envelope allowance**, not the frame limit.
+  Text travels back out inside a whole `Response`, so equal numbers meant text accepted into the
+  record could not be encoded on the way out — and `ControlServer` answered that by closing the
+  connection, which `dictactl` reports as "the daemon died". The server now answers with a short
+  refusal instead of dropping the connection, and `serve` never closes silently.
+- **`Scripts/*.sh` must run under macOS's stock `/bin/bash` 3.2.** No `mapfile`, and no bare
+  `"${ARR[@]}"` on a possibly-empty array under `set -u` — use `${ARR[@]+"${ARR[@]}"}` and a
+  `while read` loop. `lint.sh` and `measure.sh` both worked only because Homebrew's bash 5 happened
+  to come first on PATH, which is the same trap as depending on a SwiftLint the project refuses to
+  install.
+- **`return` inside a `withLock` closure leaves the CLOSURE, not the function.** `prepare()`'s
+  re-entrancy guard was written that way and loaded the models anyway — silently, and twice. Take
+  the decision inside the lock, return it as a value, and `guard` on it outside.
 - **Do not copy acta's crash-safety machinery** (D14). Losing an utterance costs one keypress, not a
   meeting: no segmentation, no disk journal, no recovery pass. Audio stays in RAM.
 - **The installed daemon runs from the signed bundle, never from a bare executable** (D11). That is
