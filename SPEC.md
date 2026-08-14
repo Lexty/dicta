@@ -332,7 +332,7 @@ Every row states: no injection unless said otherwise, a visible reason, and what
 | recogniser throws, or the model is unavailable | processing failure | no injection; notify; record the attempt with its error and no text |
 | recogniser returns nothing but whitespace | — | no injection (an empty insertion is worse than none); notify "empty" |
 | recogniser returns text that is not valid UTF-8 or is longer than the frame limit | processing failure | no injection; notify; record the raw bytes' length and the error |
-| replacement dictionary missing, unparsable, or a rule is malformed | processing failure | **skip only the offending rules**, apply the rest, and notify once that the dictionary is degraded; never block injection over a config file |
+| replacement dictionary unreadable, unparsable, or a rule is malformed | processing failure | **skip only the offending rules**, apply the rest, and notify once that the dictionary is degraded; never block injection over a config file. An **absent** file is not a degraded one: nothing switches the dictionary on, so absence is how a user who does not want one says so, and notifying on every dictation would train them to dismiss dicta's notifications — which is the property this row exists to protect |
 | a replacement produces empty text | processing failure | treat as "empty" above; the dictionary must not silently delete a dictation |
 | capture fails while stopping | **capture fault** | discard; notify as a hardware fault, explicitly *not* as silence |
 | sleep, audio interruption, input device or route change | **capture fault** | discard; notify |

@@ -671,14 +671,23 @@ public struct ProcessRunner: CommandRunner {
         let ceiling = DispatchTime.now() + deadline + graceAfterTerminate + graceAfterKill
         let drained = stdoutDrained.wait(timeout: ceiling) == .success
             && stderrDrained.wait(timeout: ceiling) == .success
-        // One signal releases the watchdog whichever of its two waits it is sitting in.
-        finished.signal()
         guard drained else {
             // The pipes outlived the child. Nothing here waits for the process: `waitUntilExit`
             // polls a child that has already been SIGKILLed, and the answer would change nothing.
+            // One signal releases the watchdog whichever of its two waits it is sitting in.
+            finished.signal()
             throw AgtermError.timedOut(verb: executable, seconds: deadline)
         }
+        // The watchdog stays ARMED across this wait, and that is the whole reason the signal moved
+        // below it. Draining is not exiting: a child that closes both pipe ends and then hangs --
+        // `sh -c 'exec 1>&- 2>&-; sleep 20'` reproduces it exactly -- satisfies both reads at once,
+        // so a signal here disarmed the deadline and left `waitUntilExit` unbounded. Measured at
+        // 20 s against a 1 s deadline. Every `agtermctl` call runs inside `ControlServer`'s handler
+        // lock, so that is the permanent wedge `defaultDeadline` exists to prevent, and it also
+        // breaks the premise of `daemonCeilingsFitTheClientTimeout`: the call must be bounded by
+        // `worstCaseCallSeconds`, not merely the reads.
         process.waitUntilExit()
+        finished.signal()
         if expired.isRaised {
             // The verb is filled in by `Agterm.invoke`, which is the only caller that knows it.
             throw AgtermError.timedOut(verb: executable, seconds: deadline)

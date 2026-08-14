@@ -122,7 +122,13 @@ let transcriber = ParakeetTranscriber()
 let dictionaryFile = FileDictionary()
 
 let daemon = Daemon(
-    configuration: Daemon.Configuration(socketPath: controlSocket),
+    // The parked target's path is spelled here rather than defaulted inside `Configuration`: it
+    // names a file a live daemon writes, and a default would have every test that forgot the
+    // parameter reach into the real one.
+    configuration: Daemon.Configuration(
+        socketPath: controlSocket,
+        activeTargetFile: Paths.current.support.appendingPathComponent("active-target.json")
+    ),
     capture: capture,
     transcriber: transcriber,
     filter: NoFilter(),

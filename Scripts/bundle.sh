@@ -36,8 +36,15 @@ IDENTITY_CN="Dicta Local Signing"
 # The leading `# ` is not decoration: codesign comments the line out when the requirement is
 # IMPLICIT — which is exactly the ad-hoc case this script exists to catch. Stripping it here means
 # the cdhash check below reports "ad-hoc signature" rather than the misleading "not signed at all".
+# The `codesign` call is taken on its own line, and not piped, on purpose. This script runs under
+# `set -euo pipefail`, so an unsigned bundle -- where `codesign -d` exits non-zero -- killed the
+# whole script at the assignment below, and the "it is not signed" message that exists to explain
+# exactly that case was unreachable. `--print-requirement` failed the same way, with no output and
+# a bare codesign exit status.
 requirement() {
-  codesign -d -r- "$1" 2>/dev/null | sed -n 's/^#\{0,1\} *designated => //p'
+  local described
+  described="$(codesign -d -r- "$1" 2>/dev/null)" || return 0
+  printf '%s\n' "$described" | sed -n 's/^#\{0,1\} *designated => //p'
 }
 
 if [[ "${1:-}" == "--print-requirement" ]]; then

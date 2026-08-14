@@ -164,7 +164,13 @@ public struct StateMachine: Equatable, Sendable {
     /// Monotonic and never handed back, even to an attempt that faulted one millisecond in.
     private var nextID: AttemptID = 1
 
-    public init() {}
+    /// `nextID` is where this machine's first attempt id comes from. It is a parameter rather than
+    /// a constant because the ids outlive the machine: they are §9's key, and the record is
+    /// append-only across restarts, so a caller that keeps one seeds this from what is already on
+    /// disk (`Daemon.firstUnusedID`). Nothing here reads that file -- this stays pure (D19).
+    public init(nextID: AttemptID = 1) {
+        self.nextID = max(1, nextID)
+    }
 
     public var state: LifecycleState { phase.state }
     public var currentAttempt: Attempt? { phase.attempt }

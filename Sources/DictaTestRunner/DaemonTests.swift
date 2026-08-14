@@ -190,6 +190,50 @@ struct DaemonTests {
 
     static let target = Target(sessionID: "S1", pane: .left)
 
+    /// A throwaway path for the parked target, for the tests that build a `Daemon` without the
+    /// harness. Never the real one: an attempt parks its target the moment it starts warming, so a
+    /// test using the default would write into the file a LIVE daemon is using -- and `unpark`
+    /// would delete a real dictation's, leaving §7's stale-indicator row unanswerable. That is why
+    /// `Daemon.Configuration` has no default for it.
+    static func scratchTargetFile() -> URL {
+        URL(fileURLWithPath: "/tmp")
+            .appendingPathComponent("dicta-parked-\(UUID().uuidString.prefix(8)).json")
+    }
+
+    // MARK: - the attempt id, which outlives the process
+
+    @Test("attempt ids continue from the record rather than restarting at 1 on every daemon")
+    func attemptIdsContinueFromTheRecord() throws {
+        // §9 keys an attempt on its id alone, and the record is append-only ACROSS restarts, while
+        // `StateMachine.nextID` is monotonic only within a process. A daemon that always started at
+        // 1 therefore re-issued ids the previous run had already spent -- and `install.sh` restarts
+        // it on every install, so this was the ordinary case rather than the exotic one.
+        //
+        // What it cost is `dictactl last`. `Record.collapse` takes the LAST line per id in the
+        // order each id FIRST appears, so the new attempt #1 replaced the old one at the FRONT of
+        // the list: the old entry vanished from the reader, and `entries.last` handed back whatever
+        // attempt the previous run happened to end on instead of the dictation just finished. That
+        // read is invariant 10's whole recovery path.
+        let history = FakeHistory()
+        try history.append(RecordEntry(id: 41, at: Date(), outcome: .injected, mode: .clean,
+                                       target: Self.target))
+        let harness = Harness(history: history)
+
+        #expect(harness.chord().attempt == 42)
+    }
+
+    @Test("a fresh record still starts at 1, and an unreadable one does not refuse to start")
+    func attemptIdsStartAtOneWithoutARecord() throws {
+        // The two ends of the seed. A fresh install has no file, and a record that cannot be read
+        // is not a reason to refuse to run: the daemon whose appends are about to fail has a much
+        // louder problem than its numbering, and it is reported through §7's own row.
+        #expect(Harness().chord().attempt == 1)
+
+        let unreadable = FakeHistory()
+        unreadable.setError(FakeHistory.Unavailable())
+        #expect(Harness(history: unreadable).chord().attempt == 1)
+    }
+
     // MARK: - step 1, end to end
 
     @Test("the clean path delivers exactly the sanitised canned transcript")
@@ -817,7 +861,8 @@ struct DaemonTests {
         let injector = FakeInjector()
         let daemon = Daemon(
             configuration: Daemon.Configuration(
-                socketPath: "/tmp/unused-\(UUID().uuidString).sock"),
+                socketPath: "/tmp/unused-\(UUID().uuidString).sock",
+                activeTargetFile: Self.scratchTargetFile()),
             capture: FakeCapture(),
             transcriber: FakeTranscriber(),
             history: FakeHistory(),
@@ -858,7 +903,8 @@ struct DaemonTests {
         let capture = FakeCapture()
         let daemon = Daemon(
             configuration: Daemon.Configuration(
-                socketPath: "/tmp/unused-\(UUID().uuidString).sock"),
+                socketPath: "/tmp/unused-\(UUID().uuidString).sock",
+                activeTargetFile: Self.scratchTargetFile()),
             capture: capture,
             transcriber: FakeTranscriber(),
             history: FakeHistory(),

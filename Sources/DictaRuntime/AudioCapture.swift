@@ -140,20 +140,30 @@ public final class AudioCapture: Capture, @unchecked Sendable {
 
         /// Called from the audio thread. Keeps the converter's resampler state across buffers, so
         /// the seams between tap callbacks do not click.
-        func absorb(_ buffer: AVAudioPCMBuffer) {
+        /// `false` when the buffer could not be converted, which the caller escalates: the fault is
+        /// no longer merely parked for the drain to find. A converter that starts failing mid-
+        /// utterance leaves the user speaking into a recording that is already dead, and the rule
+        /// this file states -- the audio dies immediately, so they hear about it while still
+        /// speaking -- held only for the notification-driven half of the faults.
+        @discardableResult
+        func absorb(_ buffer: AVAudioPCMBuffer) -> Bool {
             guard let converted = AudioCapture.convert(buffer, with: converter, to: output) else {
-                recordFault(.hardware, FaultReason.conversionFailed)
-                return
+                return false
             }
             lock.withLock { samples.append(contentsOf: converted) }
+            return true
         }
 
         /// First fault wins: the interesting one is what went wrong first, and a route change that
-        /// also stops the engine would otherwise overwrite its own cause.
-        func recordFault(_ kind: FaultKind, _ reason: String) {
+        /// also stops the engine would otherwise overwrite its own cause. The answer says whether
+        /// THIS call is the one that won, so the escalation happens exactly once however many
+        /// buffers or notifications report the same broken device.
+        @discardableResult
+        func recordFault(_ kind: FaultKind, _ reason: String) -> Bool {
             lock.withLock {
-                guard fault == nil else { return }
+                guard fault == nil else { return false }
                 fault = (kind, reason)
+                return true
             }
         }
 
@@ -244,8 +254,9 @@ public final class AudioCapture: Capture, @unchecked Sendable {
         let recording = Recording(attempt: attempt, sink: sink, engine: engine,
                                   converter: converter, output: output)
         input.installTap(onBus: 0, bufferSize: 4_096, format: inputFormat) {
-            [weak recording] buffer, _ in
-            recording?.absorb(buffer)
+            [weak self, weak recording] buffer, _ in
+            guard let recording, !recording.absorb(buffer) else { return }
+            self?.escalate(recording, kind: .hardware, reason: FaultReason.conversionFailed)
         }
         observe(recording)
         lock.withLock { live = recording }
@@ -375,7 +386,7 @@ public final class AudioCapture: Capture, @unchecked Sendable {
             queue: nil
         ) { [weak self, weak recording] _ in
             guard let self, let recording else { return }
-            fault(recording, kind: .hardware, reason: FaultReason.deviceChanged)
+            escalate(recording, kind: .hardware, reason: FaultReason.deviceChanged)
         }
         let sleep = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.willSleepNotification,
@@ -383,9 +394,40 @@ public final class AudioCapture: Capture, @unchecked Sendable {
             queue: nil
         ) { [weak self, weak recording] _ in
             guard let self, let recording else { return }
-            fault(recording, kind: .hardware, reason: FaultReason.wentToSleep)
+            escalate(recording, kind: .hardware, reason: FaultReason.wentToSleep)
         }
         recording.observers = [configuration, sleep]
+    }
+
+    /// A fault raised by something that must not be made to run the daemon's pipeline: a system
+    /// notification, or the audio thread.
+    ///
+    /// Both observers above are registered with `queue: nil`, so their blocks run wherever the
+    /// notification is posted -- and `willSleepNotification` is posted on the MAIN thread. What
+    /// `fault` goes on to do is not small: it stops the engine, and then the sink runs the whole
+    /// tail of the attempt inside the daemon -- discard, the `blocked` indicator, the notification
+    /// -- which is up to four `agtermctl`/`osascript` subprocesses at `worstCaseCallSeconds` each.
+    /// Doing that inline blocked the main run loop (and with it the SIGTERM/SIGINT sources) while
+    /// the machine was suspending, and reconfigured the engine from inside the very configuration-
+    /// change notification Apple says not to reconfigure from. From the tap it would be worse
+    /// still: that is the render thread.
+    ///
+    /// Only `recordFault` stays synchronous, and deliberately -- a drain racing the notification
+    /// must still see the fault, which is what makes the audio suspect rather than merely late.
+    ///
+    /// A real `Thread` rather than a queue, for the reason the control socket uses one: the
+    /// subprocesses block, and Darwin's non-overcommit global pool does not grow when its threads
+    /// do. One per escalation and no more -- `recordFault` answers whether this call is the one
+    /// that won, so a device that fails on every buffer still spawns exactly one.
+    private func escalate(_ recording: Recording, kind: FaultKind, reason: String) {
+        guard recording.recordFault(kind, reason) else { return }
+        let thread = Thread { [weak self] in
+            guard let self, take(recording.attempt) != nil else { return }
+            tearDown(recording)
+            report(recording, kind: kind, reason: reason)
+        }
+        thread.name = "dev.personal.dicta.capture.fault"
+        thread.start()
     }
 
     /// A fault that arrives while the attempt is live: the audio dies immediately rather than at

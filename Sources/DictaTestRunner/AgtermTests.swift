@@ -700,6 +700,34 @@ struct AgtermTests {
         }
     }
 
+    @Test("a child that closes its pipes and then hangs is bounded too, not merely its reads")
+    func processRunnerBoundsTheWaitAndNotOnlyTheReads() {
+        // The other half of the test above, and the one the deadline used to lose. Draining is not
+        // exiting: a child that closes both write ends and then goes on running satisfies both
+        // reads immediately, so `drained` succeeded, the watchdog was disarmed by the signal that
+        // followed -- and `waitUntilExit` then had nothing bounding it at all. Measured before the
+        // fix: 20.07 s returned against a 1 s deadline, with a status of 0.
+        //
+        // Every `agtermctl` call runs inside `ControlServer`'s handler lock, so that is the
+        // permanent wedge -- chords, `status` and `last` all block behind it, `KeepAlive` sees a
+        // healthy process, and only `launchctl kickstart` recovers.
+        let started = Date()
+        var thrown: (any Error)?
+        do {
+            _ = try ProcessRunner(deadline: 0.2, graceAfterTerminate: 0.1, graceAfterKill: 0.1)
+                .run("/bin/sh", ["-c", "exec 1>&- 2>&-; sleep 5"])
+        } catch {
+            thrown = error
+        }
+        let elapsed = Date().timeIntervalSince(started)
+
+        #expect(elapsed < 2, "the wait outlived the deadline by \(elapsed) s")
+        guard case .timedOut? = thrown as? AgtermError else {
+            Issue.record("expected AgtermError.timedOut, got \(String(describing: thrown))")
+            return
+        }
+    }
+
     @Test("a timed-out injection warns the input line may be partial, never that it is untouched")
     func aTimedOutInjectionMayBePartial() {
         // The classification is the point, not the timeout. Every other launch-path failure may

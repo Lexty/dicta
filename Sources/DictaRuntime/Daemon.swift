@@ -77,10 +77,14 @@ public final class Daemon: @unchecked Sendable {
         /// take ten minutes.
         public var durationCap: TimeInterval
 
+        /// `activeTargetFile` has no default, for the reason `history` has none: the obvious one --
+        /// `Paths.current.support` -- points at the file a LIVE daemon parks its target in, so a
+        /// test that forgot the parameter would delete the parked target of a real dictation in
+        /// progress and leave §7's stale-indicator row unanswerable, then leave a fabricated target
+        /// behind for the next real start to clear through a socket that does not exist.
         public init(
             socketPath: String = Paths.current.socket.path,
-            activeTargetFile: URL = Paths.current.support
-                .appendingPathComponent("active-target.json"),
+            activeTargetFile: URL,
             warmupTimeout: TimeInterval = 5,
             drainTimeout: TimeInterval = 10,
             durationCap: TimeInterval = 600
@@ -137,6 +141,10 @@ public final class Daemon: @unchecked Sendable {
     /// Guards the machine and the small amount of per-attempt state that travels with it. Held for
     /// the duration of a `machine.apply` and never across an effect.
     private let stateLock = NSLock()
+    /// Orders the side effects of `sync` -- the watchdog, the cap and the parked target -- against
+    /// each other. Separate from `stateLock` because those effects acquire `stateLock` themselves
+    /// and one of them writes a file; see `sync`.
+    private let effectLock = NSLock()
     private var machine = StateMachine()
     /// The audio of the attempt being processed, held in RAM and nowhere else (D14).
     private var drained: (attempt: AttemptID, audio: Audio)?
@@ -184,7 +192,7 @@ public final class Daemon: @unchecked Sendable {
     /// real file would make every test's output depend on what the user happens to have written in
     /// it. The daemon executable passes `FileDictionary` explicitly.
     public init(
-        configuration: Configuration = Configuration(),
+        configuration: Configuration,
         capture: any Capture,
         transcriber: any Transcriber,
         filter: any Filter = NoFilter(),
@@ -202,11 +210,32 @@ public final class Daemon: @unchecked Sendable {
         self.dictionary = dictionary
         self.provider = provider
         terminal = provider(nil)
+        machine = StateMachine(nextID: Self.firstUnusedID(in: history))
+    }
+
+    /// Where this process's attempt ids start, read off the record it is about to append to.
+    ///
+    /// `StateMachine.nextID` is monotonic within a process and the record outlives the process, so
+    /// a daemon that always started at 1 would hand a restarted run the ids the previous one had
+    /// already used -- and `install.sh` restarts it on every install. §9's superseding rule keys on
+    /// the id alone, so `Record.entries` would then collapse the new attempt #1 onto the old one:
+    /// the old entry disappears from the reader, and `dictactl last` -- which is `entries.last`,
+    /// ordered by where each id FIRST appears -- hands back whichever attempt the previous run
+    /// happened to end on rather than the dictation that has just finished. Invariant 10's recovery
+    /// path is exactly that read, so the id has to be unique across the file and not merely across
+    /// the process.
+    ///
+    /// A record that cannot be read leaves it at 1: this runs at construction, the alternative is
+    /// refusing to start over a file that a fresh install does not have, and a daemon whose appends
+    /// are going to fail has a louder problem than its numbering.
+    private static func firstUnusedID(in history: any History) -> AttemptID {
+        guard let entries = try? history.entries() else { return 1 }
+        return (entries.map(\.id).max() ?? 0) + 1
     }
 
     /// One fixed agterm, for tests and for any caller that does not care about `$AGT_SOCKET`.
     public convenience init(
-        configuration: Configuration = Configuration(),
+        configuration: Configuration,
         capture: any Capture,
         transcriber: any Transcriber,
         filter: any Filter = NoFilter(),
@@ -638,7 +667,11 @@ public final class Daemon: @unchecked Sendable {
         // Invariant 10, and the reason this line sits above the injection rather than below it:
         // once the entry is on disk, no delivery failure can cost the user their words. A failed
         // append does NOT stop the delivery (§7) -- it parks a loud complaint for afterwards.
-        record(id, outcome: stateLock.withLock { draft?.degraded } ?? .injected)
+        // Guarded on the id like every other draft read in this file: the `degraded` outcome is
+        // what a human reads out of §9 to decide what went wrong, and stamping another attempt's
+        // `filter-fell-back` onto this entry would make it say so about the wrong dictation.
+        record(id, outcome: stateLock.withLock { draft?.id == id ? draft?.degraded : nil }
+            ?? .injected)
         do {
             // Re-validates both halves of the target itself (D4, §8.3) and never retries (§7).
             try currentTerminal.injector.inject(final, into: target)
@@ -854,11 +887,30 @@ public final class Daemon: @unchecked Sendable {
             return false
         }
         guard !superseded else { return }
+        // The effects are serialised on a lock of their own, and the sequence is re-checked inside
+        // it. Claiming the sequence and performing the effects were two separate acquisitions, and
+        // the window between them is reachable: `sync` runs on the socket thread and on capture's
+        // own fault thread. A stale `.idle` that claimed its sequence and was then preempted would
+        // resume AFTER the next attempt had parked its target and armed its warm-up watchdog, and
+        // run `setWatchdog(.nothing)` + `unpark()` against it -- leaving the new attempt in
+        // `warming` with nothing watching it, refusing every later chord as "already recording".
+        // Whichever caller reaches the lock second sees the newer `syncedSequence` and drops its
+        // whole application, which is the same rule the claim above applies, applied where the
+        // effects actually happen. Taken after `stateLock` is released and never the other way
+        // round: `setCap` and `setWatchdog` acquire `stateLock` from inside here.
+        effectLock.lock()
+        defer { effectLock.unlock() }
+        guard stateLock.withLock({ sequence == syncedSequence }) else { return }
         switch phase {
         case .idle:
             setWatchdog(.nothing)
             setCap(nil)
             unpark()
+            // The audio of an attempt whose drain event was ignored -- an abort landing between the
+            // drain and its event, which `abort` alone is unserialised enough to do -- is otherwise
+            // held until some later attempt drains over it. Minutes of PCM, on the one path where
+            // nothing else is going to read it (D14: audio lives in RAM and nowhere else).
+            stateLock.withLock { drained = nil }
         case let .warming(attempt):
             park(attempt)
             setWatchdog(.warming(attempt.id))
