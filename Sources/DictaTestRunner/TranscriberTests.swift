@@ -363,8 +363,12 @@ struct TranscriberTests {
         // and the real path makes up to twelve, because each notification carries an `osascript`
         // fallback and there are four of them. The assertion held only by undercounting the thing
         // it exists to bound.
+        //
+        // And `worstCaseCallSeconds` rather than `defaultDeadline`: a call that is killed at the
+        // deadline still spends the SIGTERM grace and then the grace the pipe reads get after the
+        // SIGKILL, so multiplying by the deadline undercounts every one of these by 60%.
         let calls = Double(ProcessRunner.worstCaseCallsPerStop)
-        let agtermCalls = ProcessRunner.defaultDeadline * calls
+        let agtermCalls = ProcessRunner.worstCaseCallSeconds * calls
         let worstCase = Double(ParakeetTranscriber.patience)
             + Double(ParakeetEngine.inferenceCeiling)
             + agtermCalls

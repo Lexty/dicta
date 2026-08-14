@@ -213,6 +213,114 @@ struct AgtermTests {
         }
     }
 
+    // MARK: - the tree is window-scoped and `--target` is not
+
+    /// `agtermctl window list --json`, in the shape the installed build prints -- verified on
+    /// 2026-08-14, down to `open` and `active`.
+    static func windows(_ ids: [String], active: String) -> String {
+        let encoded = ids.map { id in
+            """
+            {"id":"\(id)","name":"window","open":true,"active":\(id == active),\
+            "minimized":false,"fullscreen":false,"zoomed":false}
+            """
+        }.joined(separator: ",")
+        return #"{"ok":true,"result":{"windows":[\#(encoded)]}}"#
+    }
+
+    /// Answers `tree` per window: `nil` is the frontmost one, which is what a bare `tree --json`
+    /// asks about.
+    static func windowedRunner(_ trees: [String?: String], windows: String) -> StubRunner {
+        StubRunner { invocation in
+            switch invocation.arguments.first {
+            case "tree":
+                let index = invocation.arguments.firstIndex(of: "--window")
+                let window = index.map { invocation.arguments[$0 + 1] }
+                return CommandOutput(status: 0, standardOutput: trees[window] ?? Self.tree([]))
+            case "window":
+                return CommandOutput(status: 0, standardOutput: windows)
+            default:
+                return CommandOutput(status: 0, standardOutput: #"{"ok":true}"#)
+            }
+        }
+    }
+
+    @Test("a session in another window is found there, not reported as gone")
+    func sessionInAnotherWindowIsFound() throws {
+        // `tree` is window-scoped -- `--window` "defaults to the frontmost" -- while `session type
+        // --target <uuid>` matches across every window. Reading the first as if it had the second's
+        // scope turns "the user clicked into their other window mid-dictation" into a delivery
+        // failure that says the session is gone, about a session that would have accepted the text.
+        let runner = Self.windowedRunner(
+            [nil: Self.tree([(id: "S2", surfaces: [(kind: "left", active: true)])]),
+             "W2": Self.tree([(id: "S1", surfaces: [(kind: "right", active: true)])])],
+            windows: Self.windows(["W1", "W2"], active: "W1")
+        )
+
+        try Self.agterm(runner).validate(Target(sessionID: "S1", pane: .right))
+
+        // The frontmost window first and alone, because it is the answer on every ordinary chord.
+        #expect(runner.verbs == ["tree --json", "window list", "tree --json"])
+        #expect(runner.invocations.last?.arguments.contains("W2") == true)
+    }
+
+    @Test("the frontmost window is never asked twice")
+    func theFrontmostWindowIsNotSweptAgain() {
+        let runner = Self.windowedRunner([:], windows: Self.windows(["W1", "W2"], active: "W1"))
+
+        #expect(throws: AgtermError.sessionNotFound("S1")) {
+            try Self.agterm(runner).resolveTarget(sessionID: "S1")
+        }
+        // W1 is the active one, so the sweep opens W2 and nothing else: three calls, not four.
+        #expect(runner.verbs == ["tree --json", "window list", "tree --json"])
+    }
+
+    @Test("a search that stopped at the cap says so rather than calling the session gone")
+    func aTruncatedSearchIsNotADeadSession() {
+        // No silent caps: the sweep is bounded because every window is another subprocess inside
+        // the handler lock, and a bound that reports "gone" is the same false statement in a
+        // quieter voice -- `validate` turns `sessionNotFound` into a delivery failure the user is
+        // told about by name.
+        let ids = (1...Agterm.maxWindowsSearched + 2).map { "W\($0)" }
+        let runner = Self.windowedRunner([:], windows: Self.windows(ids, active: "W1"))
+
+        #expect(throws: AgtermError.searchTruncated(session: "S1",
+                                                    searched: Agterm.maxWindowsSearched,
+                                                    windows: ids.count)) {
+            try Self.agterm(runner).resolveTarget(sessionID: "S1")
+        }
+        #expect(runner.verbs.filter { $0 == "tree --json" }.count == Agterm.maxWindowsSearched)
+    }
+
+    @Test("a window list that cannot be read leaves the frontmost window as the whole search")
+    func anUnreadableWindowListStillAnswers() {
+        // Best effort: the sweep is an improvement on looking in one window, and a `window list`
+        // that fails must not turn a plain "the session is gone" into an error about windows.
+        let runner = StubRunner { invocation in
+            invocation.arguments.first == "tree"
+                ? CommandOutput(status: 0, standardOutput: Self.tree([]))
+                : CommandOutput(status: 1, standardError: "no")
+        }
+
+        #expect(throws: AgtermError.sessionNotFound("S1")) {
+            try Self.agterm(runner).resolveTarget(sessionID: "S1")
+        }
+    }
+
+    @Test("the window list names every open window except the frontmost")
+    func windowListParsing() throws {
+        let json = """
+        {"ok":true,"result":{"windows":[\
+        {"id":"W1","active":true,"open":true},\
+        {"id":"W2","active":false,"open":true},\
+        {"id":"W3","active":false,"open":false},\
+        {"id":"W4"}]}}
+        """
+
+        // W1 is where the caller has already looked, W3 is closed, and W4 says neither -- an
+        // absent flag is not a reason to skip a window that might hold the user's session.
+        #expect(try Agterm.otherWindowIDs(inList: json) == ["W2", "W4"])
+    }
+
     @Test("malformed JSON is a refusal with a reason, not a crash")
     func malformedTree() {
         for payload in ["{ not json", "", "{\"ok\":true}", "[]"] {
@@ -560,6 +668,36 @@ struct AgtermTests {
             return
         }
         #expect(seconds == 0.5)
+    }
+
+    @Test("a descendant holding the pipes open does not outlive the deadline either")
+    func processRunnerBoundsTheReadsAndNotOnlyTheChild() {
+        // Killing the child is NOT enough to end the read. Foundation dups the pipe's write end
+        // into the child, and every process the child spawns inherits it -- so a read to EOF
+        // needs the LAST holder to close, not the direct child to die.
+        // Measured before this was fixed: a child that left a background descendant and was
+        // SIGKILLed at 2 s left the read blocked until the grandchild exited at 8 s, and the
+        // expiry flag is only consulted once the read returns. The deadline bounded the child and
+        // not the call, which is precisely the wedge it is documented to prevent.
+        //
+        // The script exits at once and leaves a descendant holding stdout for three seconds.
+        let started = Date()
+        var thrown: (any Error)?
+        do {
+            _ = try ProcessRunner(deadline: 0.2, graceAfterTerminate: 0.1, graceAfterKill: 0.1)
+                .run("/bin/sh", ["-c", "(sleep 3) & exit 0"])
+        } catch {
+            thrown = error
+        }
+        let elapsed = Date().timeIntervalSince(started)
+
+        // Well inside the descendant's three seconds: the call unwinds on its own ceiling rather
+        // than on the grandchild's schedule.
+        #expect(elapsed < 2, "the reads outlived the deadline by \(elapsed) s")
+        guard case .timedOut? = thrown as? AgtermError else {
+            Issue.record("expected AgtermError.timedOut, got \(String(describing: thrown))")
+            return
+        }
     }
 
     @Test("a timed-out injection warns the input line may be partial, never that it is untouched")

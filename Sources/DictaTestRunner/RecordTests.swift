@@ -194,14 +194,21 @@ struct RecordTests {
         // throws its own error -- so the sentence the user ACTUALLY reads when their record is
         // unwritable, and the `strerror` behind it, had never run. This is the same technique
         // `FileDictionaryTests.unreadableFileIsDegraded` uses.
+        //
+        // The unwritable thing is the FILE and not the directory holding it, deliberately.
+        // `append` calls `Paths.createPrivateDirectory`, which now REPAIRS the mode of a directory
+        // that already exists -- so a read-only scratch directory is made writable again on the
+        // way past and the append succeeds, which is the right behaviour for dicta's own directory
+        // and the wrong premise for this test.
         let scratch = Scratch()
         try FileManager.default.createDirectory(at: scratch.directory,
                                                 withIntermediateDirectories: true)
-        try FileManager.default.setAttributes([.posixPermissions: 0o500],
-                                              ofItemAtPath: scratch.directory.path)
+        try Data().write(to: scratch.history.url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o400],
+                                              ofItemAtPath: scratch.history.url.path)
         defer {
-            try? FileManager.default.setAttributes([.posixPermissions: 0o700],
-                                                   ofItemAtPath: scratch.directory.path)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                                   ofItemAtPath: scratch.history.url.path)
         }
 
         let thrown = #expect(throws: HistoryError.self) {

@@ -252,9 +252,15 @@ public final class Daemon: @unchecked Sendable {
     /// §7's stale-indicator row. The parked file exists only while an attempt is live, so finding
     /// one at startup means the previous daemon died mid-attempt with a light still on.
     private func clearStaleIndicator() {
-        guard let data = try? Data(contentsOf: configuration.activeTargetFile),
-              let parked = ParkedAttempt.decode(data)
-        else { return }
+        guard let data = try? Data(contentsOf: configuration.activeTargetFile) else { return }
+        guard let parked = ParkedAttempt.decode(data) else {
+            // A file that names no target names no indicator to clear, so keeping it buys nothing
+            // -- and leaving it makes it permanent litter that every later start re-reads and
+            // re-fails on. The removal used to sit past this guard, so only the decodable ones
+            // were ever cleaned up.
+            try? FileManager.default.removeItem(at: configuration.activeTargetFile)
+            return
+        }
         // Through the agterm the dead attempt was addressed at, not through this daemon's current
         // `terminal` -- which at this point in `start()` is still `provider(nil)`, i.e. whichever
         // instance answers the default socket. Clearing there after a crash in a second agterm
@@ -544,7 +550,19 @@ public final class Daemon: @unchecked Sendable {
         if mode == .clean {
             // raw skips exactly this stage and nothing else (§2, D3).
             do {
-                text = try filter.filter(replaced)
+                let filtered = try filter.filter(replaced)
+                if Sanitizer.sanitize(filtered) == .empty, Sanitizer.sanitize(replaced) != .empty {
+                    // §7's row is "fails, times out **or returns empty**", and all three fall back
+                    // to **replaced**. Written the other way round, a filter that answered with
+                    // nothing ended the attempt as an empty dictation and the user was told their
+                    // microphone heard silence -- the one reading §7 forbids. Guarded on `replaced`
+                    // having had something in it, so a genuinely empty dictation is still empty and
+                    // is not reported as a filter that misbehaved.
+                    text = replaced
+                    filterFailure = "the filter did not run: it returned nothing"
+                } else {
+                    text = filtered
+                }
             } catch {
                 // §7: a failing filter must never cost the user their words, so it falls back to
                 // **replaced** rather than ending the attempt.
@@ -947,6 +965,12 @@ public final class Daemon: @unchecked Sendable {
             configuration.activeTargetFile.deletingLastPathComponent())
         if let data = try? JSONEncoder().encode(parked) {
             try? data.write(to: configuration.activeTargetFile, options: .atomic)
+            // `.atomic` writes through a temporary file and renames it, which lands at 0644 -- the
+            // one file dicta owns that was more readable than the socket and the record beside it.
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: Paths.privateFileMode],
+                ofItemAtPath: configuration.activeTargetFile.path
+            )
         }
     }
 

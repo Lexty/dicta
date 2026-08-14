@@ -266,11 +266,18 @@ public final class AudioCapture: Capture, @unchecked Sendable {
 
     public func drain(attempt: AttemptID) {
         guard let recording = take(attempt) else { return }
-        // Read BEFORE stopping: `engine.stop()` would make every drain look like a dead engine.
+        // `isRunning` is read BEFORE stopping, because `engine.stop()` would make every drain look
+        // like a dead engine. The samples are read AFTER, and that is the other half of the same
+        // rule: `collected` copies the whole buffer under the lock, and the tap goes on appending
+        // to the array that has already been copied for as long as the engine runs. Snapshotting
+        // first therefore dropped up to one tap buffer of the END of the utterance -- ~85 ms, and
+        // more often the longer the dictation, since the copy grows with it. `stop()` returns once
+        // the render thread has quiesced, so nothing arrives after it. The fault moves with the
+        // samples: a fault raised during the tail belongs to the audio that carried it (D16).
         let wasRunning = recording.engine.isRunning
+        tearDown(recording)
         let fault = recording.pendingFault
         let samples = recording.collected
-        tearDown(recording)
 
         switch Self.drainOutcome(fault: fault, samples: samples, engineRunning: wasRunning) {
         case let .audio(audio):

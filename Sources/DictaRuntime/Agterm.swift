@@ -45,6 +45,11 @@ public enum AgtermError: Error, Equatable, CustomStringConvertible {
     case commandFailed(verb: String, status: Int32, message: String)
     case malformedTree(String)
     case sessionNotFound(String)
+    /// The session was in none of the windows this lookup was willing to open, and there were more
+    /// of them. Its own case rather than a `sessionNotFound`, because a search that stopped early
+    /// has not established that the session is gone -- and `validate` turns "gone" into a delivery
+    /// failure the user is told about by name.
+    case searchTruncated(session: String, searched: Int, windows: Int)
     /// The tree names no active pane for the session. The attempt does not start (D6).
     case noActivePane(session: String)
     /// More than one. Picking one would be a coin flip with the user's prompt as the stake.
@@ -69,6 +74,9 @@ public enum AgtermError: Error, Equatable, CustomStringConvertible {
             "agterm's session tree could not be read: \(detail)"
         case let .sessionNotFound(session):
             "session \(session) is gone"
+        case let .searchTruncated(session, searched, windows):
+            "session \(session) was not in the \(searched) of \(windows) agterm windows dicta"
+                + " looked in -- refusing to call it gone"
         case let .noActivePane(session):
             "session \(session) has no active pane -- refusing to guess where the text goes"
         case let .ambiguousPane(session, panes):
@@ -91,6 +99,14 @@ public struct Agterm: Injector, Notifier, Sendable {
     /// Where the tool is looked for, in order. A LaunchAgent's PATH is not a login shell's, so the
     /// absolute paths come first and `PATH` is only the fallback (§12).
     public static let candidatePaths = ["/opt/homebrew/bin/agtermctl", "/usr/local/bin/agtermctl"]
+
+    /// How many agterm windows one session lookup will open a tree on, the frontmost included.
+    ///
+    /// Bounded rather than exhaustive because every window is another subprocess inside the control
+    /// socket's handler lock, and `ProcessRunner.worstCaseCallsPerStop` has to account for each one
+    /// of them. Four covers any plausible arrangement of windows; past it the lookup says so
+    /// (`AgtermError.searchTruncated`) rather than reporting a session it never looked for as gone.
+    public static let maxWindowsSearched = 4
 
     /// §6's colours. Red for listening, amber for working -- the indicator's default tint says
     /// "an agent is busy", which is precisely the state dicta must not be confused with.
@@ -168,13 +184,64 @@ public struct Agterm: Injector, Notifier, Sendable {
         }
     }
 
+    /// The session's panes, looked for in every window rather than only in the frontmost one.
+    ///
+    /// `agtermctl tree` is **window-scoped** -- its `--window` flag "defaults to the frontmost" --
+    /// while every other verb dicta sends is addressed by `--target <uuid>` and matches across all
+    /// windows. Treating the two as one scope is how a live session becomes `targetGone`: start
+    /// dictating in window A, click into window B, press the stop chord there, and the
+    /// re-validation asks B's tree about A's session. The text survives in the record, but the
+    /// input line never receives it and the reason the user reads is false.
+    ///
+    /// The frontmost window is asked first and on its own, because it is the answer on every
+    /// ordinary chord: the window a keypress came from is the window that is frontmost.
     private func surfaces(ofSession sessionID: String) throws -> [TreeSurface] {
-        let output = try invoke("tree", ["tree", "--json"])
+        do {
+            return try surfaces(ofSession: sessionID, inWindow: nil)
+        } catch AgtermError.sessionNotFound {
+            // Absent from the frontmost window's tree, which is not the same as gone.
+        }
+        // Best effort: a `window list` that fails leaves the frontmost window as the whole search,
+        // which is exactly where this stood before.
+        let others = (try? otherWindowIDs()) ?? []
+        let searched = others.prefix(Self.maxWindowsSearched - 1)
+        for window in searched {
+            do {
+                return try surfaces(ofSession: sessionID, inWindow: window)
+            } catch AgtermError.sessionNotFound {
+                continue
+            }
+        }
+        guard others.count <= searched.count else {
+            // The cap is disclosed rather than swallowed: a search that stopped early reporting
+            // "the session is gone" is the same false statement in a quieter voice.
+            throw AgtermError.searchTruncated(session: sessionID,
+                                              searched: searched.count + 1,
+                                              windows: others.count + 1)
+        }
+        throw AgtermError.sessionNotFound(sessionID)
+    }
+
+    private func surfaces(ofSession sessionID: String,
+                          inWindow window: String?) throws -> [TreeSurface] {
+        var arguments = ["tree", "--json"]
+        if let window { arguments += ["--window", window] }
+        let output = try invoke("tree", arguments)
         guard output.succeeded else {
             throw AgtermError.commandFailed(verb: "tree", status: output.status,
                                             message: Self.message(in: output))
         }
         return try Self.surfaces(inTree: output.standardOutput, session: sessionID)
+    }
+
+    /// Every window except the frontmost, which the caller has already looked in.
+    private func otherWindowIDs() throws -> [String] {
+        let output = try invoke("window list", ["window", "list", "--json"])
+        guard output.succeeded else {
+            throw AgtermError.commandFailed(verb: "window list", status: output.status,
+                                            message: Self.message(in: output))
+        }
+        return try Self.otherWindowIDs(inList: output.standardOutput)
     }
 
     // MARK: - injection
@@ -358,6 +425,44 @@ public struct Agterm: Injector, Notifier, Sendable {
         let result: Envelope?
     }
 
+    /// Only the fields the window sweep reads.
+    private struct WindowEnvelope: Decodable {
+        struct Envelope: Decodable { let windows: [Window] }
+        struct Window: Decodable {
+            let id: String
+            let active: Bool?
+            let open: Bool?
+        }
+
+        let ok: Bool?
+        let error: String?
+        let result: Envelope?
+    }
+
+    /// The ids of every window that is open and is NOT the frontmost one. Pure, for the same reason
+    /// the tree parser is: a second agterm window cannot be conjured up inside a test.
+    public static func otherWindowIDs(inList json: String) throws -> [String] {
+        guard let data = json.data(using: .utf8), !data.isEmpty else {
+            throw AgtermError.malformedTree("agtermctl window list printed nothing")
+        }
+        let envelope: WindowEnvelope
+        do {
+            envelope = try JSONDecoder().decode(WindowEnvelope.self, from: data)
+        } catch {
+            throw AgtermError.malformedTree("the window list is not the JSON this build expects")
+        }
+        if envelope.ok == false {
+            throw AgtermError.commandFailed(verb: "window list", status: 0,
+                                            message: envelope.error ?? "agterm refused to answer")
+        }
+        guard let result = envelope.result else {
+            throw AgtermError.malformedTree("the answer carries no windows")
+        }
+        return result.windows
+            .filter { $0.open != false && $0.active != true }
+            .map(\.id)
+    }
+
     /// Pure, so every shape of tree in `AgtermTests` is a value rather than a running terminal.
     static func surfaces(inTree json: String, session: String) throws -> [TreeSurface] {
         guard let data = json.data(using: .utf8), !data.isEmpty else {
@@ -438,21 +543,60 @@ public struct ProcessRunner: CommandRunner {
     ///  2. the dictionary's degradation notice, and 3. its `osascript` fallback
     ///  4. the filter's fallback notice, and 5. its `osascript` fallback (step 4's `Filter`; the
     ///     seam is `NoFilter` today, and the budget must already fit when it is not)
-    ///  6. `validate` -- `agtermctl tree --json`
-    ///  7. `session type`
-    ///  8. the terminal `.announce(.done)` or `.announce(.blocked)`
-    ///  9. the delivery failure's `.notify`, and 10. its `osascript` fallback
-    /// 11. the record's "recovery is unavailable" notice, and 12. its `osascript` fallback
-    public static let worstCaseCallsPerStop = 12
+    ///  6. `validate` -- `agtermctl tree --json` on the frontmost window, and 7. `window list`
+    ///     plus 8-10. a tree per window the sweep is willing to open
+    ///     (`Agterm.maxWindowsSearched`, less the frontmost one already counted)
+    /// 11. `session type`
+    /// 12. the terminal `.announce(.done)` or `.announce(.blocked)`
+    /// 13. the delivery failure's `.notify`, and 14. its `osascript` fallback
+    /// 15. the record's "recovery is unavailable" notice, and 16. its `osascript` fallback
+    public static let worstCaseCallsPerStop = 16
+
+    /// The longest ONE of those calls can take, which is not `defaultDeadline`.
+    ///
+    /// A child that ignores SIGTERM spends `graceAfterTerminate` more, and descendants holding the
+    /// pipes open spend `graceAfterKill` after that. `daemonCeilingsFitTheClientTimeout` multiplies
+    /// this rather than the deadline, because a budget built out of the number the deadline is
+    /// named after is a budget that undercounts by 60% exactly when it matters.
+    public static var worstCaseCallSeconds: TimeInterval {
+        defaultDeadline + graceAfterTerminate + graceAfterKill
+    }
 
     /// How long a child gets to honour SIGTERM before SIGKILL. A child that ignores the polite
     /// signal would otherwise hold this thread's pipes open, and the wedge would simply move here.
-    private static let graceAfterTerminate: TimeInterval = 2.0
+    public static let graceAfterTerminate: TimeInterval = 2.0
+
+    /// How long the reads get AFTER the child has been killed, before this call gives up on them.
+    ///
+    /// Killing the child is not enough to end a read. Foundation dups the pipe's write end into the
+    /// child, and **every process the child spawns inherits it** -- so `readDataToEndOfFile`
+    /// returns at EOF, which needs the last holder to close, not the direct child to die.
+    /// Measured: a child
+    /// that leaves a background descendant and is SIGKILLed at 2 s left the read blocked until the
+    /// grandchild exited at 8 s, and `expired.isRaised` is only consulted once the read returns.
+    /// The deadline above therefore bounded the child and not this call, which is precisely the
+    /// wedge it is documented to prevent.
+    ///
+    /// So the reads are bounded too, and on expiry this call unwinds with whatever it has. The
+    /// draining threads are left behind rather than interrupted: closing a descriptor another
+    /// thread is blocked reading is how a file descriptor gets reused underneath it. They are one
+    /// stack each, they end when the descendant does, and `AgtermError.timedOut` has already gone
+    /// back to the caller by then.
+    public static let graceAfterKill: TimeInterval = 1.0
 
     private let deadline: TimeInterval
+    private let graceAfterTerminate: TimeInterval
+    private let graceAfterKill: TimeInterval
 
-    public init(deadline: TimeInterval = ProcessRunner.defaultDeadline) {
+    /// The graces are parameters for one reason: the test that proves the reads are bounded has to
+    /// wait out both of them, and a suite that runs in half a second should not spend three of
+    /// them holding a stopwatch. Nothing in the daemon passes anything but the defaults.
+    public init(deadline: TimeInterval = ProcessRunner.defaultDeadline,
+                graceAfterTerminate: TimeInterval = ProcessRunner.graceAfterTerminate,
+                graceAfterKill: TimeInterval = ProcessRunner.graceAfterKill) {
         self.deadline = deadline
+        self.graceAfterTerminate = graceAfterTerminate
+        self.graceAfterKill = graceAfterKill
     }
 
     public func run(_ executable: String, _ arguments: [String]) throws -> CommandOutput {
@@ -480,18 +624,32 @@ public struct ProcessRunner: CommandRunner {
         // closing stdout: the child blocks writing, this thread blocks reading, and neither
         // `ProcessRunner` nor `Agterm` has a timeout to break it. Since this runs inside the
         // control socket's handler lock, one wedged `agtermctl` would wedge every chord.
-        let collected = DrainedPipe()
+        // NEITHER read happens on this thread, for the reason spelled out on `graceAfterKill`: a
+        // read to EOF cannot be bounded from the outside, so the only way to put a ceiling on it is
+        // to wait on a semaphore instead of on the descriptor. The FileHandles are captured by the
+        // closures so the `Pipe` cannot take their descriptors out from under a blocked read.
+        let outRead = out.fileHandleForReading
+        let errRead = err.fileHandleForReading
+        let stdoutCollected = DrainedPipe()
+        let stderrCollected = DrainedPipe()
+        let stdoutDrained = DispatchSemaphore(value: 0)
         let stderrDrained = DispatchSemaphore(value: 0)
+        let stdoutThread = Thread {
+            stdoutCollected.set(outRead.readDataToEndOfFile())
+            stdoutDrained.signal()
+        }
+        stdoutThread.name = "dev.personal.dicta.process.stdout"
+        stdoutThread.start()
         let stderrThread = Thread {
-            collected.set(err.fileHandleForReading.readDataToEndOfFile())
+            stderrCollected.set(errRead.readDataToEndOfFile())
             stderrDrained.signal()
         }
         stderrThread.name = "dev.personal.dicta.process.stderr"
         stderrThread.start()
 
-        // The deadline, on a thread of its own because the two reads below are what it exists to
-        // unblock. Killing the child closes its ends of both pipes, so `readDataToEndOfFile`
-        // returns and this whole call unwinds instead of hanging for ever.
+        // The deadline, on a thread of its own because the reads above are what it exists to
+        // unblock. Killing the child closes ITS ends of both pipes, which is enough whenever the
+        // child is the only holder -- and the ceiling below covers the case where it is not.
         let finished = DispatchSemaphore(value: 0)
         let expired = Flag()
         let deadline = self.deadline
@@ -499,7 +657,7 @@ public struct ProcessRunner: CommandRunner {
             guard finished.wait(timeout: .now() + deadline) == .timedOut else { return }
             expired.raise()
             process.terminate()
-            guard finished.wait(timeout: .now() + Self.graceAfterTerminate) == .timedOut else {
+            guard finished.wait(timeout: .now() + graceAfterTerminate) == .timedOut else {
                 return
             }
             // `isRunning` is false only once Foundation has reaped the child, so the pid it hands
@@ -509,19 +667,26 @@ public struct ProcessRunner: CommandRunner {
         watchdog.name = "dev.personal.dicta.process.deadline"
         watchdog.start()
 
-        let stdout = out.fileHandleForReading.readDataToEndOfFile()
-        stderrDrained.wait()
-        process.waitUntilExit()
+        // One absolute instant for both waits, so two sequential waits cannot spend two budgets.
+        let ceiling = DispatchTime.now() + deadline + graceAfterTerminate + graceAfterKill
+        let drained = stdoutDrained.wait(timeout: ceiling) == .success
+            && stderrDrained.wait(timeout: ceiling) == .success
         // One signal releases the watchdog whichever of its two waits it is sitting in.
         finished.signal()
+        guard drained else {
+            // The pipes outlived the child. Nothing here waits for the process: `waitUntilExit`
+            // polls a child that has already been SIGKILLed, and the answer would change nothing.
+            throw AgtermError.timedOut(verb: executable, seconds: deadline)
+        }
+        process.waitUntilExit()
         if expired.isRaised {
             // The verb is filled in by `Agterm.invoke`, which is the only caller that knows it.
             throw AgtermError.timedOut(verb: executable, seconds: deadline)
         }
         return CommandOutput(
             status: process.terminationStatus,
-            standardOutput: String(decoding: stdout, as: UTF8.self),
-            standardError: String(decoding: collected.get(), as: UTF8.self)
+            standardOutput: String(decoding: stdoutCollected.get(), as: UTF8.self),
+            standardError: String(decoding: stderrCollected.get(), as: UTF8.self)
         )
     }
 }

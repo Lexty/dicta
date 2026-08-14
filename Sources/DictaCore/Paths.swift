@@ -56,11 +56,26 @@ public struct Paths: Sendable, Equatable {
     /// `createSupportDirectory()`. What they CAN share is this, and they must: `0700` is not
     /// decoration, it is the premise of the socket carrying no token (see `socket`), and it was
     /// open-coded at three call sites with the canonical one reachable from nothing but a test.
+    ///
+    /// The `chmod` after the create is not belt-and-braces. `createDirectory` **ignores
+    /// `attributes` entirely when the directory already exists** -- it succeeds and returns, and
+    /// the mode it was handed is never applied. So a support directory that arrived any other way
+    /// (restored from a backup, left by an earlier build, created under a loose umask) kept
+    /// whatever mode it had, for ever, with nothing here noticing. The premise above would then be
+    /// a sentence in a comment rather than a fact about the filesystem.
     public static func createPrivateDirectory(_ directory: URL) throws {
         try FileManager.default.createDirectory(
             at: directory,
             withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700]
         )
+        try FileManager.default.setAttributes([.posixPermissions: 0o700],
+                                              ofItemAtPath: directory.path)
     }
+
+    /// The mode every file dicta writes is created with: readable and writable by this uid alone.
+    /// The socket is `chmod 0600` and the record is opened `0o600`; anything written with
+    /// `Data.write` lands at `0644` unless it is told otherwise, which is the one way a file here
+    /// ends up more readable than the directory holding it.
+    public static let privateFileMode = 0o600
 }

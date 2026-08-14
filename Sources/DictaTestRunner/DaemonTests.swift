@@ -28,18 +28,23 @@ struct DaemonTests {
         private let lock = NSLock()
         private var seen: [String] = []
         private var error: (any Error)?
+        private var answer: String?
 
         var calls: [String] { lock.withLock { seen } }
 
         func setError(_ error: (any Error)?) { lock.withLock { self.error = error } }
 
+        /// What the filter hands back instead of its input. §7's third filter trigger is "returns
+        /// empty", and that one needs an engine that can answer rather than one that can throw.
+        func setAnswer(_ answer: String?) { lock.withLock { self.answer = answer } }
+
         func filter(_ text: String) throws -> String {
-            let error = lock.withLock { () -> (any Error)? in
+            let (error, answer) = lock.withLock { () -> ((any Error)?, String?) in
                 seen.append(text)
-                return self.error
+                return (self.error, self.answer)
             }
             if let error { throw error }
-            return text
+            return answer ?? text
         }
     }
 
@@ -593,6 +598,41 @@ struct DaemonTests {
         #expect(harness.notifier.announcements == [.listening, .working, .done])
         let message = try #require(harness.notifier.messages.first)
         #expect(message.contains("the filter did not run"))
+    }
+
+    @Test("a filter that answers with nothing falls back too, rather than eating the dictation")
+    func emptyFilterOutputFallsBackToReplaced() throws {
+        // §7's row is "fails, times out **or returns empty**", and all three fall back to
+        // **replaced**. Only the throw was implemented: an empty answer went on to the sanitiser
+        // and ended the attempt as `empty`, so a user whose filter misbehaved was told their
+        // microphone had heard silence. `NoFilter` cannot produce it, which is exactly why it
+        // needs a test rather than a step-4 promise.
+        let harness = Harness()
+        harness.filter.setAnswer("   ")
+
+        harness.dictate(.clean)
+
+        #expect(harness.injector.lastText == FakeTranscriber.sanitizedHostileText)
+        let message = try #require(harness.notifier.messages.first)
+        #expect(message.contains("the filter did not run"))
+        let entry = try #require(try harness.history.last())
+        #expect(entry.outcome == .filterFellBack)
+    }
+
+    @Test("a dictation that was already empty is not blamed on the filter that passed it through")
+    func emptyDictationIsNotBlamedOnTheFilter() throws {
+        // The other side of the rule above. `replaced` was empty before the filter ever saw it, so
+        // an empty answer is the filter agreeing rather than the filter failing -- and §7's "the
+        // recogniser returned nothing but whitespace" row owns this attempt, not the filter's.
+        let harness = Harness()
+        harness.transcriber.setText("   \n  ")
+        harness.filter.setAnswer("")
+
+        harness.dictate(.clean)
+
+        let entry = try #require(try harness.history.last())
+        #expect(entry.outcome == .empty)
+        #expect(harness.notifier.messages.allSatisfy { !$0.contains("the filter did not run") })
     }
 
     // MARK: - the Tier 0 dictionary (D9a, §2, §7)
@@ -1475,6 +1515,37 @@ struct DaemonTests {
         defer { harness.daemon.stop() }
 
         #expect(harness.notifier.signals == [.clear(Self.target)])
+        #expect(!FileManager.default.fileExists(atPath: harness.activeTargetFile.path))
+    }
+
+    @Test("a parked target is no more readable than the record beside it")
+    func theParkedTargetIsPrivate() throws {
+        // Every other file dicta owns says 0600 explicitly -- the socket is chmodded, the record is
+        // opened with a mode. This one was written with `Data.write(options: .atomic)`, which
+        // renames a temporary file into place at 0644, so the one file with no stated mode was the
+        // one that disagreed with the directory holding it.
+        let harness = Harness()
+
+        _ = harness.startRecording()
+
+        let attributes = try FileManager.default
+            .attributesOfItem(atPath: harness.activeTargetFile.path)
+        let mode = try #require(attributes[.posixPermissions] as? NSNumber)
+        #expect(mode.int16Value == 0o600)
+    }
+
+    @Test("a parked target that cannot be read is removed rather than left to accumulate")
+    func anUndecodableParkedTargetIsCleanedUp() throws {
+        // It names no indicator to clear, so keeping it buys nothing -- and the removal used to sit
+        // PAST the decode guard, which made an unreadable file permanent: every later start read
+        // it, failed on it, and left §7's stale-indicator row unserviced for that attempt.
+        let harness = Harness()
+        try Data("not json".utf8).write(to: harness.activeTargetFile)
+
+        try harness.daemon.start()
+        defer { harness.daemon.stop() }
+
+        #expect(harness.notifier.signals.isEmpty)
         #expect(!FileManager.default.fileExists(atPath: harness.activeTargetFile.path))
     }
 

@@ -82,6 +82,28 @@ struct PathsTests {
         #expect(mode.int16Value == 0o700)
     }
 
+    @Test("a directory that is already there has its mode repaired, not trusted")
+    func anExistingDirectoryIsRepaired() throws {
+        // `createDirectory` IGNORES `attributes` entirely when the directory already exists: it
+        // succeeds, returns, and the mode it was handed is never applied. So the 0700 above held
+        // only for a directory dicta itself created on a machine with a strict umask -- one
+        // restored from a backup, left by an earlier build, or made under a loose umask kept
+        // whatever it had, for ever, and the sentence about the socket carrying no token was a
+        // comment rather than a fact.
+        let home = Self.temporaryHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = Paths(home: home)
+        _ = try paths.createSupportDirectory()
+        try FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                              ofItemAtPath: paths.support.path)
+
+        _ = try paths.createSupportDirectory()
+
+        let attributes = try FileManager.default.attributesOfItem(atPath: paths.support.path)
+        let mode = try #require(attributes[.posixPermissions] as? NSNumber)
+        #expect(mode.int16Value == 0o700)
+    }
+
     @Test("the default home is the current user's, and is not baked in at build time")
     func defaultHome() {
         #expect(Paths.current.home == FileManager.default.homeDirectoryForCurrentUser)

@@ -48,7 +48,7 @@ public enum ControlTimeouts {
     /// desktop notification, and the daemon goes on to inject the text a minute later. The daemon's
     /// budget is `ParakeetTranscriber.patience` (waiting for the one start-up load) plus
     /// `ParakeetEngine.inferenceCeiling` plus the `agtermctl` calls the delivery makes, each
-    /// bounded by `ProcessRunner.defaultDeadline` -- and `daemonCeilingsFitTheClientTimeout`
+    /// bounded by `ProcessRunner.worstCaseCallSeconds` -- and `daemonCeilingsFitTheClientTimeout`
     /// asserts the sum still fits here, so the two cannot drift apart again.
     ///
     /// Long is the right direction to be wrong in. `connect` and the frame write catch a daemon
@@ -56,10 +56,13 @@ public enum ControlTimeouts {
     /// that accepted the command and is grinding on it, and giving up on that one is what costs an
     /// utterance.
     ///
-    /// 180 rather than 120 because the sum was recounted: `patience` (60) + `inferenceCeiling` (30)
-    /// + `ProcessRunner.worstCaseCallsPerStop` × `defaultDeadline` (60) is 150, and 120 sat under
-    /// its own daemon's budget.
-    public static let pipelineRead: TimeInterval = 180.0
+    /// Recounted twice, and both recounts moved it up. 120 sat under its own daemon's budget; 180
+    /// was `patience` (60) + `inferenceCeiling` (30) + twelve subprocesses at the five-second
+    /// deadline (60), which undercounted twice over -- a call can spend the deadline **plus** both
+    /// grace periods (`worstCaseCallSeconds`, 8 s), and a session lookup that sweeps windows makes
+    /// sixteen of them rather than twelve. 60 + 30 + 16 × 8 is 218. Do not read that arithmetic off
+    /// this comment either; read the constants, which is what the assertion does.
+    public static let pipelineRead: TimeInterval = 240.0
     /// How long the server waits for a connected client to say something. Bounds a client that
     /// connects and then wanders off.
     public static let serverRead: TimeInterval = 2.0

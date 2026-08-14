@@ -258,6 +258,30 @@ Distilled from SPEC.md §3. Each one is a mistake already made, or one the spec 
   cannot be recalled.
 - **Injection is never retried** (§7). A retry after keystrokes have begun would double part of the
   text; the notification says the insertion *may be partial* and stops there.
+- **`agtermctl tree` is WINDOW-scoped; `--target <uuid>` is not.** `tree`'s only address is
+  `--window`, which "defaults to the frontmost", while `session type`, `session status` and `notify`
+  match a session id across every open window. Reading the first as if it had the second's scope is
+  how a live session becomes `targetGone`: dictate in window A, click into window B, press stop
+  there, and the re-validation asks B's tree about A's session. The text survives in the record and
+  nothing is mis-aimed — D4 holds — but the input line never receives it and the reason the user
+  reads is false. `Agterm.surfaces(ofSession:)` therefore asks the frontmost window first (the
+  answer on every ordinary chord) and then sweeps the rest off `window list --json`, bounded by
+  `maxWindowsSearched` because each window is another subprocess inside the handler lock. Past the
+  bound it throws `searchTruncated` rather than `sessionNotFound`: a search that stopped early has
+  not established that anything is gone.
+- **A killed child does not end a pipe read.** Foundation dups the pipe's write end into the child
+  and **every descendant inherits it**, so `readDataToEndOfFile` returns at EOF — the last holder
+  closing — not when the direct child dies. Measured: SIGKILL at 2 s, read returned at 8 s when the
+  grandchild exited. `ProcessRunner` therefore drains both pipes on threads of their own and waits
+  on semaphores against one absolute ceiling; the deadline alone bounded the child and not the call,
+  which is the wedge it is documented to prevent. The consequence for the budget: one call can spend
+  `worstCaseCallSeconds` — deadline **plus** both graces — not `defaultDeadline`.
+- **`FileManager.createDirectory` ignores `attributes` when the directory already exists.** It
+  succeeds, returns, and the mode is never applied — so `0700` held only for a directory dicta
+  itself created under a strict umask, and one restored from a backup kept whatever it had for ever.
+  `Paths.createPrivateDirectory` chmods after the create for that reason. The same class of trap:
+  `Data.write(options: .atomic)` renames a temporary file into place at **0644**, which is how the
+  parked target became the one file dicta owns that was more readable than the directory holding it.
 - **Every `agtermctl` flag goes BEFORE `--`, and the text after it.** `session type` declares
   exactly one positional, so an argument appended past the separator — `--socket "$AGT_SOCKET"`,
   which the keymap snippet passes on every chord — becomes `Error: 2 unexpected arguments` and
@@ -320,7 +344,7 @@ Distilled from SPEC.md §3. Each one is a mistake already made, or one the spec 
   it: `serve` takes `handlerLock` for every command, so both **queue behind** a pipeline that is
   still running, and 3 s there makes `dictactl abort` announce a dead daemon that is at that moment
   typing the text. `pipelineRead` is not a guess but a ceiling over the daemon's own ceilings —
-  `patience` + `inferenceCeiling` + `ProcessRunner.worstCaseCallsPerStop` × `defaultDeadline` — and
+  `patience` + `inferenceCeiling` + `worstCaseCallsPerStop` × `worstCaseCallSeconds` — and
   `daemonCeilingsFitTheClientTimeout` asserts the sum still fits. Do not read a number off this page
   and trust it; read the constants. Two consequences worth keeping in view: a chord arriving during
   the one start-up model load waits up to 17 s and must not be reported as an unreachable daemon; and

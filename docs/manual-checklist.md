@@ -50,7 +50,7 @@ external filter, which this plan deliberately does not build (D9c): the `Filter`
 
 | event | checked by |
 |---|---|
-| filter fails, times out or returns empty | The **fallback** is tested through a filter armed to throw: `test: a failing filter falls back to replaced rather than costing the user their words`, `test: a filter fallback supersedes a dictionary degradation, and both reasons survive`, `test: a filter that fell back is recorded as such, with the text that still arrived`. That the seam is a pass-through today: `test: NoFilter is a pass-through, hazards and all`. **Step 4** owns the other two triggers — a *timeout* needs a subprocess to time out, and *returns empty* needs an engine that can return empty; the daemon today falls back only on a throw. |
+| filter fails, times out or returns empty | A filter armed to throw: `test: a failing filter falls back to replaced rather than costing the user their words`, `test: a filter fallback supersedes a dictionary degradation, and both reasons survive`, `test: a filter that fell back is recorded as such, with the text that still arrived`. A filter that **returns empty**, which is the same fallback and was for a while the opposite one — an empty answer reached the sanitiser and ended the attempt as `empty`, so the user was told their microphone had heard silence: `test: a filter that answers with nothing falls back too, rather than eating the dictation`, and its other side, `test: a dictation that was already empty is not blamed on the filter that passed it through`. That the seam is a pass-through today: `test: NoFilter is a pass-through, hazards and all`. **Step 4** owns the remaining trigger alone — a *timeout* needs a subprocess to time out. |
 | recogniser throws, or the model is unavailable | `test: a recogniser that throws injects nothing and says so`, `test: a recogniser that throws is recorded with its error and no text`, `test: a transcriber nobody prepared refuses rather than loading on the hot path`, `test: a failed load makes every later attempt fail with the load's own reason`, `test: the self-check names exactly the files that are absent`, `test: a missing model reads as a remedy, not as a hardware fault` |
 | recogniser returns nothing but whitespace | `test: nothing recognised means no injection and a visible reason`, `test: an attempt that recognised nothing but whitespace is recorded as empty, with no text`, `test: a whitespace-only transcript is recorded as empty, with the transcript kept` |
 | recogniser returns text that is not valid UTF-8 or is longer than the frame limit | `test: recognised text over the frame limit is refused, and the record keeps the byte length`, `test: bytes that are not valid UTF-8 are refused with their length`, `test: text at the limit is accepted and one byte more is refused`, `test: the limit is measured in bytes, not in characters`, `test: text at the ceiling still fits a response frame, envelope and all` |
@@ -117,14 +117,23 @@ counts as a pass, so two people scoring it agree.
   and reopen it, and separately (b) pull AirPods out of their case so the input route changes. Pass
   in both: a visible fault worded as hardware, nothing typed, and an entry in the record with
   outcome `capture-fault`. Fail: silence reported as an empty dictation.
-- **H4 — step 1 of §10: the text arrives, unsubmitted, where the chord was pressed.** With the
-  daemon running against `FakeTranscriber` (`bash Scripts/run.sh` in a build wired to the fakes, or
-  simply the first real dictation), press ⌃⌥D in a session, then press it again. Pass: the text
+- **H4 — step 1 of §10: the text arrives, unsubmitted, where the chord was pressed.** Press ⌃⌥D in
+  a session, speak a sentence with a pause in the middle of it, then press it again. Pass: the text
   appears in the input line of **that** session and the pane that was focused when the daemon
-  handled the start; the buffer shows it and the prompt has not been submitted; the hostile canned
-  transcript arrives as **one line with single spaces**, its newline, double space and trailing
-  space gone. Fail, in the way that matters most: the prompt fires by itself — that is the
-  sanitiser bypassed, and it is invariant 1.
+  handled the start; the buffer shows it and the prompt has **not** been submitted. Fail, in the
+  way that matters most: the prompt fires by itself — that is the sanitiser bypassed, and it is
+  invariant 1.
+  **What this item does not score, deliberately.** An earlier draft asked for the daemon to be run
+  "against `FakeTranscriber`", whose canned transcript carries a newline, a double space and a
+  trailing space on purpose. No such build exists: `Fakes.swift` lives in `Sources/DictaTestRunner`,
+  the `Dicta` executable does not depend on that target, and `Scripts/run.sh` runs the real binary —
+  so the procedure could not be carried out, and a scorer either edited source or quietly scored
+  something weaker. Real recogniser output will not oblige with a newline either. That the hostile
+  transcript survives the sanitiser as one line is a standing regression instead —
+  `test: the canned hostile transcript arrives as one line with single spaces`, and end to end,
+  `test: the clean path delivers exactly the sanitised canned transcript`. What is left here is the
+  half no test can reach — that the keystrokes land in the right pane and the prompt stays
+  unsubmitted.
 - **H5 — step 2 (a): keypress to recording under 150 ms, warm.** `bash Scripts/measure.sh` — 10
   attempts by default after one discarded warm-up, each ended with `abort`, so it types nothing into
   a pane. Pass: every one of
