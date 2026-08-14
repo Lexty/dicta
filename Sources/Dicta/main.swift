@@ -85,7 +85,15 @@ if fetchModels {
         log("\(trouble)")
         exit(EXIT_FAILURE)
     }
-    log("the recognition models are staged; start the daemon normally")
+    // Naming the restart is not politeness, it is the other half of the remedy. A daemon that
+    // started before the models existed has already published the load failure, and it never
+    // retries -- loading on demand when a chord arrives is the one thing D10 forbids normatively.
+    // So the fresh-install order in the README (install, then fetch) leaves a running daemon that
+    // will refuse every dictation until it is restarted, and the user would discover that by
+    // pressing a chord and losing an utterance.
+    log("the recognition models are staged. A daemon that started before them has already given up "
+        + "on loading, so restart it: "
+        + "launchctl kickstart -k gui/\(getuid())/\(Paths.bundleID)")
     exit(0)
 }
 

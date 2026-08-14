@@ -47,11 +47,18 @@ which `bundle.sh` calls on its own when it is missing. It matters because the re
 requirement* names the identity rather than a hash of the code: rebuilding dicta does not revoke the
 microphone permission you granted it. `bash Scripts/bundle.sh --print-requirement` prints it.
 
-Then fetch the models, once:
+Then fetch the models, once, and restart the daemon afterwards:
 
 ```sh
 ~/Applications/Dicta.app/Contents/MacOS/Dicta --fetch-models
+launchctl kickstart -k gui/$UID/dev.personal.dicta
 ```
+
+The restart is not optional on a fresh install, and the reason is worth a sentence. The models are
+loaded **once**, at daemon start, and never on the attempt path (D10) — so the daemon the installer
+has just started has already found them missing and given up. Without the kickstart it would refuse
+every dictation until the next login, and you would find that out by pressing a chord and losing an
+utterance. `--fetch-models` prints this command when it finishes, for the same reason.
 
 The daemon never downloads anything by itself. It starts at login, on whatever network the laptop
 woke up on, and six hundred megabytes of unannounced traffic is not something to do quietly — so a

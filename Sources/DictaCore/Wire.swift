@@ -20,6 +20,32 @@ public enum Command: String, Codable, Sendable, CaseIterable {
     case stop
     case abort
     case last
+
+    /// Whether the daemon serves this command **without waiting for the one already in flight**.
+    ///
+    /// `abort` alone, and §6's table is what requires it: `processing × abort → cancel — nothing is
+    /// injected`. The daemon does not answer before doing the work — `Daemon.apply` performs
+    /// recognition, the dictionary, the sanitiser and the keystrokes inline — so an abort queued
+    /// behind the `stop` that is running would not be *decided* until the attempt it means to
+    /// cancel had already been delivered. That is the one cell of the table a chord could not
+    /// reach, and serialising it is what put it out of reach.
+    ///
+    /// The daemon is built to be entered this way. `apply` mutates the machine under `stateLock`
+    /// and performs effects outside it, and it is already re-entered from threads that share no
+    /// lock with the socket — capture's own thread, the drain watchdog, D15's cap. Both orders
+    /// resolve correctly *because* the transition is the atomic point: an abort that wins leaves
+    /// the machine idle, so `.recognised` produces no injection effect and `Daemon.recognise`
+    /// drops the text; an abort that arrives after the machine has moved to `injecting` is refused
+    /// by D20, which is the same table's next cell.
+    ///
+    /// Nothing else may join it lightly. Every other verb either begins an attempt or ends one, and
+    /// two of those resolving at once is exactly what the serialisation and D7 exist to prevent.
+    public var isServedConcurrently: Bool {
+        switch self {
+        case .abort: true
+        case .status, .toggle, .start, .stop, .last: false
+        }
+    }
 }
 
 /// Which text the user asked for — decided by the chord that STOPS the recording (D3), not by the

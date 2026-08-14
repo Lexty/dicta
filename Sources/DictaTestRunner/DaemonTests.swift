@@ -1448,6 +1448,50 @@ struct DaemonTests {
         }
     }
 
+    @Test("an abort chord cancels a dictation that is still being recognised")
+    func abortOverTheSocketCancelsProcessing() throws {
+        // §6's `processing × abort → cancel -- nothing is injected`, driven the way a chord drives
+        // it. Every other test of that cell calls `Daemon.handle` directly, and that is NOT the
+        // path a keypress takes: it arrives through `ControlServer`, which used to serialise every
+        // verb. The abort therefore waited for the stop pipeline it meant to interrupt -- it was
+        // answered `accepted`, and by then the dictation had already been typed into the pane.
+        //
+        // `ImmediateCapture` is what puts the whole tail of the attempt INSIDE the stop handler,
+        // which is where the real capture runs it too.
+        let path = Locked<String>("")
+        let answer = Locked<Response?>(nil)
+        let harness = Harness(capture: ImmediateCapture(), transcriber: ReentrantTranscriber {
+            let done = DispatchSemaphore(value: 0)
+            // A real thread: `ControlClient.send` blocks, and blocking Darwin's non-overcommit
+            // workers is what starved this suite's round trips into their timeout once.
+            let aborting = Thread {
+                answer.set(try? ControlClient.send(Request(cmd: .abort), to: path.value,
+                                                   readTimeout: 5))
+                done.signal()
+            }
+            aborting.name = "dicta.test.abort"
+            aborting.start()
+            // Bounded, so a regression fails the expectations below rather than wedging the suite
+            // for the pipeline ceiling.
+            _ = done.wait(timeout: .now() + 10)
+        })
+        try harness.daemon.start()
+        defer { harness.daemon.stop() }
+        path.set(harness.daemon.configuration.socketPath)
+
+        _ = try ControlClient.send(Request(cmd: .toggle, sessionID: "S1"), to: path.value)
+        _ = try ControlClient.send(Request(cmd: .toggle, sessionID: "S1"), to: path.value)
+
+        let aborted = try #require(answer.value, "the abort was never answered")
+        #expect(aborted.kind == .accepted)
+        #expect(harness.daemon.state == .idle)
+        #expect(harness.injector.delivered.isEmpty, "a cancelled dictation was typed anyway")
+        // One entry, and it says the attempt was aborted -- the text is dropped rather than left
+        // for a later path to find, but the attempt itself does not disappear (§9, property 2).
+        #expect(harness.history.appended.count == 1)
+        #expect(harness.history.appended.last?.outcome == .aborted)
+    }
+
     @Test("a second daemon on a live socket refuses to start")
     func secondInstanceIsRefused() throws {
         // §7: one daemon, one microphone. A live socket means a live daemon.

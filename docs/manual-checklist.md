@@ -72,32 +72,36 @@ external filter, which this plan deliberately does not build (D9c): the `Filter`
 Two rows are the honest gaps, and both are named above rather than papered over: the OS wiring of the
 capture faults (**H3**) and the client's own desktop notification (**H1**).
 
-### One caveat on the two abort rows, stated rather than left to be discovered
+### How the two abort rows are reached from a chord, and why that took a rule of its own
 
-§6 gives `processing × abort → cancel` and `injecting × abort → refused`, and both are implemented
-in `StateMachine` and asserted above. What the tests reach them through is `Daemon.handle` **called
-directly**; the seams re-enter from inside `processing` and `injecting`, which is the only way to
-observe a state that lasts exactly one synchronous call.
+§6 gives `processing × abort → cancel` and `injecting × abort → refused`. Both are implemented in
+`StateMachine` and asserted above, and most of those assertions reach them through `Daemon.handle`
+**called directly** — the seams re-enter from inside `processing` and `injecting`, which is the only
+way to observe a state that lasts exactly one synchronous call.
 
-A chord in real life arrives through `ControlServer`, which serialises every handler call under one
-lock — and `Daemon.apply` performs recognition and injection *inline*, before it answers. So while an
-attempt is in `processing` or `injecting`, an abort chord waits for the lock rather than being
-refused or honoured, and the attempt finishes on its own. The window is about half a second in the
-steady state (F1) and up to seventeen on the first chord after a rebuild, where the transcriber
-deliberately waits for the one start-up model load rather than losing the audio.
+That is not the path a chord takes, and for a while the difference was a live deviation rather than a
+detail. A keypress arrives through `ControlServer`, which serialised **every** handler call under one
+lock, and `Daemon.apply` performs recognition and the keystrokes *inline* before it answers. An abort
+pressed during `processing` therefore waited for the stop pipeline it meant to interrupt: it was
+answered `accepted`, and by the time it was decided the dictation had already been typed into the
+pane. The cell of §6's table the user reaches for when they realise they have dictated the wrong
+thing was the one cell a chord could not reach.
 
-The abort chord waits it out rather than giving up on it: `ControlTimeouts.read(for:)` gives `abort`
-the same `pipelineRead` ceiling as `stop`. With the short one it would expire inside that window and
-tell the user "dicta did not answer" — a desktop notification announcing a dead daemon, about a
-daemon that was at that moment typing their text.
+`Command.isServedConcurrently` is the fix, and `abort` is its only member: `serve` runs that one verb
+without the handler lock, so it overtakes the attempt it is cancelling. Both orders are safe because
+the transition — not the handler — is the atomic point. An abort that wins leaves the machine idle,
+so `.recognised` produces no injection effect and `Daemon.recognise` drops the text on the floor; an
+abort that arrives after the machine has moved to `injecting` is refused by D20, which is the next
+cell of the same table. The transport half is held by
+`test: an abort is answered while another command is still inside the handler`, and the daemon is
+driven end to end over a real socket by
+`test: an abort chord cancels a dictation that is still being recognised` — both were probed by
+restoring the unconditional lock, and both go red.
 
-The consequence is bounded rather than dangerous: `injecting × abort` would be refused anyway (D20),
-so only `processing × abort` differs from the table, and it differs by delivering a dictation the
-user tried to cancel late. Making the two reachable means answering the command before performing
-the tail of the pipeline, which is a change to the daemon's threading and not a fix to make while
-tidying up a review. Until then the rows above are honest about `StateMachine` and about
-`Daemon.handle`, and **not** about a chord pressed during those two states — which is why this
-paragraph exists rather than a third quietly-passing test.
+The long client ceiling stays: `ControlTimeouts.read(for:)` gives `abort` the same `pipelineRead` as
+`stop`. It is no longer queued behind anything, but a cancel still spends two `agtermctl`
+subprocesses of its own, and the short ceiling would expire and tell the user "dicta did not answer"
+about a daemon that was at that moment cancelling for them.
 
 ---
 

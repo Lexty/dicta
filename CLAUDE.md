@@ -340,16 +340,24 @@ Distilled from SPEC.md §3. Each one is a mistake already made, or one the spec 
   inside `ControlServer`'s handler lock. The client's read timeout is therefore a ceiling on the
   whole pipeline, which is why `ControlTimeouts.read(for:)` gives **every verb a chord can send** —
   `stop`, `toggle`, `start`, `abort` — `pipelineRead`, and leaves the 3 s `clientRead` to `status`
-  and `last`, which are typed by hand. `start` and `abort` do no work of their own and still need
-  it: `serve` takes `handlerLock` for every command, so both **queue behind** a pipeline that is
-  still running, and 3 s there makes `dictactl abort` announce a dead daemon that is at that moment
-  typing the text. `pipelineRead` is not a guess but a ceiling over the daemon's own ceilings —
-  `patience` + `inferenceCeiling` + `worstCaseCallsPerStop` × `worstCaseCallSeconds` — and
-  `daemonCeilingsFitTheClientTimeout` asserts the sum still fits. Do not read a number off this page
-  and trust it; read the constants. Two consequences worth keeping in view: a chord arriving during
-  the one start-up model load waits up to 17 s and must not be reported as an unreachable daemon; and
-  `processing × abort` / `injecting × abort` are not reachable through the socket while an attempt
-  is in flight (see the caveat in `docs/manual-checklist.md`).
+  and `last`, which are typed by hand. `start` does no work of its own and still needs it: `serve`
+  serialises it, so it **queues behind** a pipeline that is still running. `pipelineRead` is not a
+  guess but a ceiling over the daemon's own ceilings — `patience` + `inferenceCeiling` +
+  `worstCaseCallsPerStop` × `worstCaseCallSeconds` — and `daemonCeilingsFitTheClientTimeout` asserts
+  the sum still fits. Do not read a number off this page and trust it; read the constants. The
+  consequence worth keeping in view: a chord arriving during the one start-up model load waits up to
+  17 s and must not be reported as an unreachable daemon.
+- **`abort` is the ONE verb `ControlServer` does not serialise** (`Command.isServedConcurrently`),
+  and that is a requirement of §6 rather than an optimisation. The handler runs the whole tail of an
+  attempt inline, so an abort taking `handlerLock` was decided only *after* the dictation it meant to
+  cancel had been typed — `processing × abort → cancel` was accepted and cancelled nothing. Both
+  orders are safe because the **transition**, not the handler, is the atomic point: an abort that
+  wins leaves the machine idle, so `.recognised` yields no injection effect and `recognise` drops the
+  text; one that arrives after `injecting` is refused by D20. It keeps `pipelineRead` even though it
+  queues behind nothing, because a cancel spends two `agtermctl` subprocesses of its own and 3 s
+  there makes `dictactl abort` announce a dead daemon that is at that moment cancelling for the user.
+  Nothing else may join it: every other verb begins or ends an attempt, and two of those resolving at
+  once is what the serialisation and D7 exist to prevent.
 - **The record's text ceiling is the frame limit MINUS an envelope allowance**, not the frame limit.
   Text travels back out inside a whole `Response`, so equal numbers meant text accepted into the
   record could not be encoded on the way out — and `ControlServer` answered that by closing the

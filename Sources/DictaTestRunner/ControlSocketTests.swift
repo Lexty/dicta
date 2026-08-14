@@ -488,19 +488,73 @@ struct ControlSocketTests {
         // `toggle` too, because the start-or-stop decision belongs to the daemon (D7) -- the client
         // cannot know which direction its own chord will resolve.
         #expect(ControlTimeouts.read(for: .toggle) == ControlTimeouts.pipelineRead)
-        // And `start` and `abort`, which perform no work of their OWN and are still bounded by the
-        // pipeline: `serve` takes `handlerLock` for every command, so both queue behind a `stop`
-        // that is still recognising. Abort is the worst of the two to get wrong -- it is what the
-        // user presses when nothing seems to be happening, i.e. exactly while the daemon is slow.
-        for chord in [Command.start, .abort] {
-            #expect(ControlTimeouts.read(for: chord) == ControlTimeouts.pipelineRead,
-                    "\(chord.rawValue) queues behind the handler lock and must not cry wolf")
-        }
+        // And `start`, which performs no work of its OWN and is still bounded by the pipeline:
+        // `serve` serialises it, so it queues behind a `stop` that is still recognising.
+        #expect(ControlTimeouts.read(for: .start) == ControlTimeouts.pipelineRead,
+                "start queues behind the handler lock and must not cry wolf")
+        // `abort` queues behind nothing -- it is the one verb served concurrently -- and keeps the
+        // long ceiling anyway: a cancel spends two `agtermctl` subprocesses of its own, and it is
+        // the control the user reaches for when nothing seems to be happening, i.e. exactly while
+        // the daemon is slow. Crying wolf there is the worst of the set.
+        #expect(ControlTimeouts.read(for: .abort) == ControlTimeouts.pipelineRead,
+                "abort must not cry wolf about the daemon that is cancelling for it")
         for typed in [Command.status, .last] {
             #expect(ControlTimeouts.read(for: typed) == ControlTimeouts.clientRead,
                     "\(typed.rawValue) is typed by hand and costs no utterance")
         }
         #expect(ControlTimeouts.pipelineRead > ControlTimeouts.clientRead)
+    }
+
+    // MARK: - what may overtake what
+
+    @Test("abort is the one verb served without waiting for the command in flight")
+    func onlyAbortIsServedConcurrently() {
+        // Stated as a table so that a verb added to `Command` has to choose a side rather than
+        // inherit one. Everything but `abort` either begins an attempt or ends one, and two of
+        // those resolving at once is what the serialisation and D7 exist to prevent.
+        #expect(Command.abort.isServedConcurrently)
+        for serialised in [Command.status, .toggle, .start, .stop, .last] {
+            #expect(!serialised.isServedConcurrently,
+                    "\(serialised.rawValue) must not overtake a live attempt")
+        }
+    }
+
+    @Test("an abort is answered while another command is still inside the handler")
+    func abortOvertakesACommandInFlight() throws {
+        // The property §6's `processing × abort` rests on, asserted at the layer that owns it. The
+        // server used to take `handlerLock` for every command, so an abort arriving while the stop
+        // pipeline was recognising sat in the lock until the dictation had been typed -- the
+        // cancel was accepted, and it cancelled nothing.
+        let inside = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let fixture = try Self.makeServer { incoming in
+            guard case let .request(request) = incoming, request.cmd == .abort else {
+                inside.signal()
+                release.wait()
+                return Self.ok()
+            }
+            return Self.ok(.processing, "aborted")
+        }
+        defer {
+            release.signal()
+            fixture.tearDown()
+        }
+
+        // A real thread, not a cooperative one: `ControlClient.send` blocks, and so does the
+        // handler it is waiting on (CLAUDE.md's non-overcommit pool).
+        let path = fixture.path
+        let occupier = Thread { _ = try? ControlClient.send(Request(cmd: .stop), to: path) }
+        occupier.name = "dicta.test.occupier"
+        occupier.start()
+        #expect(inside.wait(timeout: .now() + 5) == .success, "the stop never reached the handler")
+
+        // Deliberately short: if the abort were serialised again, the honest failure is this
+        // expectation, not a test that hangs for the pipeline ceiling.
+        let response = try ControlClient.send(Request(cmd: .abort), to: fixture.path,
+                                              readTimeout: 5)
+
+        #expect(response.kind == .accepted)
+        #expect(response.message == "aborted")
     }
 
     @Test("an answer too large for a frame is refused in words, not by dropping the connection")

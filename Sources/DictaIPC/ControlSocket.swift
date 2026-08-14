@@ -71,12 +71,18 @@ public enum ControlTimeouts {
     ///
     /// `stop` and `toggle` are the two that carry the pipeline themselves — `toggle` because the
     /// start-or-stop decision belongs to the daemon (D7), so the client cannot know which direction
-    /// it will resolve. `start` and `abort` perform no work of their own, but `ControlServer.serve`
-    /// takes `handlerLock` for every command, so either can be QUEUED BEHIND a pipeline that is
-    /// still running. Three seconds there reproduces the misreport `pipelineRead` exists to remove,
-    /// on the one control the user reaches for when nothing seems to be happening: `dictactl abort`
-    /// gives up, says "dicta did not answer within 3.0 s" and fires the desktop notification, about
-    /// a daemon that is at that moment typing the text.
+    /// it will resolve. `start` performs no work of its own and is bounded by them anyway:
+    /// `ControlServer.serve` serialises it, so it can be QUEUED BEHIND a pipeline that is still
+    /// running. Three seconds there reproduces the misreport `pipelineRead` exists to remove.
+    ///
+    /// `abort` is the one verb `serve` does NOT serialise (`Command.isServedConcurrently`), so it
+    /// is not queued behind anything — and it keeps the long ceiling regardless, because the work
+    /// it does itself is not free: a cancel emits `.announce(.blocked)` and `.notify(reason)`, two
+    /// `agtermctl` subprocesses, each of which may spend `ProcessRunner.worstCaseCallSeconds`. It
+    /// is also the one control the user reaches for when nothing seems to be happening, i.e.
+    /// exactly when the machine is slow — and `dictactl abort` giving up, saying "dicta did not
+    /// answer within 3.0 s" and firing a desktop notification about a daemon that is at that moment
+    /// cancelling their attempt is the misreport in its most confusing form.
     ///
     /// `status` and `last` keep the short one deliberately — they are typed by hand, they cost no
     /// utterance, and a diagnostic that hangs for two minutes is worse than one that is re-run.
@@ -265,6 +271,11 @@ public final class ControlServer: @unchecked Sendable {
     private let readTimeout: TimeInterval
     /// Handler calls are serialised: the daemon owns one microphone and one lifecycle, so two
     /// commands arriving at once must still resolve one after the other (D7).
+    ///
+    /// With ONE exception, and it is a requirement rather than a relaxation:
+    /// `Command.isServedConcurrently` — `abort`. The handler performs the whole tail of an attempt
+    /// inline, so an abort that waited here would be decided only after the dictation it means to
+    /// cancel had been typed. See the comment on that property for why both orders are safe.
     private let handlerLock = NSLock()
     private let exited = DispatchSemaphore(value: 0)
     /// Guards everything below it. `start` and `stop` run on their caller's thread and `acceptLoop`
@@ -497,7 +508,12 @@ public final class ControlServer: @unchecked Sendable {
             incoming = .undecodable(Self.explain(error))
         }
 
-        let response = handlerLock.withLock { handler(incoming) }
+        // Serialised, except for the one verb whose whole point is to overtake the command in
+        // flight (`Command.isServedConcurrently`). Taking the lock for `abort` too is what made
+        // §6's `processing × abort → cancel` unreachable from a chord.
+        let response = Self.overtakes(incoming)
+            ? handler(incoming)
+            : handlerLock.withLock { handler(incoming) }
         // A response that will not fit a frame is answered with one that will, never by closing the
         // connection. The client reads a close as `closedByPeer` and reports "the daemon died" — so
         // dropping an oversized `last` here would diagnose a perfectly healthy daemon as a crashed
@@ -516,6 +532,16 @@ public final class ControlServer: @unchecked Sendable {
             frame = fallback
         }
         try? Framing.write(frame, to: client)
+    }
+
+    /// Whether this frame may overtake the command in flight.
+    ///
+    /// A frame the server could not decode never does. It is answered like any other, but its verb
+    /// is by definition unknown — and "may this run beside a live attempt?" is a question only a
+    /// known verb can answer.
+    private static func overtakes(_ incoming: Incoming) -> Bool {
+        guard case let .request(request) = incoming else { return false }
+        return request.cmd.isServedConcurrently
     }
 
     /// The sentence the user ends up reading, so it says what happened rather than naming a type.

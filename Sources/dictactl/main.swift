@@ -50,19 +50,49 @@ func quoted(_ text: String) -> String {
         .replacingOccurrences(of: "\n", with: "\\n") + "\""
 }
 
+/// The ceiling on one notifier subprocess, and the grace after SIGTERM before SIGKILL.
+///
+/// Both halves matter, because this runs on the keypress's own process. `agtermctl` is reached
+/// through agterm's control socket, and agterm being the thing that is wedged is not a hypothetical
+/// here — this notifier exists precisely because something has already gone wrong. An unbounded
+/// `waitUntilExit` then leaves the chord's process alive for ever, with the fallback that would
+/// actually have reached the user (`osascript`) never tried. Three seconds is well past the
+/// milliseconds a healthy `agtermctl notify` costs (F4 puts a whole `tree --json` at 38 ms) and
+/// well inside the attention of somebody who has pressed a chord and seen nothing happen.
+let notifyDeadline: TimeInterval = 3
+let notifyGrace: TimeInterval = 1
+
+/// Runs one short-lived helper and says whether it succeeded, never blocking beyond `deadline`.
+///
+/// Neither pipe is read — both ends are `/dev/null` — so this is free of the trap `ProcessRunner`
+/// documents in `DictaRuntime`, where a killed child leaves a grandchild holding the write end and
+/// the read never ends. Here the only thing waited on is the child's own exit.
 @discardableResult
-func run(_ executable: String, _ arguments: [String]) -> Bool {
+func run(_ executable: String, _ arguments: [String],
+         deadline: TimeInterval = notifyDeadline) -> Bool {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: executable)
     process.arguments = arguments
     process.standardOutput = FileHandle.nullDevice
     process.standardError = FileHandle.nullDevice
+    // Set before `run`, so a child that exits immediately still signals: `waitUntilExit` is what
+    // this replaces, and it is the call that cannot be bounded.
+    let finished = DispatchSemaphore(value: 0)
+    process.terminationHandler = { _ in finished.signal() }
     do {
         try process.run()
     } catch {
         return false
     }
-    process.waitUntilExit()
+    guard finished.wait(timeout: .now() + deadline) == .success else {
+        // SIGTERM first, then SIGKILL: a wedged helper that ignores the polite signal must not
+        // outlive the keypress that spawned it, and the caller falls through to `osascript`.
+        process.terminate()
+        if finished.wait(timeout: .now() + notifyGrace) != .success, process.isRunning {
+            kill(process.processIdentifier, SIGKILL)
+        }
+        return false
+    }
     return process.terminationStatus == 0
 }
 

@@ -87,4 +87,14 @@ REQUIREMENT="$(codesign -d -r- "$APP_DEST" 2>/dev/null \
 echo "  $APP_DEST   ($REQUIREMENT)"
 echo "  $AGENT      (log: $LOG)"
 echo
-echo "next: add docs/keymap.snippet.conf to ~/.config/agterm/keymap.conf && agtermctl keymap reload"
+# The order is load-bearing on a fresh install, and the daemon is already running by the time this
+# prints. The models load ONCE, at daemon start, and never on the attempt path (D10) -- so a daemon
+# started before they were fetched has already given up on them and refuses every dictation until it
+# is restarted. Fetching without the kickstart therefore looks installed and dictates nothing, and
+# the user finds out by pressing a chord and losing an utterance. `--fetch-models` prints the same
+# restart line when it finishes; it is repeated here because this is the page the order is read off.
+echo "next, in this order:"
+echo "  1. $APP_DEST/Contents/MacOS/Dicta --fetch-models   (once, ~600 MB; skip if already staged)"
+echo "  2. launchctl kickstart -k gui/$UID/$LABEL          (the running daemon loads models only"
+echo "                                                      at start, so it must be restarted)"
+echo "  3. add docs/keymap.snippet.conf to ~/.config/agterm/keymap.conf && agtermctl keymap reload"
