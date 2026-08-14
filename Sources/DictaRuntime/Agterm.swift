@@ -423,6 +423,28 @@ public struct ProcessRunner: CommandRunner {
     /// Five seconds is about 125x the measured cost of the slowest verb (`tree --json`, 38 ms, F4),
     /// so it is a wedge detector rather than a budget anything real has to fit inside.
     public static let defaultDeadline: TimeInterval = 5.0
+
+    /// How many of these calls ONE `stop` can make before the daemon answers, worst case.
+    ///
+    /// Enumerated rather than estimated, because `daemonCeilingsFitTheClientTimeout` multiplies it
+    /// by `defaultDeadline` to assert that the daemon is never willing to spend longer than
+    /// `ControlTimeouts.pipelineRead`. It read `3` -- "validate, session type, announce" -- which
+    /// left fifteen seconds standing in for what can be sixty, and the assertion passed while the
+    /// property it names did not hold. Every notification is TWO calls, not one: `Agterm.notify`
+    /// falls back to `osascript` when agtermctl will not answer, which is exactly the case where
+    /// both spend their whole deadline.
+    ///
+    ///  1. `.announce(.working)`
+    ///  2. the dictionary's degradation notice, and 3. its `osascript` fallback
+    ///  4. the filter's fallback notice, and 5. its `osascript` fallback (step 4's `Filter`; the
+    ///     seam is `NoFilter` today, and the budget must already fit when it is not)
+    ///  6. `validate` -- `agtermctl tree --json`
+    ///  7. `session type`
+    ///  8. the terminal `.announce(.done)` or `.announce(.blocked)`
+    ///  9. the delivery failure's `.notify`, and 10. its `osascript` fallback
+    /// 11. the record's "recovery is unavailable" notice, and 12. its `osascript` fallback
+    public static let worstCaseCallsPerStop = 12
+
     /// How long a child gets to honour SIGTERM before SIGKILL. A child that ignores the polite
     /// signal would otherwise hold this thread's pipes open, and the wedge would simply move here.
     private static let graceAfterTerminate: TimeInterval = 2.0

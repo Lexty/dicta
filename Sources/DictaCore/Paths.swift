@@ -44,15 +44,23 @@ public struct Paths: Sendable, Equatable {
 
     /// Creates the support directory if it is missing, and returns it. Idempotent, so a caller may
     /// invoke it on every start without checking first.
-    ///
-    /// `0700` is not decoration: it is the premise of the socket carrying no token.
     @discardableResult
     public func createSupportDirectory() throws -> URL {
+        try Self.createPrivateDirectory(support)
+        return support
+    }
+
+    /// Creates `directory` at `0700`, with intermediates. Every file dicta owns is created on
+    /// demand, by whichever of the socket, the record and the parked target gets there first —
+    /// each from a URL a test can redirect, so none of them can simply call
+    /// `createSupportDirectory()`. What they CAN share is this, and they must: `0700` is not
+    /// decoration, it is the premise of the socket carrying no token (see `socket`), and it was
+    /// open-coded at three call sites with the canonical one reachable from nothing but a test.
+    public static func createPrivateDirectory(_ directory: URL) throws {
         try FileManager.default.createDirectory(
-            at: support,
+            at: directory,
             withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700]
         )
-        return support
     }
 }

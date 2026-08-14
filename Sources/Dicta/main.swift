@@ -151,13 +151,13 @@ log("listening on \(controlSocket)")
 // cooperative thread on Darwin's non-overcommit pool is the deadlock CLAUDE.md records about the
 // control socket. It is also why this does not hold up the socket -- a chord arriving mid-load
 // waits for it inside `ParakeetTranscriber` and then recognises, rather than losing the utterance.
+// Missing models go through `prepare()` like any other load failure rather than being caught here
+// and returned on. `ParakeetEngine.loadModels` runs the same self-check and throws `modelsMissing`,
+// which `prepare()` publishes as `.failed` -- so every later chord fails with the sentence that
+// names `Dicta --fetch-models`. Returning early left the transcriber `.cold`, and a chord then hit
+// `notPrepared`: "this is a wiring bug in dicta, not a setting", in the desktop notification AND in
+// the record, for what is simply the state of a fresh install that has not fetched yet.
 let warmUp = Thread {
-    if let trouble = ParakeetModels.selfCheck() {
-        // Loud, before the first chord, and naming the remedy: a chord that discovers this has
-        // already recorded and thrown away an utterance (§7).
-        log("recognition is UNAVAILABLE -- \(trouble)")
-        return
-    }
     do {
         let summary = try transcriber.prepare()
         log(String(format: "recognition is warm: models loaded in %.1f s, dummy inference %.2f s",

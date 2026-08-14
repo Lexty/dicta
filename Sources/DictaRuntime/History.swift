@@ -67,11 +67,7 @@ public struct FileHistory: History, Sendable {
         let line = try Record.encode(entry)
         // Created on demand, `0700`, like the rest of the support directory: the record holds
         // every word the user has dictated, which is the most private file dicta owns.
-        try? FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
+        try? Paths.createPrivateDirectory(url.deletingLastPathComponent())
         let descriptor = open(url.path, O_WRONLY | O_APPEND | O_CREAT, 0o600)
         guard descriptor >= 0 else {
             throw HistoryError.cannotOpen(path: url.path, code: errno)

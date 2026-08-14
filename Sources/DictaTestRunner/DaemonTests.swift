@@ -1253,6 +1253,38 @@ struct DaemonTests {
         #expect(harness.daemon.currentAttempt?.id == second)
     }
 
+    @Test("a chord arriving as the cap is being written does not swallow the capped attempt")
+    func aCappedAttemptSurvivesTheNextChord() throws {
+        // The race the sequence number did NOT close. `apply` stamps its transition under the lock;
+        // everything after it runs unlocked, and the cap fires on the timer's thread while a chord
+        // arrives on the socket's. Between the two, the record's entry used to be built by reading
+        // `draft` again -- so a chord that started attempt N+1 in that window replaced the draft,
+        // the id no longer matched, and attempt N's line was never written. The user was told their
+        // ten minutes had been capped, and `record.jsonl` had nothing about it: D17 and property 2
+        // failing for the attempt that needs the record most.
+        //
+        // The clock is the deterministic stand-in for the second thread: the daemon reads it while
+        // building the entry, holding no lock, which is exactly the window.
+        let harness = Harness()
+        let capped = harness.startRecording()
+        let clock = harness.clock
+        let daemon = harness.daemon
+        clock.onceOnNextRead {
+            // A whole chord, resolved and accepted -- the machine is already idle by this point.
+            _ = daemon.handle(.request(Request(cmd: .toggle, sessionID: "S2", mode: .clean)))
+        }
+
+        harness.clock.advance(by: 600)
+
+        let entry = try #require(harness.history.appended.first { $0.id == capped })
+        #expect(entry.outcome == .capped)
+        #expect(entry.error?.contains("ten-minute") == true)
+        // And the attempt that interrupted it is genuinely running, so this is the interleaving it
+        // claims to be rather than a chord the daemon happened to refuse.
+        #expect(harness.daemon.state == .warming)
+        #expect(harness.daemon.currentAttempt?.id != capped)
+    }
+
     @Test("a fault that is not the cap is recorded as a capture fault, not as capped")
     func hardwareFaultIsNotCapped() throws {
         let harness = Harness()

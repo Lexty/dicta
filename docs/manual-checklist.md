@@ -86,6 +86,11 @@ refused or honoured, and the attempt finishes on its own. The window is about ha
 steady state (F1) and up to seventeen on the first chord after a rebuild, where the transcriber
 deliberately waits for the one start-up model load rather than losing the audio.
 
+The abort chord waits it out rather than giving up on it: `ControlTimeouts.read(for:)` gives `abort`
+the same `pipelineRead` ceiling as `stop`. With the short one it would expire inside that window and
+tell the user "dicta did not answer" — a desktop notification announcing a dead daemon, about a
+daemon that was at that moment typing their text.
+
 The consequence is bounded rather than dangerous: `injecting × abort` would be refused anyway (D20),
 so only `processing × abort` differs from the table, and it differs by delivering a dictation the
 user tried to cancel late. Making the two reachable means answering the command before performing

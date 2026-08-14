@@ -477,7 +477,7 @@ struct ControlSocketTests {
 
     // MARK: - what a verb is allowed to cost
 
-    @Test("the verbs that carry the whole pipeline wait longer than the ones that do not")
+    @Test("every verb a chord can send waits out the pipeline it may be queued behind")
     func pipelineVerbsGetTheLongerRead() {
         // The daemon does NOT answer before doing the work: `stop` returns only after recognition
         // and the keystrokes. Three seconds was therefore a ceiling on the pipeline, and the first
@@ -488,9 +488,17 @@ struct ControlSocketTests {
         // `toggle` too, because the start-or-stop decision belongs to the daemon (D7) -- the client
         // cannot know which direction its own chord will resolve.
         #expect(ControlTimeouts.read(for: .toggle) == ControlTimeouts.pipelineRead)
-        for quick in [Command.status, .last, .start, .abort] {
-            #expect(ControlTimeouts.read(for: quick) == ControlTimeouts.clientRead,
-                    "\(quick.rawValue) performs no work and must fail fast")
+        // And `start` and `abort`, which perform no work of their OWN and are still bounded by the
+        // pipeline: `serve` takes `handlerLock` for every command, so both queue behind a `stop`
+        // that is still recognising. Abort is the worst of the two to get wrong -- it is what the
+        // user presses when nothing seems to be happening, i.e. exactly while the daemon is slow.
+        for chord in [Command.start, .abort] {
+            #expect(ControlTimeouts.read(for: chord) == ControlTimeouts.pipelineRead,
+                    "\(chord.rawValue) queues behind the handler lock and must not cry wolf")
+        }
+        for typed in [Command.status, .last] {
+            #expect(ControlTimeouts.read(for: typed) == ControlTimeouts.clientRead,
+                    "\(typed.rawValue) is typed by hand and costs no utterance")
         }
         #expect(ControlTimeouts.pipelineRead > ControlTimeouts.clientRead)
     }

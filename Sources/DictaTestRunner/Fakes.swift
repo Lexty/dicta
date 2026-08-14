@@ -359,12 +359,33 @@ public final class FakeClock: Clock, @unchecked Sendable {
     private var current: Date
     private var pending: [Pending] = []
     private var sequence = 0
+    private var onNextRead: (@Sendable () -> Void)?
 
     public init(now: Date = Date(timeIntervalSince1970: 1_766_000_000)) {
         current = now
     }
 
-    public var now: Date { lock.withLock { current } }
+    /// Runs `body` on the next reading of `now`, once, and then forgets it.
+    ///
+    /// A deterministic stand-in for a second thread arriving mid-`apply`. The daemon reads the
+    /// clock while it is building a record entry and holding no lock, which is precisely the window
+    /// a chord can land in -- and `advance` cannot express that, because the work it fires runs
+    /// between applications rather than inside one.
+    public func onceOnNextRead(_ body: @escaping @Sendable () -> Void) {
+        lock.withLock { onNextRead = body }
+    }
+
+    public var now: Date {
+        // Taken and cleared under the lock, then run OUTSIDE it: the body re-enters the daemon,
+        // which schedules timers, which takes this same non-recursive lock.
+        let hook = lock.withLock { () -> (@Sendable () -> Void)? in
+            let hook = onNextRead
+            onNextRead = nil
+            return hook
+        }
+        hook?()
+        return lock.withLock { current }
+    }
 
     /// Work scheduled and not yet fired or cancelled -- the evidence that a watchdog was armed, and
     /// that finishing an attempt disarms it.

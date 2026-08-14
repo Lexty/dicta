@@ -405,15 +405,25 @@ public final class Daemon: @unchecked Sendable {
         // armed was disarmed and the target it had just parked was unparked. Attempt N+1 then sat
         // in `warming` for ever if capture never confirmed -- with no watchdog, which is the one
         // case the watchdog exists for -- and refused every later chord as "already recording".
-        let (before, transition, phase, sequence) = stateLock.withLock {
+        //
+        // The draft the record needs is snapshotted in that SAME critical section, for the same
+        // reason and against the same interleaving. Reading it afterwards, as `recordEnd` used to,
+        // left the one gap the sequence number does not close: a fault ending attempt N could leave
+        // the lock, be descheduled, and find `draft` already replaced by attempt N+1's when it came
+        // back -- `record`'s `current.id == id` guard then matched nothing and the line was never
+        // written. Attempt N vanished from `record.jsonl` entirely, which is D17 and property 2
+        // breaking for precisely the capped and faulted attempts §9 exists to preserve.
+        let (transition, phase, sequence, ending) = stateLock.withLock {
             let before = machine.phase
             let transition = machine.apply(event)
             transitionSequence += 1
-            return (before, transition, machine.phase, transitionSequence)
+            let ending = endingLocked(event, before: before, after: machine.phase,
+                                      transition: transition)
+            return (transition, machine.phase, transitionSequence, ending)
         }
         // Before `sync`, which drops the draft when the attempt is over, and before the effects, so
         // that the notification the user reads is never ahead of the entry that explains it.
-        recordEnd(event, before: before, after: phase, transition: transition)
+        if let ending { append(ending.draft, outcome: ending.outcome) }
         // Before the effects, so that `.beginCapture` and `.drainCapture` are already being watched
         // when they are performed -- a capture that reports synchronously would otherwise leave a
         // watchdog armed on an attempt that has already moved on.
@@ -629,61 +639,92 @@ public final class Daemon: @unchecked Sendable {
 
     // MARK: - the record (§9)
 
-    /// Writes the entry for an attempt that has ended, choosing §9's outcome from the event that
-    /// ended it. The delivery outcomes are absent on purpose: `deliver` owns those, because the
-    /// entry has to exist BEFORE the keystrokes it describes (invariant 10).
-    private func recordEnd(_ event: Event, before: Phase, after: Phase, transition: Transition) {
+    /// What the record needs about an attempt that has just ended, taken whole so that appending
+    /// the line needs nothing from the daemon's state afterwards.
+    private struct Ending {
+        let draft: Draft
+        let outcome: AttemptOutcome
+    }
+
+    /// Decides §9's outcome for an attempt that has ended, and snapshots the draft it will be
+    /// written from. **Called with `stateLock` held**, inside the same critical section as the
+    /// transition -- see `apply`. The delivery outcomes are absent on purpose: `deliver` owns
+    /// those, because the entry has to exist BEFORE the keystrokes it describes (invariant 10).
+    private func endingLocked(_ event: Event, before: Phase, after: Phase,
+                              transition: Transition) -> Ending? {
         guard let attempt = before.attempt, after.attempt == nil,
               // A rejected or ignored command ended nothing, so it is not an attempt of its own.
-              transition.outcome == .accepted
-        else { return }
+              transition.outcome == .accepted,
+              var snapshot = draft, snapshot.id == attempt.id
+        else { return nil }
         let outcome: AttemptOutcome
         switch event {
         case .injectionFinished:
-            return
+            return nil
         case .fault:
             // Never `empty`, whatever stage it arrived in (invariant 7). D15's cap is the one fault
             // with its own outcome, and the entry still carries whatever text was produced -- which
             // is the whole of "record whatever text was produced" in §7's cap row: the draft is
             // written as it stands, recognised text included.
-            outcome = takeFaultKind(attempt.id) == .durationCap ? .capped : .captureFault
+            //
+            // The kind is consumed here rather than through a second lock acquisition, so that a
+            // fault on the NEXT attempt landing in between cannot make this one read as a plain
+            // capture fault when it was D15's cap.
+            var kind: FaultKind?
+            if let held = faultKind, held.attempt == attempt.id {
+                kind = held.kind
+                faultKind = nil
+            }
+            outcome = kind == .durationCap ? .capped : .captureFault
         case let .recognised(_, result):
             switch result {
-            case .text: return // moves to `injecting`; the attempt has not ended
+            case .text: return nil // moves to `injecting`; the attempt has not ended
             case .empty: outcome = .empty
             case .failed: outcome = .recognitionFailed
             }
         case .start, .captureReady, .captureDrained:
-            return // none of these can end an attempt
+            return nil // none of these can end an attempt
         case .stop, .abort, .toggle:
             // Including a stop while `warming`, which §6 calls a cancel: no audio existed, so there
             // is nothing to report but the reason.
             outcome = .aborted
         }
-        record(attempt.id, outcome: outcome, error: transition.message)
+        // The note goes onto the SNAPSHOT and is not written back: the attempt is over, so `sync`
+        // is about to drop the draft anyway, and a write-back would be a second chance to touch a
+        // draft that may by then belong to the attempt after this one.
+        if let message = transition.message { snapshot.notes.append(message) }
+        return Ending(draft: snapshot, outcome: outcome)
     }
 
     /// Appends one line for `id`, built from its draft. Called at most twice per attempt, and only
     /// ever a second time to supersede the pre-injection line with the delivery's verdict.
+    ///
+    /// This is `deliver`'s route, and it reads the live draft because the attempt is still in
+    /// flight. An attempt that has ENDED goes through `endingLocked` instead.
     private func record(_ id: AttemptID, outcome: AttemptOutcome, error: String? = nil) {
-        let now = clock.now
-        let entry = stateLock.withLock { () -> RecordEntry? in
+        let snapshot = stateLock.withLock { () -> Draft? in
             guard var current = draft, current.id == id else { return nil }
             if let error { current.notes.append(error) }
             draft = current
-            return RecordEntry(
-                id: current.id,
-                at: now,
-                outcome: outcome,
-                mode: current.mode,
-                recognised: current.recognised,
-                final: current.final,
-                rules: current.rules,
-                target: current.target,
-                error: current.notes.isEmpty ? nil : current.notes.joined(separator: "; ")
-            )
+            return current
         }
-        guard let entry else { return }
+        guard let snapshot else { return }
+        append(snapshot, outcome: outcome)
+    }
+
+    /// The one place a line reaches the record, whichever route produced the draft.
+    private func append(_ draft: Draft, outcome: AttemptOutcome) {
+        let entry = RecordEntry(
+            id: draft.id,
+            at: clock.now,
+            outcome: outcome,
+            mode: draft.mode,
+            recognised: draft.recognised,
+            final: draft.final,
+            rules: draft.rules,
+            target: draft.target,
+            error: draft.notes.isEmpty ? nil : draft.notes.joined(separator: "; ")
+        )
         do {
             try history.append(entry)
         } catch {
@@ -720,16 +761,6 @@ public final class Daemon: @unchecked Sendable {
             guard let held = drained, held.attempt == id else { return nil }
             drained = nil
             return held.audio
-        }
-    }
-
-    /// The kind of the fault that ended `id`, consumed as it is read. `nil` for an attempt that
-    /// ended some other way, which is why the caller may not assume a fault ever happened.
-    private func takeFaultKind(_ id: AttemptID) -> FaultKind? {
-        stateLock.withLock {
-            guard let held = faultKind, held.attempt == id else { return nil }
-            faultKind = nil
-            return held.kind
         }
     }
 
@@ -912,11 +943,8 @@ public final class Daemon: @unchecked Sendable {
         guard let parked else { return }
         // Best effort: a target that cannot be parked costs a stale indicator after a crash that
         // has not happened, and an attempt is never blocked over it.
-        try? FileManager.default.createDirectory(
-            at: configuration.activeTargetFile.deletingLastPathComponent(),
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
+        try? Paths.createPrivateDirectory(
+            configuration.activeTargetFile.deletingLastPathComponent())
         if let data = try? JSONEncoder().encode(parked) {
             try? data.write(to: configuration.activeTargetFile, options: .atomic)
         }

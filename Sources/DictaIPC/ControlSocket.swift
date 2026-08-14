@@ -25,9 +25,10 @@ public enum ControlTimeouts {
     /// A local `connect(2)` either succeeds at once or fails; this only bounds the case where the
     /// daemon is alive but its accept backlog is full.
     public static let connect: TimeInterval = 0.5
-    /// How long the client waits for the answer to a command that performs no work — `status`,
-    /// `last`, `abort`, `start`. These return as fast as the daemon can take its lock, so anything
-    /// past a few seconds is a daemon that is not answering rather than one that is thinking.
+    /// How long the client waits for the answer to a command that performs no work and is typed by
+    /// hand — `status` and `last`. These return as fast as the daemon can take its lock, so
+    /// anything past a few seconds is a daemon that is not answering rather than one thinking; and
+    /// when the guess is wrong, the cost is a re-run of a diagnostic rather than an utterance.
     public static let clientRead: TimeInterval = 3.0
     /// How long the client waits for a command that carries the **whole remainder of an attempt**.
     ///
@@ -54,18 +55,32 @@ public enum ControlTimeouts {
     /// that is dead or gone in well under a second; this timeout is only ever reached by a daemon
     /// that accepted the command and is grinding on it, and giving up on that one is what costs an
     /// utterance.
-    public static let pipelineRead: TimeInterval = 120.0
+    ///
+    /// 180 rather than 120 because the sum was recounted: `patience` (60) + `inferenceCeiling` (30)
+    /// + `ProcessRunner.worstCaseCallsPerStop` × `defaultDeadline` (60) is 150, and 120 sat under
+    /// its own daemon's budget.
+    public static let pipelineRead: TimeInterval = 180.0
     /// How long the server waits for a connected client to say something. Bounds a client that
     /// connects and then wanders off.
     public static let serverRead: TimeInterval = 2.0
 
-    /// The read timeout a verb deserves. `stop` and `toggle` are the two that can carry the
-    /// pipeline — `toggle` because the start-or-stop decision belongs to the daemon (D7), so the
-    /// client cannot know which direction it will resolve.
+    /// The read timeout a verb deserves. Every verb a CHORD can send gets the pipeline's ceiling.
+    ///
+    /// `stop` and `toggle` are the two that carry the pipeline themselves — `toggle` because the
+    /// start-or-stop decision belongs to the daemon (D7), so the client cannot know which direction
+    /// it will resolve. `start` and `abort` perform no work of their own, but `ControlServer.serve`
+    /// takes `handlerLock` for every command, so either can be QUEUED BEHIND a pipeline that is
+    /// still running. Three seconds there reproduces the misreport `pipelineRead` exists to remove,
+    /// on the one control the user reaches for when nothing seems to be happening: `dictactl abort`
+    /// gives up, says "dicta did not answer within 3.0 s" and fires the desktop notification, about
+    /// a daemon that is at that moment typing the text.
+    ///
+    /// `status` and `last` keep the short one deliberately — they are typed by hand, they cost no
+    /// utterance, and a diagnostic that hangs for two minutes is worse than one that is re-run.
     public static func read(for command: Command) -> TimeInterval {
         switch command {
-        case .stop, .toggle: pipelineRead
-        case .status, .last, .start, .abort: clientRead
+        case .stop, .toggle, .start, .abort: pipelineRead
+        case .status, .last: clientRead
         }
     }
 }
@@ -279,11 +294,7 @@ public final class ControlServer: @unchecked Sendable {
     /// stale-socket check probes by connecting rather than by looking at the file.
     public func start() throws {
         let directory = (path as NSString).deletingLastPathComponent
-        try? FileManager.default.createDirectory(
-            atPath: directory,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
+        try? Paths.createPrivateDirectory(URL(fileURLWithPath: directory, isDirectory: true))
         try clearStaleSocket()
 
         var address: sockaddr_un
@@ -377,23 +388,57 @@ public final class ControlServer: @unchecked Sendable {
         unlink(path)
     }
 
+    /// Errors that say "not now" rather than "not ever". Fatal for the front door is the wrong
+    /// reading of every one of them: the loop exits, the process stays alive, the socket file stays
+    /// on disk with nobody behind it, and every later chord gets ECONNREFUSED and reports "the
+    /// daemon died" -- while `KeepAlive` sees a healthy process and never restarts it. That is the
+    /// unrecoverable-without-`launchctl kickstart` failure `ProcessRunner.defaultDeadline` exists
+    /// to prevent, arriving through the other door. `EMFILE`/`ENFILE` are the realistic ones
+    /// here: a thread and a descriptor per connection, against a per-process descriptor limit.
+    private static func acceptIsRetryable(_ code: Int32) -> Bool {
+        [EINTR, ECONNABORTED, EAGAIN, EWOULDBLOCK, EMFILE, ENFILE, ENOBUFS, ENOMEM]
+            .contains(code)
+    }
+
     private func acceptLoop() {
-        while let (listenDescriptor, wakeupRead) = listening {
+        /// Whether the loop is leaving because it was ASKED to. Anything else leaves a socket file
+        /// no client can be answered on, and the path is unlinked on the way out so that `dictactl`
+        /// reports "dicta is not running" -- true, and actionable -- instead of "the daemon died".
+        var askedToStop = false
+        while true {
+            // `running` is cleared by `stop` and by this loop's own exit, so losing it here is a
+            // request too -- and unlinking on it would race a `start` that has already rebound the
+            // path underneath us.
+            guard let (listenDescriptor, wakeupRead) = listening else {
+                askedToStop = true
+                break
+            }
             var descriptors = [
                 pollfd(fd: listenDescriptor, events: Int16(POLLIN), revents: 0),
                 pollfd(fd: wakeupRead, events: Int16(POLLIN), revents: 0),
             ]
             let ready = poll(&descriptors, 2, -1)
             if ready < 0 {
-                if errno == EINTR { continue }
+                if Self.acceptIsRetryable(errno) {
+                    // Descriptor exhaustion returns immediately and would spin this thread at 100%
+                    // against a condition only another thread can clear.
+                    if errno != EINTR { usleep(50_000) }
+                    continue
+                }
                 break
             }
-            if descriptors[1].revents != 0 { break }
+            if descriptors[1].revents != 0 {
+                askedToStop = true
+                break
+            }
             guard descriptors[0].revents != 0 else { continue }
 
             let client = accept(listenDescriptor, nil, nil)
             guard client >= 0 else {
-                if errno == EINTR || errno == ECONNABORTED { continue }
+                if Self.acceptIsRetryable(errno) {
+                    if errno != EINTR, errno != ECONNABORTED { usleep(50_000) }
+                    continue
+                }
                 break
             }
             silenceSIGPIPE(client)
@@ -425,6 +470,10 @@ public final class ControlServer: @unchecked Sendable {
             wakeupRead = -1
             wakeupWrite = -1
         }
+        // `stop` unlinks on its own path, and only after `exited` -- so this is the case it cannot
+        // reach: the loop died of its own accord, `running` is already false, and `stop` would
+        // return at its `guard` without touching the file.
+        if !askedToStop { unlink(path) }
         exited.signal()
     }
 

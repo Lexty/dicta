@@ -185,6 +185,35 @@ struct TranscriberTests {
         #expect(engine.loadCount == 1)
     }
 
+    @Test("an inference abandoned at its ceiling refuses the next chord instead of hanging again")
+    func anAbandonedInferenceIsNotRetried() throws {
+        // `Blocking.run` gives up on an inference; the `Task` it leaves behind does not. It is
+        // still inside FluidAudio's `AsrManager`, which is an actor -- so the NEXT inference
+        // queues behind it and spends the whole ceiling to arrive at the same place. Left
+        // unlatched, one wedged inference turns into every later dictation costing thirty
+        // seconds and reporting a slow recogniser rather than a dead one.
+        let engine = CountingEngine(text: "never reached")
+        let transcriber = ParakeetTranscriber(engine: engine)
+        try transcriber.prepare()
+        engine.setRecogniseError(RecognitionError.timedOut(seconds: 30))
+
+        let first = #expect(throws: RecognitionError.self) {
+            _ = try transcriber.transcribe(Audio(samples: [0.5], sampleRate: 16_000))
+        }
+        #expect(try #require(first) == RecognitionError.abandoned(seconds: 30))
+
+        // The engine is not asked again -- which is the whole point, since asking is what costs the
+        // thirty seconds -- and the sentence names the remedy rather than describing slowness.
+        let heardBefore = engine.heardAudio.count
+        engine.setRecogniseError(nil) // it would answer now; the transcriber must not ask.
+        let second = #expect(throws: RecognitionError.self) {
+            _ = try transcriber.transcribe(Audio(samples: [0.5], sampleRate: 16_000))
+        }
+        #expect(engine.heardAudio.count == heardBefore)
+        #expect("\(try #require(second))".contains("restart the daemon"))
+        #expect(!transcriber.isReady)
+    }
+
     @Test("a chord arriving while the models are still loading waits instead of losing the audio")
     func anAttemptWaitsForALoadInFlight() throws {
         let engine = CountingEngine(text: "waited")
@@ -329,7 +358,13 @@ struct TranscriberTests {
         //
         // These four numbers live in three files and were set independently; before this assertion
         // existed they read 120 + 60 against a client that gave up at 30.
-        let agtermCalls = ProcessRunner.defaultDeadline * 3 // validate, session type, announce
+        // Every bounded subprocess the stop path can make, counted on `ProcessRunner` itself rather
+        // than guessed at here. This used to read `* 3` -- "validate, session type, announce" --
+        // and the real path makes up to twelve, because each notification carries an `osascript`
+        // fallback and there are four of them. The assertion held only by undercounting the thing
+        // it exists to bound.
+        let calls = Double(ProcessRunner.worstCaseCallsPerStop)
+        let agtermCalls = ProcessRunner.defaultDeadline * calls
         let worstCase = Double(ParakeetTranscriber.patience)
             + Double(ParakeetEngine.inferenceCeiling)
             + agtermCalls

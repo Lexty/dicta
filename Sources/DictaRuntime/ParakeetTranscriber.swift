@@ -49,6 +49,9 @@ public enum RecognitionError: Error, Equatable, CustomStringConvertible {
     case loadFailed(String)
     /// The load, or an inference, outran its ceiling. See `ParakeetTranscriber.patience`.
     case timedOut(seconds: Int)
+    /// An inference outran its ceiling and was ABANDONED, and the recogniser has been written off
+    /// for the life of this process. See `ParakeetTranscriber.transcribe`.
+    case abandoned(seconds: Int)
 
     public var description: String {
         switch self {
@@ -62,6 +65,9 @@ public enum RecognitionError: Error, Equatable, CustomStringConvertible {
             "the recognition models could not be loaded: \(reason)"
         case let .timedOut(seconds):
             "the recogniser did not answer within \(seconds) s -- nothing was typed"
+        case let .abandoned(seconds):
+            "the recogniser stopped answering (an inference outran its \(seconds) s ceiling and is "
+                + "still running) -- restart the daemon; nothing was typed"
         }
     }
 }
@@ -239,7 +245,23 @@ public final class ParakeetTranscriber: Transcriber, @unchecked Sendable {
 
     public func transcribe(_ audio: Audio) throws -> String {
         try awaitReadiness()
-        return try engine.recognise(audio)
+        do {
+            return try engine.recognise(audio)
+        } catch let error as RecognitionError {
+            // An inference that outran its ceiling was ABANDONED, not cancelled: `Blocking.run`
+            // stops waiting and leaves its `Task` inside FluidAudio's `AsrManager`, which is an
+            // actor. Every later inference queues behind it and times out too, so recognition is
+            // over until the process restarts. Latching that here turns thirty wasted seconds per
+            // chord, with a message that reads like a slow machine, into an immediate refusal
+            // naming the remedy -- and it is the transcriber's to latch, because "is recognition
+            // available" is the one question this type exists to answer.
+            if case let .timedOut(seconds) = error {
+                let wedge = RecognitionError.abandoned(seconds: seconds)
+                publish(.failed(wedge))
+                throw wedge
+            }
+            throw error
+        }
     }
 
     /// Blocks until the state is `ready`, or throws the reason it never will be.
