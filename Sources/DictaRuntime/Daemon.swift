@@ -60,18 +60,29 @@ public final class Daemon: @unchecked Sendable {
         /// capture that never hands the audio over holds `recording` forever and every later chord
         /// is refused with "already recording".
         public var drainTimeout: TimeInterval
+        /// D15's cap, counted from the moment capture confirms it is running. Ten minutes of
+        /// forgotten, unrelated speech landing in an agent's prompt is worse than losing it.
+        ///
+        /// It lives here rather than inside `AudioCapture` for two reasons. It must outlast the
+        /// device: a drain that wedges after nine minutes is still a capped attempt, and a timer
+        /// owned by the engine would die with it. And the daemon is what holds the injected `Clock`
+        /// (§7's watchdog), so this is the only place where "ten minutes" has a test that does not
+        /// take ten minutes.
+        public var durationCap: TimeInterval
 
         public init(
             socketPath: String = Paths.current.socket.path,
             activeTargetFile: URL = Paths.current.support
                 .appendingPathComponent("active-target.json"),
             warmupTimeout: TimeInterval = 5,
-            drainTimeout: TimeInterval = 10
+            drainTimeout: TimeInterval = 10,
+            durationCap: TimeInterval = 600
         ) {
             self.socketPath = socketPath
             self.activeTargetFile = activeTargetFile
             self.warmupTimeout = warmupTimeout
             self.drainTimeout = drainTimeout
+            self.durationCap = durationCap
         }
     }
 
@@ -135,6 +146,15 @@ public final class Daemon: @unchecked Sendable {
     private var terminal: Terminal
     private var watched: Watched = .nothing
     private var watchdog: (any ScheduledWork)?
+    /// D15's cap, and the attempt it is counting for. Separate from the watchdog because the two
+    /// overlap: a stop chord at 9:58 arms the drain watchdog while the cap is still running.
+    private var capped: AttemptID?
+    private var capTimer: (any ScheduledWork)?
+    /// Which kind of capture fault the live attempt suffered, parked here between capture reporting
+    /// it and `recordEnd` choosing §9's outcome. The state machine deliberately does not carry it:
+    /// every fault cancels the attempt identically (D16), and only the record and the wording
+    /// differ (D15).
+    private var faultKind: (attempt: AttemptID, kind: FaultKind)?
     private var server: ControlServer?
 
     // MARK: - construction
@@ -201,6 +221,7 @@ public final class Daemon: @unchecked Sendable {
         server?.stop()
         server = nil
         setWatchdog(.nothing)
+        setCap(nil)
     }
 
     /// §7's stale-indicator row. The parked file exists only while an attempt is live, so finding
@@ -391,11 +412,19 @@ public final class Daemon: @unchecked Sendable {
             // an abandoned attempt cannot become the next attempt's audio.
             stateLock.withLock { drained = (id, audio) }
             apply(.captureDrained(id))
-        case let .fault(id, reason):
+        case let .fault(id, kind, reason):
             // Always discards, never injects (D16, invariant 6), and always worded as a hardware
             // fault rather than as silence (invariant 7) -- the reason travels from capture.
-            apply(.fault(id, reason: reason))
+            faulted(id, kind: kind, reason: reason)
         }
+    }
+
+    /// Every capture fault goes through here, whatever raised it: the device, the watchdog, or
+    /// D15's cap. The kind is parked before the event so that `recordEnd`, which runs inside
+    /// `apply`, can tell `capped` from `capture-fault` (§9).
+    private func faulted(_ id: AttemptID, kind: FaultKind, reason: String) {
+        stateLock.withLock { faultKind = (id, kind) }
+        apply(.fault(id, reason: reason))
     }
 
     // MARK: - the text pipeline (§2)
@@ -519,9 +548,11 @@ public final class Daemon: @unchecked Sendable {
         case .injectionFinished:
             return
         case .fault:
-            // Never `empty`, whatever stage it arrived in (invariant 7). Task 9 splits the duration
-            // cap out of this row as `capped` (D15).
-            outcome = .captureFault
+            // Never `empty`, whatever stage it arrived in (invariant 7). D15's cap is the one fault
+            // with its own outcome, and the entry still carries whatever text was produced -- which
+            // is the whole of "record whatever text was produced" in §7's cap row: the draft is
+            // written as it stands, recognised text included.
+            outcome = takeFaultKind(attempt.id) == .durationCap ? .capped : .captureFault
         case let .recognised(_, result):
             switch result {
             case .text: return // moves to `injecting`; the attempt has not ended
@@ -598,6 +629,16 @@ public final class Daemon: @unchecked Sendable {
         }
     }
 
+    /// The kind of the fault that ended `id`, consumed as it is read. `nil` for an attempt that
+    /// ended some other way, which is why the caller may not assume a fault ever happened.
+    private func takeFaultKind(_ id: AttemptID) -> FaultKind? {
+        stateLock.withLock {
+            guard let held = faultKind, held.attempt == id else { return nil }
+            faultKind = nil
+            return held.kind
+        }
+    }
+
     private func takeFinal(_ id: AttemptID) -> String? {
         stateLock.withLock {
             guard let held = pendingFinal, held.attempt == id else { return nil }
@@ -646,15 +687,43 @@ public final class Daemon: @unchecked Sendable {
         switch phase {
         case .idle:
             setWatchdog(.nothing)
+            setCap(nil)
             unpark()
         case let .warming(attempt):
             park(attempt)
             setWatchdog(.warming(attempt.id))
+        case let .recording(attempt):
+            setWatchdog(.nothing)
+            // Armed here rather than at the keypress: the cap bounds how long the user has been
+            // *speaking*, and `warming` is bounded by its own watchdog. It is deliberately NOT
+            // disarmed by the stop chord -- an attempt that stops at 9:59 and then wedges in its
+            // drain is still ten minutes of audio nobody is waiting for.
+            setCap(attempt.id)
         case let .draining(attempt, _):
             setWatchdog(.draining(attempt.id))
-        case .recording, .processing, .injecting:
+        case .processing, .injecting:
             setWatchdog(.nothing)
         }
+    }
+
+    /// Arms or disarms D15's cap. Idempotent per attempt: re-arming on every event would push the
+    /// deadline away, and ten minutes of speech punctuated by chords would never reach it.
+    private func setCap(_ attempt: AttemptID?) {
+        let changed = stateLock.withLock { () -> Bool in
+            guard capped != attempt else { return false }
+            capped = attempt
+            capTimer?.cancel()
+            capTimer = nil
+            return true
+        }
+        guard changed, let attempt else { return }
+        let work = clock.schedule(after: configuration.durationCap) { [weak self] in
+            // A capture fault like any other -- discard, no injection (D16, invariant 6) -- with
+            // its own §9 outcome and its own words, because "ten minutes elapsed" is the one fault
+            // the user caused and can avoid.
+            self?.faulted(attempt, kind: .durationCap, reason: FaultReason.durationCap)
+        }
+        stateLock.withLock { capTimer = work }
     }
 
     private func setWatchdog(_ next: Watched) {
@@ -682,7 +751,7 @@ public final class Daemon: @unchecked Sendable {
         let work = clock.schedule(after: seconds) { [weak self] in
             // A capture fault, in the machine's own vocabulary: discard, no injection, and reported
             // as a hardware fault rather than as silence (§7, D16, invariant 7).
-            self?.apply(.fault(id, reason: reason))
+            self?.faulted(id, kind: .hardware, reason: reason)
         }
         stateLock.withLock { watchdog = work }
     }

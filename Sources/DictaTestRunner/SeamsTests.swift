@@ -131,7 +131,20 @@ struct SeamsTests {
         capture.discard(attempt: 1)
         capture.reportFault(1, reason: "the input device went away")
 
-        #expect(events.all == [.fault(1, reason: "the input device went away")])
+        #expect(events.all == [.fault(1, kind: .hardware, reason: "the input device went away")])
+    }
+
+    @Test("the fault kind travels with the fault, so the record can tell a cap from a device")
+    func faultKindTravels() {
+        // D15's cap and a dead device are the same event to the state machine and different rows in
+        // §9. The kind is how the daemon tells them apart, so it has to survive the seam.
+        let capture = FakeCapture()
+        let events = EventLog()
+        capture.begin(attempt: 7) { events.append($0) }
+        capture.reportFault(7, kind: .durationCap, reason: FaultReason.durationCap)
+
+        #expect(events.all
+            == [.fault(7, kind: .durationCap, reason: FaultReason.durationCap)])
     }
 
     // MARK: - delivery

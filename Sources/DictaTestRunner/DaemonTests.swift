@@ -43,6 +43,22 @@ struct DaemonTests {
         }
     }
 
+    /// A pass-through filter that runs the test's own code from inside `processing`.
+    ///
+    /// The only way to observe a rule about a state that lasts one synchronous call: the duration
+    /// cap coming due while the recogniser's text exists and the attempt has not ended (D15).
+    final class HookedFilter: Filter, @unchecked Sendable {
+        private let lock = NSLock()
+        private var hook: (@Sendable () -> Void)?
+
+        func setHook(_ hook: @escaping @Sendable () -> Void) { lock.withLock { self.hook = hook } }
+
+        func filter(_ text: String) throws -> String {
+            lock.withLock { hook }?()
+            return text
+        }
+    }
+
     /// Everything a daemon needs, in a temporary directory, with every seam faked.
     final class Harness {
         let directory: URL
@@ -63,7 +79,9 @@ struct DaemonTests {
         init(pane: Pane = .left,
              warmupTimeout: TimeInterval = 5,
              drainTimeout: TimeInterval = 10,
+             durationCap: TimeInterval = 600,
              transcriber: (any Transcriber)? = nil,
+             filter: (any Filter)? = nil,
              injector: (any Injector)? = nil,
              history: (any History)? = nil) {
             // `/tmp` rather than the per-user temp directory, for the reason `ControlSocketTests`
@@ -79,11 +97,12 @@ struct DaemonTests {
                     socketPath: directory.appendingPathComponent("c.sock").path,
                     activeTargetFile: directory.appendingPathComponent("active-target.json"),
                     warmupTimeout: warmupTimeout,
-                    drainTimeout: drainTimeout
+                    drainTimeout: drainTimeout,
+                    durationCap: durationCap
                 ),
                 capture: capture,
                 transcriber: transcriber ?? self.transcriber,
-                filter: filter,
+                filter: filter ?? self.filter,
                 history: history ?? self.history,
                 clock: clock,
                 resolver: resolver,
@@ -630,17 +649,157 @@ struct DaemonTests {
         #expect(harness.daemon.state == .idle)
     }
 
-    @Test("recording is not watched, so a long dictation is not faulted")
+    @Test("recording is watched only by the cap, so a nine-minute dictation is not faulted")
     func recordingIsNotWatchdogged() {
-        // The duration cap is the bound on `recording` (D15), and it arrives with real capture in
-        // Task 9. A watchdog here would end a legitimate two-minute dictation.
+        // The duration cap is the only bound on `recording` (D15). A watchdog here would end a
+        // legitimate two-minute dictation, which is why `recording` has none.
         let harness = Harness()
         harness.startRecording()
 
-        harness.clock.advance(by: 600)
+        harness.clock.advance(by: 599)
 
         #expect(harness.daemon.state == .recording)
         #expect(harness.notifier.announcements == [.listening])
+    }
+
+    // MARK: - the duration cap (D15)
+
+    @Test("ten minutes of recording ends the attempt, injects nothing, and says why")
+    func capEndsALongRecording() throws {
+        let harness = Harness()
+        let id = harness.startRecording()
+
+        harness.clock.advance(by: 600)
+
+        #expect(harness.daemon.state == .idle)
+        // Invariant 6 through D15: the cap is a capture fault, and a capture fault never injects.
+        #expect(harness.injector.delivered.isEmpty)
+        #expect(harness.transcriber.transcribed.isEmpty)
+        #expect(harness.capture.callLog == [.begin(id), .discard(id)])
+        #expect(harness.notifier.announcements == [.listening, .blocked])
+        let message = try #require(harness.notifier.messages.first)
+        #expect(message == FaultReason.durationCap)
+        // §9 gives the cap its own outcome, so a human reading the record with `tail` can tell "you
+        // spoke for ten minutes" from "the device went away".
+        let entry = try #require(harness.history.appended.last)
+        #expect(entry.id == id)
+        #expect(entry.outcome == .capped)
+        #expect(entry.error?.contains("ten-minute") == true)
+    }
+
+    @Test("a cap firing while the text is being processed still records the text it produced")
+    func capDuringProcessingKeepsTheText() throws {
+        // D15's second half: the audio is discarded and nothing is injected, but whatever text was
+        // produced is still logged. `processing` lasts exactly as long as the seam calls inside it,
+        // so the cap is fired from inside the filter -- the point at which the recogniser's output
+        // exists and the attempt has not ended.
+        let filter = HookedFilter()
+        let harness = Harness(filter: filter)
+        // The clock rather than the harness: `FakeClock` is the only part of it the hook needs, and
+        // it is the only part that is `Sendable`.
+        let clock = harness.clock
+        filter.setHook { clock.advance(by: 600) }
+
+        let id = harness.startRecording()
+        harness.chord()
+        harness.capture.reportDrained(id)
+
+        #expect(harness.daemon.state == .idle)
+        #expect(harness.injector.delivered.isEmpty)
+        let entry = try #require(harness.history.appended.last)
+        #expect(entry.id == id)
+        #expect(entry.outcome == .capped)
+        // The text the attempt DID produce, in the record and nowhere else -- which is the only
+        // route by which the user can still recover it with `dictactl last --recognised`.
+        #expect(entry.recognised == FakeTranscriber.hostileText)
+    }
+
+    @Test("the cap is not disarmed by the stop chord, because a wedged drain is still ten minutes")
+    func capSurvivesTheStopChord() throws {
+        let harness = Harness(drainTimeout: 3_600)
+        let id = harness.startRecording()
+        harness.clock.advance(by: 590)
+        harness.chord() // the stop chord: the attempt is now draining
+
+        harness.clock.advance(by: 10)
+
+        #expect(harness.daemon.state == .idle)
+        #expect(harness.injector.delivered.isEmpty)
+        let entry = try #require(harness.history.appended.last)
+        #expect(entry.id == id)
+        #expect(entry.outcome == .capped)
+    }
+
+    @Test("a delivered dictation is never capped by the timer that was counting it")
+    func capDoesNotFaultACompletedAttempt() {
+        let harness = Harness()
+
+        harness.dictate()
+        harness.clock.advance(by: 3_600)
+
+        #expect(harness.notifier.announcements == [.listening, .working, .done])
+        #expect(harness.injector.delivered.count == 1)
+        #expect(harness.history.appended.allSatisfy { $0.outcome != .capped })
+    }
+
+    @Test("the cap counts each attempt separately rather than the daemon's uptime")
+    func capIsPerAttempt() {
+        let harness = Harness()
+
+        harness.dictate()
+        harness.clock.advance(by: 599)
+        let second = harness.startRecording()
+        harness.clock.advance(by: 599)
+
+        // The second attempt is 599 seconds old, not 1198: a cap that counted from the daemon's
+        // start would kill every dictation after the first ten minutes of uptime.
+        #expect(harness.daemon.state == .recording)
+        #expect(harness.daemon.currentAttempt?.id == second)
+    }
+
+    @Test("a fault that is not the cap is recorded as a capture fault, not as capped")
+    func hardwareFaultIsNotCapped() throws {
+        let harness = Harness()
+        let id = harness.startRecording()
+
+        harness.capture.reportFault(id, kind: .hardware, reason: FaultReason.deviceChanged)
+
+        let entry = try #require(harness.history.appended.last)
+        #expect(entry.outcome == .captureFault)
+        #expect(entry.error?.contains("discarded") == true)
+    }
+
+    @Test("a denied microphone ends the attempt with the grant as its reason")
+    func deniedMicrophoneEndsTheAttempt() throws {
+        // §6 wants "coming up", "ready" and "denied" tellable apart. From the daemon's side that is
+        // a fault whose words send the user to System Settings rather than to their hardware.
+        let harness = Harness()
+        harness.chord()
+
+        harness.capture.reportFault(1, kind: .denied, reason: FaultReason.denied)
+
+        #expect(harness.daemon.state == .idle)
+        #expect(harness.notifier.announcements == [.blocked])
+        #expect(harness.notifier.messages == [FaultReason.denied])
+        let entry = try #require(harness.history.appended.last)
+        #expect(entry.outcome == .captureFault)
+        #expect(entry.recognised.isEmpty)
+    }
+
+    @Test("a cap arriving after an abort does not resurrect the attempt")
+    func lateCapDoesNotResurrect() {
+        let harness = Harness()
+        let id = harness.startRecording()
+        harness.send(Request(cmd: .abort))
+        let entries = harness.history.appended.count
+
+        harness.capture.reportFault(id, kind: .durationCap, reason: FaultReason.durationCap)
+
+        #expect(harness.daemon.state == .idle)
+        #expect(harness.injector.delivered.isEmpty)
+        // No second entry, and in particular no `capped` entry superseding the abort: the attempt
+        // was over before the cap came due.
+        #expect(harness.history.appended.count == entries)
     }
 
     // MARK: - the front door

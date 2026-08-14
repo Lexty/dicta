@@ -6,15 +6,15 @@ import Foundation
 // The resident daemon. Wiring only -- every decision it performs is a pure value in DictaCore and
 // every effect leaves through a seam in DictaRuntime.
 //
-// What is wired here today is step 1 of §10: the whole delivery path with the microphone and the
-// recogniser faked. That is not a placeholder, it is the step being accepted -- a chord reaches
-// `dictactl`, the daemon resolves the pane from the live tree, and `agtermctl session type` puts
-// the canned hostile transcript into the input line as ONE line with single spaces. If the
-// sanitiser were ever bypassed, that transcript's newline would submit the prompt on the spot (D8).
+// What is wired here today is step 1 of §10 with a real microphone in front of it: a chord reaches
+// `dictactl`, the daemon resolves the pane from the live tree, AVAudioEngine records at 16 kHz
+// mono, and `agtermctl session type` puts the transcript into the input line as ONE line with
+// single spaces. Recognition is still `FakeTranscriber`, so what arrives is the canned transcript
+// -- deliberately, until Task 10: if the sanitiser were ever bypassed, that transcript's newline
+// would submit the prompt on the spot (D8).
 //
-// Tasks 9 and 10 replace exactly two lines of this file: `ImmediateCapture` becomes `AudioCapture`
-// and `FakeTranscriber` becomes `ParakeetTranscriber`. Nothing else about the wiring changes, which
-// is the whole point of the seams.
+// Task 10 replaces exactly one line of this file: `FakeTranscriber` becomes `ParakeetTranscriber`.
+// Nothing else about the wiring changes, which is the whole point of the seams.
 
 let usage = """
 usage: Dicta [options]
@@ -69,9 +69,13 @@ guard let agtermctl = Agterm.locate() else {
 // main.swift is main-actor state.
 let defaultAgtermSocket = agtermSocket
 
+// The microphone. It belongs to this bundle's TCC grant and to nothing else (D11, invariant 8):
+// `dictactl` links none of this, and a second binary opening the device would fracture the grant.
+let capture = AudioCapture()
+
 let daemon = Daemon(
     configuration: Daemon.Configuration(socketPath: controlSocket),
-    capture: ImmediateCapture(),
+    capture: capture,
     transcriber: FakeTranscriber(),
     filter: NoFilter(),
     // The real record (§9), created on demand under the support directory. Even with capture and
@@ -97,7 +101,21 @@ do {
 }
 
 log("listening on \(controlSocket)")
-log("step 1: capture and recognition are FAKES -- every dictation delivers the canned transcript")
+log("step 2: capture is REAL; recognition is a FAKE -- every dictation delivers the canned "
+    + "transcript")
+
+// Asked for at startup, not on the first chord (§7's spirit and D11's): the TCC dialog is a modal
+// the user reads at their own pace, and a chord that waits for it spends its 150 ms budget on a
+// dialog and then faults. Reported loudly either way, so a denied microphone is visible before the
+// first chord rather than during it.
+log("microphone: \(capture.access.rawValue)")
+capture.requestAccessIfNeeded { access in
+    log("microphone: \(access.rawValue)")
+    if access != .granted {
+        log("dicta cannot record until the microphone is granted in System Settings > Privacy & "
+            + "Security > Microphone")
+    }
+}
 
 // SIGTERM is what a LaunchAgent sends on unload, and SIGINT is what `Scripts/run.sh` gets from a
 // terminal. Both must remove the socket file, or the next start would find a path with nobody
@@ -116,4 +134,10 @@ for signalNumber in [SIGINT, SIGTERM] {
     signalSources.append(source)
 }
 
-dispatchMain()
+// `RunLoop.main.run()` rather than `dispatchMain()`, and the difference is not cosmetic: sleep is
+// announced through `NSWorkspace`'s notification centre, which needs a live run loop on the main
+// thread to receive it. Under `dispatchMain()` there is none, so `willSleepNotification` would
+// never arrive and §7's sleep row would silently stop holding -- the machine would suspend
+// mid-sentence and the attempt would come back looking like a quiet room (invariant 7). The main
+// run loop serves the main dispatch queue too, so the signal sources above still fire.
+RunLoop.main.run()

@@ -41,6 +41,30 @@ public struct Audio: Sendable, Equatable {
 
 // MARK: - capture
 
+/// Which kind of capture fault this is (§2's failure vocabulary).
+///
+/// The daemon treats all three identically where it matters -- every one of them discards the audio
+/// and injects nothing (D16, invariant 6) -- so this is deliberately NOT a distinction the state
+/// machine knows about. It exists for the two places where the three genuinely differ:
+///
+///   • §9's outcome. The cap is `capped` and everything else is `capture-fault` (D15), because "ten
+///     minutes elapsed" and "the device went away" are diagnosed differently by a human reading the
+///     record with `tail`.
+///   • What the user is told. `denied` is the only fault with a remedy the user can act on, and §6
+///     wants "coming up", "ready" and "microphone denied" to be tellable apart -- a denied
+///     microphone worded as generic hardware trouble sends them looking at their AirPods.
+public enum FaultKind: String, Sendable, Equatable, CaseIterable {
+    /// Sleep, an audio interruption, an input device or route change, the engine dying, a wedged
+    /// attempt. The audio boundary is in doubt and the recording dies rather than being guessed at.
+    case hardware
+    /// TCC has not granted the microphone to dicta's bundle (D11). Never reported as silence and
+    /// never as generic hardware trouble: the remedy is a visit to System Settings.
+    case denied
+    /// D15's ten-minute cap. The audio is discarded and nothing is injected, but whatever text was
+    /// produced still reaches the record.
+    case durationCap = "duration-cap"
+}
+
 /// What the microphone half tells the daemon, in the vocabulary §2 draws.
 ///
 /// Note what is absent: a "stopped, nothing to report" case. Every route out of capture is either
@@ -56,7 +80,7 @@ public enum CaptureEvent: Sendable, Equatable {
     /// The audio's integrity is in doubt: interruption, route change, engine death, a denied
     /// microphone, the duration cap. Always discards and never injects (D16, invariant 6), and is
     /// always reported as a hardware fault rather than as an empty dictation (invariant 7).
-    case fault(AttemptID, reason: String)
+    case fault(AttemptID, kind: FaultKind, reason: String)
 }
 
 public typealias CaptureEventSink = @Sendable (CaptureEvent) -> Void

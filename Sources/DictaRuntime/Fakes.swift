@@ -85,12 +85,15 @@ public final class FakeCapture: Capture, @unchecked Sendable {
 
     /// A fault reaches the daemon whatever state the attempt is in -- including after a discard,
     /// which is the "a late event must not resurrect an abandoned attempt" case.
-    public func reportFault(_ attempt: AttemptID, reason: String) {
+    ///
+    /// `hardware` by default because that is what most of §7's rows are; the kind is spelled out at
+    /// the call sites where it is the point -- a denied microphone, and D15's cap.
+    public func reportFault(_ attempt: AttemptID, kind: FaultKind = .hardware, reason: String) {
         let sink = lock.withLock { () -> CaptureEventSink? in
             open.remove(attempt)
             return sinks[attempt]
         }
-        sink?(.fault(attempt, reason: reason))
+        sink?(.fault(attempt, kind: kind, reason: reason))
     }
 
     private func sink(for attempt: AttemptID) -> CaptureEventSink? {
