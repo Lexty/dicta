@@ -98,6 +98,70 @@ public final class FakeCapture: Capture, @unchecked Sendable {
     }
 }
 
+/// A microphone that confirms and hands over at once, holding no audio.
+///
+/// This is the one fake the EXECUTABLE needs rather than the tests. Step 1's acceptance criterion
+/// is a human pressing a chord and watching the canned transcript arrive in the input line, and a
+/// capture that waits to be driven cannot satisfy it. The tests keep using `FakeCapture`, whose
+/// whole value is the opposite -- that it does not confirm by itself.
+///
+/// It reports synchronously, from inside `begin` and `drain`. That is deliberate: it makes the
+/// daemon's re-entrancy real on the development path, so a lock held across an effect shows up here
+/// rather than on the first day the microphone is wired in.
+public final class ImmediateCapture: Capture, @unchecked Sendable {
+    private let lock = NSLock()
+    private var sinks: [AttemptID: CaptureEventSink] = [:]
+
+    public init() {}
+
+    public func begin(attempt: AttemptID, sink: @escaping CaptureEventSink) {
+        lock.withLock { sinks[attempt] = sink }
+        sink(.ready(attempt))
+    }
+
+    public func drain(attempt: AttemptID) {
+        let sink = lock.withLock { sinks.removeValue(forKey: attempt) }
+        sink?(.drained(attempt, Audio(samples: [], sampleRate: Audio.requiredSampleRate)))
+    }
+
+    public func discard(attempt: AttemptID) {
+        _ = lock.withLock { sinks.removeValue(forKey: attempt) }
+    }
+}
+
+/// Target resolution the test decides (§5, D6): a fixed pane, or a refusal.
+///
+/// The refusals are the interesting half. "The tree names no active pane", "it names two" and
+/// "`agtermctl` is not installed" all have to end the attempt BEFORE capture opens, and none can
+/// be produced from a live terminal on demand.
+public final class FakeTargetResolver: TargetResolver, @unchecked Sendable {
+    private let lock = NSLock()
+    private var pane: Pane
+    private var error: (any Error)?
+    private var seen: [String] = []
+
+    public init(pane: Pane = .left) {
+        self.pane = pane
+    }
+
+    /// Every session id resolution was asked about -- the evidence that a stop chord did NOT cost a
+    /// second `agtermctl tree --json`, and that a refused attempt asked once and gave up.
+    public var requested: [String] { lock.withLock { seen } }
+
+    public func setPane(_ pane: Pane) { lock.withLock { self.pane = pane } }
+
+    public func setError(_ error: (any Error)?) { lock.withLock { self.error = error } }
+
+    public func resolveTarget(sessionID: String) throws -> Target {
+        let (pane, error) = lock.withLock { () -> (Pane, (any Error)?) in
+            seen.append(sessionID)
+            return (self.pane, self.error)
+        }
+        if let error { throw error }
+        return Target(sessionID: sessionID, pane: pane)
+    }
+}
+
 /// A recogniser whose output is deliberately hostile.
 ///
 /// It contains a newline, a double space and a trailing space, and it is NOT to be tidied up. If

@@ -24,14 +24,18 @@ Conversation about this project is in Russian. The repository is not.
 
 ## Where it stands
 
-**Task 5 of 13 (plan `docs/plans/20260814-dicta-steps-1-3.md`) is done.** `DictaCore` holds the wire
-types, `Paths`, the sanitiser and the lifecycle state machine; `DictaIPC` holds both halves of the
-control socket; `dictactl` speaks all six verbs and `docs/keymap.snippet.conf` is checked by a test
-against the parser the binary uses. `DictaRuntime` now holds the six seams with their fakes and the
-`agterm` adapter — target resolution off `agtermctl tree --json`, injection, §6's indicators,
-notifications — all behind a `CommandRunner` seam, so every fail-closed rule of D6 is tested against
-a canned tree. There is no daemon wiring those pieces together yet, and no microphone and no model:
-`Dicta` still exits with a scaffolding message.
+**Task 6 of 13 (plan `docs/plans/20260814-dicta-steps-1-3.md`) is done — step 1 of SPEC.md §10 is
+complete.** `DictaCore` holds the wire types, `Paths`, the sanitiser and the lifecycle state machine;
+`DictaIPC` holds both halves of the control socket; `dictactl` speaks all six verbs and
+`docs/keymap.snippet.conf` is checked by a test against the parser the binary uses. `DictaRuntime`
+holds the six seams with their fakes, the `agterm` adapter — target resolution off `agtermctl tree
+--json`, injection, §6's indicators, notifications, all behind a `CommandRunner` seam — and now
+`Daemon`, which wires the socket, the state machine and the seams into whole attempts.
+
+`Dicta` is a real daemon: it serves the socket, refuses a second instance, resolves the pane from the
+live tree, and delivers the canned hostile transcript as one sanitised line. Capture and recognition
+are still fakes (`ImmediateCapture`, `FakeTranscriber`) — Tasks 9 and 10 replace exactly those two
+lines of `Sources/Dicta/main.swift`. There is no record yet, so `dictactl last` says so.
 
 The plan covers steps 1–3 of SPEC.md §10. Steps 4 (the filter) and 5 (the §7 audit) are out of it.
 
