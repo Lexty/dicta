@@ -45,13 +45,24 @@ bash "$ROOT/Scripts/bundle.sh"
 
 echo "==> installing $APP_DEST"
 mkdir -p "$HOME/Applications"
-rm -rf "$APP_DEST"
-ditto "$ROOT/Dicta.app" "$APP_DEST"
+# Copied BESIDE the installed bundle and swapped in, rather than copied over it. Under `set -e` a
+# `ditto` that fails partway -- no space, interrupted, a permission on one file -- used to abort the
+# script with `$APP_DEST` already deleted or half written and the LaunchAgent from the previous
+# install still pointing at it: launchd then throttle-loops on a binary that is not there, every
+# chord is dead, and the only trace is in a log nobody is reading. The window where neither bundle
+# is in place is now a rename. The signature is verified on the copy BEFORE the swap, for the same
+# reason -- a bundle that no longer satisfies the requirement must never become the installed one.
+STAGED="$APP_DEST.incoming"
+rm -rf "$STAGED"
+ditto "$ROOT/Dicta.app" "$STAGED"
 
 # The requirement is what the TCC grant is recorded against; if the copy did not preserve the
 # signature, the grant would be attached to a bundle that no longer satisfies it -- and the symptom
 # would be a TCC prompt at the worst possible moment rather than an error here.
-codesign --verify --verbose=2 "$APP_DEST"
+codesign --verify --verbose=2 "$STAGED"
+
+rm -rf "$APP_DEST"
+mv "$STAGED" "$APP_DEST"
 
 # --- the LaunchAgent ----------------------------------------------------------------------------
 echo "==> writing $AGENT"

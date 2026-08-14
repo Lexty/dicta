@@ -46,6 +46,28 @@ public enum Command: String, Codable, Sendable, CaseIterable {
         case .status, .toggle, .start, .stop, .last: false
         }
     }
+
+    /// Whether this verb is TYPED BY HAND rather than sent by a chord, and therefore whether its
+    /// failure already has somebody looking at it.
+    ///
+    /// §7 asks for a desktop notification when the client cannot reach the daemon, and the reason
+    /// is that a chord's stderr goes nowhere: the keymap spawns `dictactl`, nothing is watching it,
+    /// and a silent failure is a keypress that appears to have worked. Neither is true of `status`
+    /// and `last` — they are run in a terminal by somebody reading the answer.
+    ///
+    /// Notifying on those two is worse than redundant. They keep the SHORT read timeout on purpose
+    /// (`ControlTimeouts.read(for:)`), and the daemon does not answer before doing the work, so a
+    /// perfectly healthy daemon in the middle of a dictation — or in the middle of the one 17 s
+    /// start-up model load — makes a hand-typed `status` time out. A desktop notification saying
+    /// "dicta did not answer" about a daemon that is at that moment recording the user's voice
+    /// trains them to dismiss dicta's notifications, which is the property §7 exists to protect.
+    /// `Scripts/measure.sh` polls `status` in a loop by construction, so this is not hypothetical.
+    public var isTypedByHand: Bool {
+        switch self {
+        case .status, .last: true
+        case .toggle, .start, .stop, .abort: false
+        }
+    }
 }
 
 /// Which text the user asked for — decided by the chord that STOPS the recording (D3), not by the

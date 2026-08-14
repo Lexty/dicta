@@ -268,4 +268,6 @@ runs the tests through an executable target instead, and runs `Scripts/linkage.s
 
 `Scripts/measure.sh` scores the two timing criteria from numbers rather than impressions: keypress
 to recording by default, and stop to injection behind `--stop`. The second one **delivers text into
-a pane**, because the interval being measured ends at the last keystroke.
+a pane**, because the interval being measured ends at the last keystroke. It **exits non-zero when
+either criterion misses its budget** — a scorer that exits 0 on a FAIL it printed is D18 again, in
+the one place a budget is actually scored.

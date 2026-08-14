@@ -300,11 +300,25 @@ public final class ControlServer: @unchecked Sendable {
         stateLock.withLock { running ? (listenDescriptor, wakeupRead) : nil }
     }
 
+    /// Called, on the accept thread, when the loop leaves WITHOUT having been asked to.
+    ///
+    /// Everything `acceptIsRetryable` does not name -- `EBADF`, `EINVAL`, `ENOTSOCK` -- breaks the
+    /// loop. Closing the descriptors and unlinking the path is the right half of that: it makes
+    /// `dictactl` say "dicta is not running", which is true. The other half is that the PROCESS is
+    /// still alive, sitting in `RunLoop.main.run()`, so `KeepAlive` sees a healthy daemon and never
+    /// restarts it -- every chord dead until somebody runs `launchctl kickstart` by hand. That is
+    /// verbatim the unrecoverable failure the comment on `acceptIsRetryable` says this file exists
+    /// to prevent, reached through the non-retryable door instead. The owner is given the chance to
+    /// end the process so launchd can put it back.
+    private let onUnexpectedExit: (@Sendable () -> Void)?
+
     public init(path: String,
                 readTimeout: TimeInterval = ControlTimeouts.serverRead,
+                onUnexpectedExit: (@Sendable () -> Void)? = nil,
                 handler: @escaping Handler) {
         self.path = path
         self.readTimeout = readTimeout
+        self.onUnexpectedExit = onUnexpectedExit
         self.handler = handler
     }
 
@@ -499,6 +513,8 @@ public final class ControlServer: @unchecked Sendable {
         // return at its `guard` without touching the file.
         if !askedToStop { unlink(path) }
         exited.signal()
+        // After `exited`, so an owner that ends the process cannot strand a `stop` waiting on it.
+        if !askedToStop { onUnexpectedExit?() }
     }
 
     private func serve(_ client: Int32) {

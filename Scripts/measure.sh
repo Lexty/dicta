@@ -191,6 +191,13 @@ stop_attempt() {
 
 # The distribution, and the verdict. Shared by both criteria: every attempt must be under the
 # budget, not the mean — one slow chord in ten is the experience a budget exists to forbid.
+#
+# RETURNS NON-ZERO ON FAIL, and the callers turn that into the script's own exit status. This is
+# what a scorer is for: the FAIL line is one row in a report that scrolls, and a run where three
+# attempts in ten blew the budget used to be indistinguishable from a clean one to anything that
+# checks `$?`. That is D18 wearing a different hat — `swift test` exiting 0 on a failing suite is
+# the reason this project has its own test runner, and a measurement script that exits 0 on a
+# missed budget is the same mistake in the one place the budget is actually scored.
 report() {
     local budget="$1" failed="$2" label="$3"
     shift 3
@@ -205,9 +212,11 @@ report() {
                 NR, v[1], median, p90, v[NR], sum / NR
             if (over == 0 && failed == 0)
                 printf "measure: PASS — all %d attempts under %d ms (%s)\n", NR, budget, label
-            else
+            else {
                 printf "measure: FAIL — %d over %d ms, %d attempt(s) never counted (%s)\n", \
                     over, budget, failed, label
+                exit 1
+            }
         }
     '
 }
@@ -240,12 +249,15 @@ if [ "${#SAMPLES[@]}" -eq 0 ]; then
 fi
 
 printf '\n'
-report "$BUDGET_MS" "$FAILED" "§10 step 2a" "${SAMPLES[@]}"
+# `|| VERDICT=1` rather than a bare call: `set -e` would otherwise abort here on a missed budget,
+# skipping criterion (c) entirely and reporting the wrong reason for the non-zero exit.
+VERDICT=0
+report "$BUDGET_MS" "$FAILED" "§10 step 2a" "${SAMPLES[@]}" || VERDICT=1
 
 if [ "$STOP_LATENCY" -eq 0 ]; then
     printf '\nmeasure: criterion (c) not measured — pass --stop, which DELIVERS text into %s\n' \
         "$SESSION"
-    exit 0
+    exit "$VERDICT"
 fi
 
 # Criterion (c). Announced before it runs, because the next thing that happens is text appearing in
@@ -276,7 +288,9 @@ if [ "${#STOP_SAMPLES[@]}" -eq 0 ]; then
 fi
 
 printf '\n'
-report "$STOP_BUDGET_MS" "$STOP_FAILED" "§10 step 2c" "${STOP_SAMPLES[@]}"
+report "$STOP_BUDGET_MS" "$STOP_FAILED" "§10 step 2c" "${STOP_SAMPLES[@]}" || VERDICT=1
 # The transcripts are in the record too, so `dictactl last --recognised` scores criterion (b) off
 # the same run rather than needing its own dictation.
 printf 'measure: the text of each attempt is in the record — `dictactl last --recognised`\n'
+# Either criterion failing fails the run. Falling off the end here exits 0 whatever was measured.
+exit "$VERDICT"

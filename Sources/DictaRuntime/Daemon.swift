@@ -272,8 +272,15 @@ public final class Daemon: @unchecked Sendable {
 
     /// Binds the control socket and starts serving. Throws `alreadyRunning` when a live daemon
     /// already owns the path (§7): one daemon, one microphone.
-    public func start() throws {
-        let server = ControlServer(path: configuration.socketPath) { [weak self] incoming in
+    ///
+    /// `onFrontDoorLost` is called, on the accept thread, if the accept loop dies of something it
+    /// cannot retry. The daemon has no way to serve a chord after that and no way to rebind from
+    /// inside itself, so the only honest recovery is for the owner to end the process and let
+    /// `KeepAlive` start a fresh one. Defaulted to nothing for the tests, which own the lifetime of
+    /// the process they run in.
+    public func start(onFrontDoorLost: (@Sendable () -> Void)? = nil) throws {
+        let server = ControlServer(path: configuration.socketPath,
+                                   onUnexpectedExit: onFrontDoorLost) { [weak self] incoming in
             guard let self else {
                 return Response(kind: .rejected, state: .idle, message: "dicta is shutting down")
             }
@@ -376,10 +383,16 @@ public final class Daemon: @unchecked Sendable {
             // user one more keypress in a window microseconds wide.
             return respond(to: apply(.stop(mode: request.mode ?? .clean, attempt: request.attempt)))
         }
+        // BEFORE the guard, so the refusal below is announced through the agterm the chord fired in
+        // rather than through whichever one this daemon last adopted -- or, on a fresh daemon, the
+        // default socket. This is §7's "a keymap line that has stopped matching the build" case,
+        // found by pressing a chord and seeing nothing happen, so the message reaching the screen
+        // the user is looking at is the whole of its value. Safe here for the same reason it was
+        // safe below: `adoptTerminal` refuses to rebind while an attempt is live.
+        adoptTerminal(agtermSocket: request.agtermSocket)
         guard let sessionID = request.sessionID, !sessionID.isEmpty else {
             return reject("\(request.cmd.rawValue) needs the session the chord fired in")
         }
-        adoptTerminal(agtermSocket: request.agtermSocket)
         let target: Target
         do {
             target = try currentTerminal.resolver.resolveTarget(sessionID: sessionID)

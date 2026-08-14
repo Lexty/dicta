@@ -145,7 +145,8 @@ counts as a pass, so two people scoring it agree.
   already running and its models already loaded. Fail: any attempt over the budget, or a run whose
   first attempt is an outlier because the daemon was cold — that is a measurement of the wrong
   thing, so restart it rather than averaging it away. The reference numbers are F4: 20–70 ms warm,
-  ~390 ms cold.
+  ~390 ms cold. The script's own exit status carries the verdict — non-zero when either criterion
+  misses — so the PASS/FAIL line is not the only place a missed budget is visible.
 - **H6 — step 2 (b): a real Russian dictation with English terms in it is understood.** Dictate
   roughly 20 seconds of Russian containing **at least two** English technical terms, on this user's
   own microphone and in this user's own voice — the Task 10 probe used synthesised speech and a

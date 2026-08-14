@@ -158,7 +158,14 @@ let daemon = Daemon(
 )
 
 do {
-    try daemon.start()
+    // A front door that dies of something it cannot retry leaves this process alive with nothing
+    // listening, and launchd's `KeepAlive` only ever sees a healthy daemon. Ending here is what
+    // turns "every chord is dead until you run `launchctl kickstart`" into a restart nobody has to
+    // notice. `EXIT_FAILURE` rather than 0 so the reason is in the log and the throttle applies.
+    try daemon.start {
+        log("the control socket stopped accepting; exiting so the agent restarts dicta")
+        exit(EXIT_FAILURE)
+    }
 } catch {
     // Includes §7's "second daemon instance attempted" row: a live socket means a live daemon, and
     // two of them would fight over one microphone.

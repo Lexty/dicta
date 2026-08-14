@@ -96,9 +96,13 @@ func run(_ executable: String, _ arguments: [String],
     return process.terminationStatus == 0
 }
 
-func fail(_ message: String, code: Int32, agtermSocket: String? = nil) -> Never {
+/// `notifying: false` for the verbs somebody is already watching (`Command.isTypedByHand`): stderr
+/// is in front of them, and a desktop notification about a daemon that is merely BUSY is a false
+/// alarm §7 would rather not have taught them to ignore.
+func fail(_ message: String, code: Int32, agtermSocket: String? = nil,
+          notifying: Bool = true) -> Never {
     FileHandle.standardError.write(Data("dictactl: \(message)\n".utf8))
-    notify(message, agtermSocket: agtermSocket)
+    if notifying { notify(message, agtermSocket: agtermSocket) }
     exit(code)
 }
 
@@ -137,9 +141,11 @@ do {
 } catch let error as ControlClient.ClientError {
     fail("\(error)",
          code: ClientCommand.ExitCode.unreachable,
-         agtermSocket: invocation.request.agtermSocket)
+         agtermSocket: invocation.request.agtermSocket,
+         notifying: !invocation.request.cmd.isTypedByHand)
 } catch {
     fail("\(error)",
          code: ClientCommand.ExitCode.unreachable,
-         agtermSocket: invocation.request.agtermSocket)
+         agtermSocket: invocation.request.agtermSocket,
+         notifying: !invocation.request.cmd.isTypedByHand)
 }

@@ -373,6 +373,25 @@ struct ReplacementsTests {
         }
     }
 
+    @Test("every rule in the example dictionary still fires with the whole book in front of it")
+    func exampleFileHasNoDeadRules() throws {
+        // "Put the specific rules above the general ones" is advice at the top of the shipped file,
+        // and it was advice the file itself broke: the one-word rule for "Swift" sat above the
+        // two-word rule for "Package.swift", whose pattern CONTAINS it. The cascade rewrote the
+        // second half of the longer phrase first, and the `package` rule then searched for a phrase
+        // that no longer existed. A dead rule is worse than a missing one — the user can read it,
+        // and the record's `rules` names the rule that DID fire, which is the field step 3 is
+        // scored on. Feeding each rule its own pattern through the entire book turns the advice
+        // into a check.
+        let text = try String(contentsOf: Self.exampleFile, encoding: .utf8)
+        let book = Replacements.parse(text, version: "example")
+        for rule in book.rules {
+            let result = Replacements.apply(book, to: rule.pattern)
+            #expect(result.applied.fired.contains(rule.id),
+                    "rule \(rule.id) never fires on its own pattern — an earlier rule ate it")
+        }
+    }
+
     @Test("the example file's commented-out misfire rule is a rule, not prose")
     func exampleMisfireRuleIsUsable() throws {
         // Step 3 is scored by adding a deliberately wrong rule and naming it from the record. The
