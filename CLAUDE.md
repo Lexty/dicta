@@ -24,11 +24,14 @@ Conversation about this project is in Russian. The repository is not.
 
 ## Where it stands
 
-**Task 4 of 13 (plan `docs/plans/20260814-dicta-steps-1-3.md`) is done.** `DictaCore` holds the wire
+**Task 5 of 13 (plan `docs/plans/20260814-dicta-steps-1-3.md`) is done.** `DictaCore` holds the wire
 types, `Paths`, the sanitiser and the lifecycle state machine; `DictaIPC` holds both halves of the
 control socket; `dictactl` speaks all six verbs and `docs/keymap.snippet.conf` is checked by a test
-against the parser the binary uses. There is no daemon behind the socket yet, and no microphone and
-no model: `Dicta` still exits with a scaffolding message.
+against the parser the binary uses. `DictaRuntime` now holds the six seams with their fakes and the
+`agterm` adapter — target resolution off `agtermctl tree --json`, injection, §6's indicators,
+notifications — all behind a `CommandRunner` seam, so every fail-closed rule of D6 is tested against
+a canned tree. There is no daemon wiring those pieces together yet, and no microphone and no model:
+`Dicta` still exits with a scaffolding message.
 
 The plan covers steps 1–3 of SPEC.md §10. Steps 4 (the filter) and 5 (the §7 audit) are out of it.
 
