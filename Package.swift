@@ -1,0 +1,132 @@
+// swift-tools-version:6.0
+import PackageDescription
+import Foundation
+
+// dicta — voice dictation into agterm's input line.
+//
+// Target layout. The split exists to make decisions testable in a Command-Line-Tools-ONLY
+// environment, and to keep the keypress client's cold start a budgeted property (D12).
+//
+//   • DictaCore       — pure logic, NO I/O: the lifecycle state machine, the injection sanitiser,
+//                       the replacement engine, the record schema, the wire types. This is what
+//                       the tests actually drive (D19).
+//   • DictaIPC        — the Unix-socket transport, BOTH halves in one module. Split out for one
+//                       concrete reason: `dictactl` needs the client half, and DictaRuntime is
+//                       where AVFoundation and CoreML land. Without the split every keypress would
+//                       drag the capture stack through dyld. Keeping both halves together is also
+//                       what stops the two ends' framing rules from drifting apart.
+//   • DictaRuntime    — everything that touches the world: the agterm adapter (subprocesses),
+//                       capture, recognition, the filter seam, the record writer.
+//                       A library rather than part of the executable because SwiftPM CANNOT import
+//                       an executable target — here the test runner can reach it; inside `Dicta`
+//                       it could not.
+//   • Dicta           — the resident daemon executable. Wiring only.
+//   • dictactl        — the client agterm's keymap invokes on every chord. Depends on DictaCore and
+//                       DictaIPC and NOTHING else: it links no AVFoundation, no CoreML, no AppKit,
+//                       and it never opens the microphone, because the TCC grant belongs to the
+//                       signed daemon bundle alone (D11, D12, invariant 8).
+//   • DictaTestRunner — where the tests actually live (swift-testing @Test plus the SwiftPM entry
+//                       point). The real run is `bash Scripts/test.sh`.
+//   • DictaTests      — a compile-only stub, so `swift test` still builds. Never put an assertion
+//                       here: under CLT-only it would report as passing while never having run.
+//
+// Why the runner exists at all (D18): under Command Line Tools only, `swift test` BUILDS the test
+// bundle but does not EXECUTE it — there is no `xctest` host utility — so a failing test still
+// exits 0 and the command is worthless as a gate. The runner drives swift-testing through its own
+// entry point and exits non-zero. This was verified by observation, not assumed; see CLAUDE.md.
+//
+// Note the absence of a separate wire-protocol target. The sibling project `acta` isolates one
+// because a foreign binary decodes its schema; here `dictactl` ships from this repository and is
+// always in lockstep, so that isolation would be ceremony. Copy the reasoning, not the layout.
+
+/// The active developer directory, which decides where swift-testing's framework and macro plugin
+/// live. `DEVELOPER_DIR` wins when set, so a CI or a full-Xcode machine can redirect us.
+func developerDir() -> String {
+    if let dir = ProcessInfo.processInfo.environment["DEVELOPER_DIR"], !dir.isEmpty {
+        return dir
+    }
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
+    proc.arguments = ["-p"]
+    let pipe = Pipe()
+    proc.standardOutput = pipe
+    do {
+        try proc.run()
+        proc.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        if let str = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !str.isEmpty {
+            return str
+        }
+    } catch {
+        // fall through to the default below
+    }
+    return "/Library/Developer/CommandLineTools"
+}
+
+/// Flags that expose swift-testing (Testing.framework, the TestingMacros plugin) in the
+/// Command-Line-Tools layout. With a full Xcode installed the paths differ and SwiftPM finds
+/// everything by itself — then this adds nothing, which is why it is guarded by a file check
+/// rather than by a platform check.
+func swiftTestingSettings() -> (swift: [SwiftSetting], linker: [LinkerSetting]) {
+    let dev = developerDir()
+    let frameworks = "\(dev)/Library/Developer/Frameworks"
+    let libDir = "\(dev)/Library/Developer/usr/lib"
+    let pluginDir = "\(dev)/usr/lib/swift/host/plugins/testing"
+
+    guard FileManager.default.fileExists(atPath: "\(frameworks)/Testing.framework") else {
+        return ([], [])
+    }
+    return (
+        [.unsafeFlags(["-F", frameworks, "-plugin-path", pluginDir])],
+        [.unsafeFlags([
+            "-F", frameworks,
+            "-L", libDir,
+            "-Xlinker", "-rpath", "-Xlinker", frameworks,
+            "-Xlinker", "-rpath", "-Xlinker", libDir,
+        ])]
+    )
+}
+
+let testing = swiftTestingSettings()
+
+let package = Package(
+    name: "dicta",
+    platforms: [.macOS(.v14)],
+    targets: [
+        .target(name: "DictaCore", path: "Sources/DictaCore"),
+        .target(name: "DictaIPC", dependencies: ["DictaCore"], path: "Sources/DictaIPC"),
+        .target(
+            name: "DictaRuntime",
+            dependencies: ["DictaCore", "DictaIPC"],
+            path: "Sources/DictaRuntime"
+        ),
+        .executableTarget(
+            name: "Dicta",
+            dependencies: ["DictaCore", "DictaIPC", "DictaRuntime"],
+            path: "Sources/Dicta"
+        ),
+        // D12: DictaCore + DictaIPC only. Adding DictaRuntime here would be the regression.
+        .executableTarget(
+            name: "dictactl",
+            dependencies: ["DictaCore", "DictaIPC"],
+            path: "Sources/dictactl"
+        ),
+        .executableTarget(
+            name: "DictaTestRunner",
+            dependencies: ["DictaCore", "DictaIPC", "DictaRuntime"],
+            path: "Sources/DictaTestRunner",
+            swiftSettings: testing.swift,
+            linkerSettings: testing.linker
+        ),
+        // Compile-only, and deliberately WITHOUT `testing.swift` / `testing.linker`. Denying this
+        // target the swift-testing flags means `import Testing` here does not compile, so the trap
+        // D18 describes — an assertion that reports as passing while never having run — cannot be
+        // walked into by accident. Verified both ways during Task 1; see CLAUDE.md.
+        .testTarget(
+            name: "DictaTests",
+            dependencies: ["DictaCore"],
+            path: "Tests/DictaTests"
+        ),
+    ]
+)

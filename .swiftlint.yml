@@ -1,0 +1,57 @@
+# SwiftLint configuration.
+#
+# SwiftLint is optional here: nothing installs it, and `Scripts/lint.sh` runs its own mechanical
+# checks when it is absent. This file exists so that a machine which does have it lints to the same
+# rules as the ones enforced by hand — the line limit especially.
+
+included:
+  - Sources
+  - Tests
+
+excluded:
+  - .build
+
+line_length:
+  warning: 100
+  error: 120
+  ignores_comments: false
+  ignores_urls: true
+
+file_length:
+  warning: 400
+  error: 600
+
+type_body_length:
+  warning: 250
+  error: 350
+
+function_body_length:
+  warning: 60
+  error: 100
+
+identifier_name:
+  min_length: 2
+  excluded:
+    - id
+    - at
+
+# The pure targets are where the assertions live; a force-unwrap there fails a test run rather than
+# a user's dictation, but it still hides the case that made it necessary.
+disabled_rules:
+  - todo
+
+opt_in_rules:
+  - empty_count
+  - explicit_init
+  - first_where
+  - force_unwrapping
+  - joined_default_parameter
+  - last_where
+  - literal_expression_end_indentation
+  - multiline_parameters
+  - operator_usage_whitespace
+  - redundant_nil_coalescing
+  - sorted_first_last
+  - unneeded_parentheses_in_closure_argument
+  - vertical_whitespace_closing_braces
+  - yoda_condition
