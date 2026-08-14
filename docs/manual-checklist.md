@@ -90,6 +90,51 @@ counts as a pass, so two people scoring it agree.
   and reopen it, and separately (b) pull AirPods out of their case so the input route changes. Pass
   in both: a visible fault worded as hardware, nothing typed, and an entry in the record with
   outcome `capture-fault`. Fail: silence reported as an empty dictation.
-
-The remaining human items — §10's step 1, step 2 (a)–(d) and step 3 — belong to Task 13, which
-writes them here with the same "what counts as a pass" wording.
+- **H4 — step 1 of §10: the text arrives, unsubmitted, where the chord was pressed.** With the
+  daemon running against `FakeTranscriber` (`bash Scripts/run.sh` in a build wired to the fakes, or
+  simply the first real dictation), press ⌃⌥D in a session, then press it again. Pass: the text
+  appears in the input line of **that** session and the pane that was focused when the daemon
+  handled the start; the buffer shows it and the prompt has not been submitted; the hostile canned
+  transcript arrives as **one line with single spaces**, its newline, double space and trailing
+  space gone. Fail, in the way that matters most: the prompt fires by itself — that is the
+  sanitiser bypassed, and it is invariant 1.
+- **H5 — step 2 (a): keypress to recording under 150 ms, warm.** `bash Scripts/measure.sh` — 10
+  attempts by default after one discarded warm-up, each ended with `abort`, so it types nothing into
+  a pane. Pass: every one of
+  10 consecutive attempts reports client-invocation → "recording" under **150 ms**, with the daemon
+  already running and its models already loaded. Fail: any attempt over the budget, or a run whose
+  first attempt is an outlier because the daemon was cold — that is a measurement of the wrong
+  thing, so restart it rather than averaging it away. The reference numbers are F4: 20–70 ms warm,
+  ~390 ms cold.
+- **H6 — step 2 (b): a real Russian dictation with English terms in it is understood.** Dictate
+  roughly 20 seconds of Russian containing **at least two** English technical terms, on this user's
+  own microphone and in this user's own voice — the Task 10 probe used synthesised speech and a
+  meeting recording, which establishes that the pipeline works and not that it works for them. Pass:
+  the user judges the meaning of the text correct, and `dictactl last --recognised` is non-empty.
+  Expected and not a failure: the English terms come back transliterated into Cyrillic — that is
+  what the dictionary is for (D9a), and H8 is where it gets fixed.
+- **H7 — step 2 (c): stop to injection under 2 s for a 60-second utterance.** `bash
+  Scripts/measure.sh --stop`, which announces itself because it **delivers text into the session's
+  input line** — the interval ends at the last keystroke, so it cannot be measured without typing.
+  Speak for about a minute per attempt. Pass: stop → last keystroke under **2 s**. Recognition is
+  not what will spend it (66.8 s of speech recognised in 0.42 s), so an attempt over budget is
+  pointing at injection or at a model load that should not be happening (D10).
+- **H8 — step 2 (d): the TCC prompt appears once, and a rebuild does not bring it back.** On the
+  first dictation after `bash Scripts/install.sh` on a machine that has never granted it, pass: the
+  system prompt appears **naming dicta**, and its text is the English
+  `NSMicrophoneUsageDescription` from `Resources/Info.plist`. Then edit any source file, re-run
+  `install.sh`, and dictate again. Pass: **no second prompt**, and the microphone still works. Fail:
+  a second prompt — the designated requirement went cdhash-based and every rebuild is revoking the
+  grant (D11). `bash Scripts/bundle.sh --print-requirement` is what to read next; it must name the
+  identity, not a hash.
+- **H9 — step 3: a misfiring rule is nameable from the record alone.** Uncomment the deliberately
+  wrong rule at the bottom of `docs/replacements.example.conf` (`misfire`, which rewrites an
+  ordinary Russian word), copy the file into place, and dictate **one** sentence containing that
+  word. Pass: reading `dictactl last --recognised`, `dictactl last` and the entry's `rules` field —
+  and **nothing else, with nothing re-run** — the user can name `misfire` as the rule that did it.
+  Fail: needing to re-dictate, to bisect the file, or to guess, which means the record is not
+  carrying enough to diagnose with.
+- **H10 — the daemon's own lifecycle.** Log out and back in. Pass: the daemon is running without
+  anyone starting it, and a chord works immediately. Then kill it mid-recording (`kill -9` while
+  the indicator is red) and restart it. Pass: the indicator that was claiming a recording is put
+  out at startup, so nothing is left saying dicta is listening when it is not (§7).

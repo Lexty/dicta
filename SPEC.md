@@ -12,9 +12,16 @@ into a judgement call about which side of the line it falls on, and it disarms t
 check available — `grep -rP '[\x{0400}-\x{04FF}]'` is only a gate when there is nothing legitimate
 for it to find. Conversation about this project is in Russian; the repository is not.
 
-Status: **specification only. No implementation exists.** An earlier step-1 skeleton was built,
-measured, verified end to end, then deliberately deleted; it survives in git as commit `3dda6cb` and
-is cited below only where it produced a measurement.
+Status: **steps 1–3 of §10 are implemented; steps 4 and 5 are not.** The delivery path, the
+microphone, the signed bundle the TCC grant attaches to, the warm Parakeet recogniser, the
+append-only record and the Tier 0 replacement dictionary all exist and are tested; the `Filter` seam
+ships as a pass-through and nothing invokes a subprocess (D9c). What steps 1–3 still owe is the part
+only a person can score — the chords in a real pane, the TCC prompt, §10's criteria (a)–(d) and the
+deliberate misfire — listed with its pass condition in `docs/manual-checklist.md`. Build and
+operating instructions are in `README.md`; `CLAUDE.md` is the operating manual.
+
+An earlier step-1 skeleton was built, measured, verified end to end, then deliberately deleted; it
+survives in git as commit `3dda6cb` and is cited below only where it produced a measurement.
 
 ---
 

@@ -24,12 +24,14 @@ Conversation about this project is in Russian. The repository is not.
 
 ## Where it stands
 
-**Task 10 of 13 (plan `docs/plans/20260814-dicta-steps-1-3.md`) is done — step 1 of SPEC.md §10 is
-complete, and step 2's automatable half with it: the microphone, the signed bundle the grant attaches
-to, and a recogniser warm before the first chord all exist. What is left of step 2 is the four
-criteria a person scores (§10 (a)–(d)), with `Scripts/measure.sh` and the record.** `DictaCore` holds
-the wire types, `Paths`, the sanitiser, the lifecycle state machine, the §9 record schema and
-`RecognisedText`; `DictaIPC` holds both halves of the control socket; `dictactl` speaks all six verbs
+**The plan `docs/plans/20260814-dicta-steps-1-3.md` is finished — all thirteen tasks. Steps 1–3 of
+SPEC.md §10 are built and their automatable half is green; steps 4 (the external filter) and 5 (the
+§7 sweep) are not started. What remains of steps 1–3 is what only a person can score: the chords in
+a real pane, the TCC prompt, criteria (a)–(d) of step 2, and step 3's deliberate misfire — each
+written with its pass condition in `docs/manual-checklist.md`.** `DictaCore` holds
+the wire types, `Paths`, the sanitiser, the lifecycle state machine, the §9 record schema,
+`RecognisedText` and the replacement engine; `DictaIPC` holds both halves of the control socket;
+`dictactl` speaks all six verbs
 and `docs/keymap.snippet.conf` is checked by a test against the parser the binary uses.
 `DictaRuntime` holds the six seams with their fakes, the `agterm` adapter — target resolution off
 `agtermctl tree --json`, injection, §6's indicators, notifications, all behind a `CommandRunner`
@@ -51,13 +53,23 @@ seam is `NoFilter`, which is what D9c says v1 ships.
 LaunchAgent. That is deliberately ahead of the microphone: if the bundle identity were wrong, every
 measurement taken afterwards would be taken against a grant that evaporates on the next rebuild.
 
-Task 11 adds the Tier 0 replacement dictionary — and the probe below turned D9a from a guess into a
+The Tier 0 replacement dictionary is in, and the probe below turned D9a from a guess into a
 measurement: Parakeet **transliterates English technical terms spoken inside Russian into Cyrillic**,
 so "FluidAudio" and "Package Swift" come back spelled phonetically in the Cyrillic alphabet. That is
 exactly the class of mistake the dictionary exists to undo, and it is now observed rather than
-assumed.
+assumed. `Replacements` parses and applies the rules in `DictaCore`, `FileDictionary` re-reads the
+file per attempt so an edit fires on the next chord, and the ids that fired land in the record's
+`rules` — which is what makes a misfire nameable without re-running anything.
 
-The plan covers steps 1–3 of SPEC.md §10. Steps 4 (the filter) and 5 (the §7 audit) are out of it.
+Two audits close the plan and are themselves checked by a test (`ChecklistTests` parses SPEC.md and
+`docs/manual-checklist.md` against each other and against the suite's own `@Test` names): every §8
+invariant against the assertion that goes red first, and every §7 row against a test or a named
+human item. Invariant 8 — the keypress client never opens the microphone — is the one no assertion
+can reach, so `Scripts/linkage.sh` reads it off the linked binary and `Scripts/test.sh` runs that
+first. `Scripts/coverage.sh` holds `DictaCore` to a floor of 80% (measured 96.25% of lines).
+
+The plan covered steps 1–3 of SPEC.md §10. Steps 4 (the filter) and 5 (the §7 audit) are the next
+work, and neither is begun: the `Filter` seam is `NoFilter`, and nothing invokes a subprocess.
 
 ## Commands
 
@@ -87,6 +99,12 @@ The plan covers steps 1–3 of SPEC.md §10. Steps 4 (the filter) and 5 (the §7
   by `bundle.sh` on its own when the identity is missing, so it is rarely run by hand.
 - One suite only: `bash Scripts/test.sh --filter "sanitiser"` (arguments pass through to
   swift-testing).
+- Coverage of `DictaCore`: `bash Scripts/coverage.sh` — drives the profile through the runner's own
+  entry point, because `swift test --enable-code-coverage` builds an instrumented bundle it never
+  runs (D18 again). Exits non-zero under an 80% floor; `--floor <n>` moves it.
+- The linkage budget: `bash Scripts/linkage.sh` — asserts `dictactl` binds no AVFoundation, CoreML
+  or AppKit, by load command, undefined symbol and DictaRuntime's own mangled names. `test.sh` runs
+  it first, since no swift-testing assertion can reach a linked binary (invariant 8, D12).
 
 ## Why the test runner exists (D18) — measured, not assumed
 
@@ -279,7 +297,8 @@ Distilled from SPEC.md §3. Each one is a mistake already made, or one the spec 
 
 ## Not verified automatically (needs a human)
 
-Collected in `docs/manual-checklist.md` as the plan progresses. In short: that the chords fire and
+**`docs/manual-checklist.md` is the list, and it is complete** — every item states the observation
+that counts as a pass, so two people scoring it agree. In short: that the chords fire and
 land in the pane they were pressed in; that injection lands in **Claude Code's** input line
 specifically (F5 verified a fish prompt, which is not the same thing); microphone TCC; recognition
 quality on this user's own speech through their own microphone — the Task 10 probe used synthesised
