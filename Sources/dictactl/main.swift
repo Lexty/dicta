@@ -6,9 +6,103 @@ import Foundation
 // no CoreML, no AppKit, and it never opens the microphone (D11, D12, invariant 8). Task 12 asserts
 // that at the linker level, because a budget with no check drifts.
 //
-// Task 1 is scaffolding; Task 4 implements the verbs.
+// Everything it decides lives in `ClientCommand` in DictaCore, where a test can reach it. What is
+// left here is the part that cannot be pure: the socket, the desktop notification, and the exit
+// code.
+//
+//     dictactl toggle --mode clean --session "$AGT_SESSION_ID" --socket "$AGT_SOCKET"
+//     dictactl abort
+//     dictactl status
+//
+// See `docs/keymap.snippet.conf`, which is checked against `ClientCommand.parse` by a test.
 
-FileHandle.standardError.write(Data(
-    "dictactl \(DictaCore.version): not implemented yet (scaffolding only)\n".utf8
-))
-exit(EXIT_FAILURE)
+/// Says it out loud on the desktop, not only on a stderr nobody is reading (§7).
+///
+/// This is deliberately re-implemented here rather than reused from `DictaRuntime`: it runs
+/// precisely when the daemon is unreachable, so it must not depend on anything the daemon owns —
+/// and `dictactl` does not link `DictaRuntime` in the first place (D12).
+func notify(_ message: String, agtermSocket: String?) {
+    let candidates = ["/opt/homebrew/bin/agtermctl", "/usr/local/bin/agtermctl"]
+    if let executable = candidates.first(where: {
+        FileManager.default.isExecutableFile(atPath: $0)
+    }) {
+        var arguments = ["notify", message, "--title", "dicta"]
+        // Addressing the agterm the chord was pressed in, rather than whichever instance answers
+        // the default socket first.
+        if let socket = agtermSocket { arguments += ["--socket", socket] }
+        if run(executable, arguments) { return }
+    }
+    // agterm may be the thing that is broken. osascript is always there, and a failure the user
+    // cannot see is the failure that matters here.
+    let script = "display notification \(quoted(message)) with title \"dicta\""
+    _ = run("/usr/bin/osascript", ["-e", script])
+}
+
+func quoted(_ text: String) -> String {
+    "\"" + text.replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "\"", with: "\\\"") + "\""
+}
+
+@discardableResult
+func run(_ executable: String, _ arguments: [String]) -> Bool {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: executable)
+    process.arguments = arguments
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    do {
+        try process.run()
+    } catch {
+        return false
+    }
+    process.waitUntilExit()
+    return process.terminationStatus == 0
+}
+
+func fail(_ message: String, code: Int32, agtermSocket: String? = nil) -> Never {
+    FileHandle.standardError.write(Data("dictactl: \(message)\n".utf8))
+    notify(message, agtermSocket: agtermSocket)
+    exit(code)
+}
+
+let arguments = Array(CommandLine.arguments.dropFirst())
+
+if arguments.first == "--help" || arguments.first == "-h" {
+    print(ClientCommand.usage)
+    exit(ClientCommand.ExitCode.ok)
+}
+
+let invocation: ClientCommand.Invocation
+switch ClientCommand.parse(arguments) {
+case let .success(parsed):
+    invocation = parsed
+case let .failure(error):
+    // A usage error is almost always a keymap line that no longer matches this build, and the user
+    // finds out by pressing a chord and getting nothing. That deserves the same loudness as an
+    // unreachable daemon.
+    fail("\(error)", code: ClientCommand.ExitCode.usage)
+}
+
+let controlSocket = invocation.controlSocket ?? Paths.current.socket.path
+
+do {
+    let response = try ControlClient.send(invocation.request, to: controlSocket)
+    if let text = response.text {
+        print(text)
+    } else if let message = response.message {
+        print(message)
+    } else {
+        print(response.state.rawValue)
+    }
+    // A rejection is announced by the daemon, with its sound and its notification (§6). The client
+    // only carries the exit code, or the user would hear about it twice.
+    exit(response.kind == .rejected ? ClientCommand.ExitCode.rejected : ClientCommand.ExitCode.ok)
+} catch let error as ControlClient.ClientError {
+    fail("\(error)",
+         code: ClientCommand.ExitCode.unreachable,
+         agtermSocket: invocation.request.agtermSocket)
+} catch {
+    fail("\(error)",
+         code: ClientCommand.ExitCode.unreachable,
+         agtermSocket: invocation.request.agtermSocket)
+}

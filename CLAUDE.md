@@ -24,9 +24,11 @@ Conversation about this project is in Russian. The repository is not.
 
 ## Where it stands
 
-**Task 1 of 13 (plan `docs/plans/20260814-dicta-steps-1-3.md`): scaffolding only.** The target graph
-builds, the test gate is proven able to fail, and every module holds a marker and nothing else.
-There is no socket, no state machine, no microphone, no model.
+**Task 4 of 13 (plan `docs/plans/20260814-dicta-steps-1-3.md`) is done.** `DictaCore` holds the wire
+types, `Paths`, the sanitiser and the lifecycle state machine; `DictaIPC` holds both halves of the
+control socket; `dictactl` speaks all six verbs and `docs/keymap.snippet.conf` is checked by a test
+against the parser the binary uses. There is no daemon behind the socket yet, and no microphone and
+no model: `Dicta` still exits with a scaffolding message.
 
 The plan covers steps 1–3 of SPEC.md §10. Steps 4 (the filter) and 5 (the §7 audit) are out of it.
 
@@ -151,6 +153,15 @@ Distilled from SPEC.md §3. Each one is a mistake already made, or one the spec 
   meeting: no segmentation, no disk journal, no recovery pass. Audio stays in RAM.
 - **Never install anything globally to make a check pass.** SwiftLint is absent by design; the lint
   script works without it.
+- **The control socket serves each connection on a real `Thread`, never on `DispatchQueue.global()`
+  or a queue targeting it** (Task 4, measured). On Darwin, Swift concurrency's executor runs on the
+  same *non-overcommit* global worker pool `DispatchQueue.global()` draws from, and that pool does
+  not grow when its threads block. Anything that blocks a cooperative thread — the parallel test
+  suite calling `ControlClient.send`, or the daemon awaiting a lock — can therefore leave no worker
+  to run the front door. Observed exactly once: with connections on the global pool, round trips
+  that take 0.03 s serially starved into their full 3 s timeout under a parallel run, and *which*
+  tests failed changed from run to run. Test writers that fill a socket buffer need the same
+  treatment, for the same reason.
 
 ## Not verified automatically (needs a human)
 
