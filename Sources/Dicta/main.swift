@@ -74,6 +74,10 @@ let daemon = Daemon(
     capture: ImmediateCapture(),
     transcriber: FakeTranscriber(),
     filter: NoFilter(),
+    // The real record (§9), created on demand under the support directory. Even with capture and
+    // recognition faked, every attempt lands here -- which is what makes `dictactl last` work
+    // today, and what makes invariant 10 observable before the microphone exists.
+    history: FileHistory(),
     clock: SystemClock(),
     // One `Agterm` per attempt, addressed at the agterm the chord fired in ($AGT_SOCKET, F3). The
     // command line's `--agterm-socket` is the fallback for a keymap that does not pass it.

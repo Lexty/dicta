@@ -145,6 +145,17 @@ public enum DeliveryFailure: Error, Equatable, CustomStringConvertible {
         case .mayBePartial: .partial(reason: description)
         }
     }
+
+    /// §9's word for it. Three rows of §7, three outcomes: the record must be able to tell "nothing
+    /// was typed" from "something may have been", because only one of them means the user should
+    /// look at their input line before pasting from `dictactl last`.
+    public var recordOutcome: AttemptOutcome {
+        switch self {
+        case .targetGone: .targetGone
+        case .notStarted: .injectionFailed
+        case .mayBePartial: .injectionPartial
+        }
+    }
 }
 
 /// Keystrokes into a terminal. Whatever is handed here is **final** (§2): already replaced, already

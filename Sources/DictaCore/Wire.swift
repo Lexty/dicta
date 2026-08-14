@@ -103,19 +103,25 @@ public struct Request: Codable, Sendable, Equatable {
     /// The attempt this command is about, when the caller knows it. A chord does not: the daemon
     /// owns the id, so `toggle` names none.
     public var attempt: AttemptID?
+    /// `last --recognised`: print the recogniser's verbatim output rather than what was injected.
+    /// Reading text back is not injection, so the sanitiser does not apply to it (§9), and the two
+    /// fields differing is the whole way a replacement misfire is diagnosed.
+    public var verbatim: Bool?
 
     public init(
         cmd: Command,
         sessionID: String? = nil,
         agtermSocket: String? = nil,
         mode: Mode? = nil,
-        attempt: AttemptID? = nil
+        attempt: AttemptID? = nil,
+        verbatim: Bool? = nil
     ) {
         self.cmd = cmd
         self.sessionID = sessionID
         self.agtermSocket = agtermSocket
         self.mode = mode
         self.attempt = attempt
+        self.verbatim = verbatim
     }
 }
 

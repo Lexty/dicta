@@ -53,6 +53,9 @@ struct DaemonTests {
         let notifier = FakeNotifier()
         let resolver = FakeTargetResolver()
         let clock = FakeClock()
+        /// In memory, never the user's real record: a test that appended to `Paths.current.record`
+        /// would corrupt the file holding every word they have dictated.
+        let history = FakeHistory()
         let daemon: Daemon
 
         /// `injecting` and `processing` each last exactly as long as one synchronous seam call, so
@@ -61,7 +64,8 @@ struct DaemonTests {
              warmupTimeout: TimeInterval = 5,
              drainTimeout: TimeInterval = 10,
              transcriber: (any Transcriber)? = nil,
-             injector: (any Injector)? = nil) {
+             injector: (any Injector)? = nil,
+             history: (any History)? = nil) {
             // `/tmp` rather than the per-user temp directory, for the reason `ControlSocketTests`
             // gives: `sun_path` is 104 bytes and $TMPDIR plus a UUID is most of that budget.
             directory = URL(fileURLWithPath: "/tmp")
@@ -80,6 +84,7 @@ struct DaemonTests {
                 capture: capture,
                 transcriber: transcriber ?? self.transcriber,
                 filter: filter,
+                history: history ?? self.history,
                 clock: clock,
                 resolver: resolver,
                 injector: injector ?? self.injector,
@@ -667,6 +672,7 @@ struct DaemonTests {
             ),
             capture: FakeCapture(),
             transcriber: FakeTranscriber(),
+            history: FakeHistory(),
             clock: FakeClock(),
             resolver: FakeTargetResolver(),
             injector: FakeInjector(),

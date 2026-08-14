@@ -84,10 +84,34 @@ public final class Daemon: @unchecked Sendable {
         case draining(AttemptID)
     }
 
+    /// The §9 entry being assembled for the live attempt.
+    ///
+    /// It exists from `warming`, before there is any text, because §9 records attempts that never
+    /// reached recognition too (D17): an outcome and a reason with no text is the honest record
+    /// and a gap is not. Every field is filled by the stage that knows it; the entry is written by
+    /// whichever stage turns out to be the last one.
+    private struct Draft {
+        let id: AttemptID
+        let target: Target
+        /// Chosen by the STOPPING chord (D3), so it is `clean` until one arrives.
+        var mode: Mode = .clean
+        var recognised = ""
+        var final = ""
+        var rules = RulesApplied.none
+        /// The reasons the user was shown, in order. Joined into §9's `error`: an attempt can have
+        /// both a filter fallback and a delivery failure, and dropping one would be a lie.
+        var notes: [String] = []
+        /// The outcome that supersedes `injected` for an attempt whose text still arrives -- the
+        /// filter having fallen back (§7), or the dictionary being degraded (Task 11). Kept as
+        /// a value rather than a flag because §9's `outcome` is one field with eleven values.
+        var degraded: AttemptOutcome?
+    }
+
     public let configuration: Configuration
     private let capture: any Capture
     private let transcriber: any Transcriber
     private let filter: any Filter
+    private let history: any History
     private let clock: any Clock
     private let provider: TerminalProvider
 
@@ -104,6 +128,10 @@ public final class Daemon: @unchecked Sendable {
     /// need somewhere to land, and this is that somewhere.
     private var rememberedTarget: Target?
     private var parkedAttempt: AttemptID?
+    private var draft: Draft?
+    /// A record append that failed, waiting to be said out loud. §7 puts the injection first and
+    /// the complaint second, so it is parked here rather than notified where it happens.
+    private var historyTrouble: String?
     private var terminal: Terminal
     private var watched: Watched = .nothing
     private var watchdog: (any ScheduledWork)?
@@ -111,11 +139,15 @@ public final class Daemon: @unchecked Sendable {
 
     // MARK: - construction
 
+    /// `history` has no default, deliberately. The obvious one -- `FileHistory()` -- points at the
+    /// user's real record, and a test that forgot the parameter would append to the file holding
+    /// every word they have ever dictated.
     public init(
         configuration: Configuration = Configuration(),
         capture: any Capture,
         transcriber: any Transcriber,
         filter: any Filter = NoFilter(),
+        history: any History,
         clock: any Clock = SystemClock(),
         terminal provider: @escaping TerminalProvider
     ) {
@@ -123,6 +155,7 @@ public final class Daemon: @unchecked Sendable {
         self.capture = capture
         self.transcriber = transcriber
         self.filter = filter
+        self.history = history
         self.clock = clock
         self.provider = provider
         terminal = provider(nil)
@@ -134,6 +167,7 @@ public final class Daemon: @unchecked Sendable {
         capture: any Capture,
         transcriber: any Transcriber,
         filter: any Filter = NoFilter(),
+        history: any History,
         clock: any Clock = SystemClock(),
         resolver: any TargetResolver,
         injector: any Injector,
@@ -141,7 +175,7 @@ public final class Daemon: @unchecked Sendable {
     ) {
         let fixed = Terminal(resolver: resolver, injector: injector, notifier: notifier)
         self.init(configuration: configuration, capture: capture, transcriber: transcriber,
-                  filter: filter, clock: clock, terminal: { _ in fixed })
+                  filter: filter, history: history, clock: clock, terminal: { _ in fixed })
     }
 
     // MARK: - lifecycle
@@ -211,9 +245,7 @@ public final class Daemon: @unchecked Sendable {
         case .status:
             return response(.accepted)
         case .last:
-            // The record arrives in Task 7. Saying so beats answering with an empty string, which
-            // reads as "you have never dictated anything".
-            return response(.noop, message: "dicta keeps no record yet")
+            return answerLast(verbatim: request.verbatim == true)
         case .stop:
             return respond(to: apply(.stop(mode: request.mode ?? .clean, attempt: request.attempt)))
         case .abort:
@@ -257,6 +289,40 @@ public final class Daemon: @unchecked Sendable {
             : .start(target: target, at: clock.now)
     }
 
+    /// `dictactl last`: the most recent attempt's text, read back out of the record (§9).
+    ///
+    /// Reading is not injection, so invariant 1 does not apply and nothing here sanitises anything.
+    /// `--recognised` hands back the recogniser's output byte for byte, newlines included. That is
+    /// the point of storing both fields: a replacement misfire is only diagnosable by comparing
+    /// them.
+    private func answerLast(verbatim: Bool) -> Response {
+        let entries: [RecordEntry]
+        do {
+            entries = try history.entries()
+        } catch {
+            // Not notified: `last` is typed at a shell, where the message on stdout and a non-zero
+            // exit are already in front of the person who asked. A desktop notification is for the
+            // failures nobody is looking at (§7).
+            return response(.rejected, message: "dicta could not read the record: "
+                + Self.reason(error))
+        }
+        guard let entry = entries.last else {
+            return response(.noop, message: "dicta has no record yet")
+        }
+        let text = verbatim ? entry.recognised : entry.final
+        guard !text.isEmpty else {
+            // The honest answer for an attempt that produced no text (D17), rather than an empty
+            // line -- which reads as "you have never dictated anything".
+            let detail = entry.error.map { " — \($0)" } ?? ""
+            return response(.noop, message: "attempt #\(entry.id) produced no "
+                + (verbatim ? "recognised" : "final")
+                + " text (\(entry.outcome.rawValue))\(detail)")
+        }
+        let state = stateLock.withLock { machine.state }
+        return Response(kind: .accepted, state: state, attempt: entry.id, target: entry.target,
+                        text: text)
+    }
+
     /// A refusal the machine never saw, because the command did not survive far enough to become an
     /// event. Notification-only for the same reason as an undecodable frame: no target could be
     /// named, and lighting the previous attempt's pane would be D4's substitution wearing a colour.
@@ -269,14 +335,24 @@ public final class Daemon: @unchecked Sendable {
 
     @discardableResult
     private func apply(_ event: Event) -> Transition {
-        let (transition, phase) = stateLock.withLock {
-            (machine.apply(event), machine.phase)
+        // The phase before and after, read under the same lock as the transition: the record needs
+        // to know whether this event ENDED an attempt, and asking afterwards would race a chord.
+        let (before, transition, phase) = stateLock.withLock {
+            let before = machine.phase
+            let transition = machine.apply(event)
+            return (before, transition, machine.phase)
         }
+        // Before `sync`, which drops the draft when the attempt is over, and before the effects, so
+        // that the notification the user reads is never ahead of the entry that explains it.
+        recordEnd(event, before: before, after: phase, transition: transition)
         // Before the effects, so that `.beginCapture` and `.drainCapture` are already being watched
         // when they are performed -- a capture that reports synchronously would otherwise leave a
         // watchdog armed on an attempt that has already moved on.
         sync(phase)
         for effect in transition.effects { perform(effect) }
+        // Last, so §7's order holds: the injection is attempted first and the complaint about the
+        // record comes after it.
+        reportHistoryTrouble()
         return transition
     }
 
@@ -333,11 +409,15 @@ public final class Daemon: @unchecked Sendable {
         do {
             recognised = try transcriber.transcribe(audio)
         } catch {
-            // §7: no injection, notify, and the attempt is recorded with its error and no text
-            // (Task 7 writes that row).
+            // §7: no injection, notify, and the attempt is recorded with its error and no text --
+            // `recordEnd` writes that row from the transition this produces.
             apply(.recognised(id, .failed(reason: "the recogniser failed: \(Self.reason(error))")))
             return
         }
+        // §9's `recognised`, verbatim: no cleaning, no trimming, and stored BEFORE any later stage
+        // can touch the text. An entry whose `recognised` had already been through the dictionary
+        // would make a misfire invisible, which is the one thing the field exists to prevent.
+        updateDraft(id) { $0.recognised = recognised }
 
         // **replaced** (§2). The Tier 0 dictionary arrives in Task 11; until then this stage is the
         // identity, which is why it is named rather than skipped -- the filter's fallback is
@@ -357,6 +437,14 @@ public final class Daemon: @unchecked Sendable {
                 filterFailure = "the filter did not run: \(Self.reason(error))"
             }
         }
+        if let filterFailure {
+            // The text still arrives, so the entry is not a failure -- but `filter-fell-back` is
+            // the fact worth keeping about it, and it supersedes `injected` (§7, §9).
+            updateDraft(id) {
+                $0.notes.append(filterFailure)
+                $0.degraded = .filterFellBack
+            }
+        }
 
         // Last, always (invariant 1): both stages above can introduce a newline, and
         // `agtermctl session type` turns a newline into a Return that SUBMITS the input line (D8).
@@ -365,6 +453,7 @@ public final class Daemon: @unchecked Sendable {
             // An empty insertion is worse than none (§7).
             apply(.recognised(id, .empty))
         case let .line(final):
+            updateDraft(id) { $0.final = final }
             stateLock.withLock { pendingFinal = (id, final) }
             let transition = apply(.recognised(id, .text))
             guard transition.effects.contains(where: \.isInjection) else {
@@ -381,26 +470,121 @@ public final class Daemon: @unchecked Sendable {
     }
 
     private func deliver(_ id: AttemptID, to target: Target) {
-        // Task 7 writes the record here, BEFORE the injection is attempted (invariant 10): that is
-        // the only route by which the text survives a delivery failure.
         guard let final = takeFinal(id) else {
-            apply(.injectionFinished(id, .failed(reason: "the text was lost before it was typed")))
+            let reason = "the text was lost before it was typed"
+            record(id, outcome: .injectionFailed, error: reason)
+            apply(.injectionFinished(id, .failed(reason: reason)))
             return
         }
         guard Sanitizer.isInjectable(final) else {
             // Unreachable through `Sanitizer.sanitize`, and asserted anyway: if it ever failed
             // here, injecting would submit a half-written prompt, and refusing is better (§8.2).
-            apply(.injectionFinished(id, .failed(reason: "the text is not a single line")))
+            let reason = "the text is not a single line"
+            record(id, outcome: .injectionFailed, error: reason)
+            apply(.injectionFinished(id, .failed(reason: reason)))
             return
         }
+        // Invariant 10, and the reason this line sits above the injection rather than below it:
+        // once the entry is on disk, no delivery failure can cost the user their words. A failed
+        // append does NOT stop the delivery (§7) -- it parks a loud complaint for afterwards.
+        record(id, outcome: stateLock.withLock { draft?.degraded } ?? .injected)
         do {
             // Re-validates both halves of the target itself (D4, §8.3) and never retries (§7).
             try terminal.injector.inject(final, into: target)
             apply(.injectionFinished(id, .delivered))
         } catch let failure as DeliveryFailure {
+            // The file is append-only, so the line above cannot be corrected in place: this writes
+            // a superseding line for the same attempt, and the reader takes the last one (§9).
+            record(id, outcome: failure.recordOutcome, error: failure.description)
             apply(.injectionFinished(id, failure.injectionResult))
         } catch {
-            apply(.injectionFinished(id, .failed(reason: Self.reason(error))))
+            let reason = Self.reason(error)
+            record(id, outcome: .injectionFailed, error: reason)
+            apply(.injectionFinished(id, .failed(reason: reason)))
+        }
+    }
+
+    // MARK: - the record (§9)
+
+    /// Writes the entry for an attempt that has ended, choosing §9's outcome from the event that
+    /// ended it. The delivery outcomes are absent on purpose: `deliver` owns those, because the
+    /// entry has to exist BEFORE the keystrokes it describes (invariant 10).
+    private func recordEnd(_ event: Event, before: Phase, after: Phase, transition: Transition) {
+        guard let attempt = before.attempt, after.attempt == nil,
+              // A rejected or ignored command ended nothing, so it is not an attempt of its own.
+              transition.outcome == .accepted
+        else { return }
+        let outcome: AttemptOutcome
+        switch event {
+        case .injectionFinished:
+            return
+        case .fault:
+            // Never `empty`, whatever stage it arrived in (invariant 7). Task 9 splits the duration
+            // cap out of this row as `capped` (D15).
+            outcome = .captureFault
+        case let .recognised(_, result):
+            switch result {
+            case .text: return // moves to `injecting`; the attempt has not ended
+            case .empty: outcome = .empty
+            case .failed: outcome = .recognitionFailed
+            }
+        case .start, .captureReady, .captureDrained:
+            return // none of these can end an attempt
+        case .stop, .abort, .toggle:
+            // Including a stop while `warming`, which §6 calls a cancel: no audio existed, so there
+            // is nothing to report but the reason.
+            outcome = .aborted
+        }
+        record(attempt.id, outcome: outcome, error: transition.message)
+    }
+
+    /// Appends one line for `id`, built from its draft. Called at most twice per attempt, and only
+    /// ever a second time to supersede the pre-injection line with the delivery's verdict.
+    private func record(_ id: AttemptID, outcome: AttemptOutcome, error: String? = nil) {
+        let now = clock.now
+        let entry = stateLock.withLock { () -> RecordEntry? in
+            guard var current = draft, current.id == id else { return nil }
+            if let error { current.notes.append(error) }
+            draft = current
+            return RecordEntry(
+                id: current.id,
+                at: now,
+                outcome: outcome,
+                mode: current.mode,
+                recognised: current.recognised,
+                final: current.final,
+                rules: current.rules,
+                target: current.target,
+                error: current.notes.isEmpty ? nil : current.notes.joined(separator: "; ")
+            )
+        }
+        guard let entry else { return }
+        do {
+            try history.append(entry)
+        } catch {
+            // §7's "history append fails" row. Property 2 -- nothing disappears quietly -- is
+            // exactly what just broke, so this is loud, and it never blocks a delivery.
+            stateLock.withLock {
+                historyTrouble = "dicta could not save this dictation: \(Self.reason(error))"
+                    + " -- recovery from the record is unavailable"
+            }
+        }
+    }
+
+    private func reportHistoryTrouble() {
+        let message = stateLock.withLock { () -> String? in
+            defer { historyTrouble = nil }
+            return historyTrouble
+        }
+        guard let message else { return }
+        notifier.notify(message, for: knownTarget)
+    }
+
+    private func updateDraft(_ id: AttemptID, _ body: (inout Draft) -> Void) {
+        stateLock.withLock {
+            guard var current = draft, current.id == id else { return }
+            body(&current)
+            draft = current
         }
     }
 
@@ -443,6 +627,22 @@ public final class Daemon: @unchecked Sendable {
     /// Everything that must follow the phase rather than an individual event: which state is being
     /// watched, and whether a target is parked on disk for the next daemon to tidy up.
     private func sync(_ phase: Phase) {
+        // The mode is the stopping chord's (D3), so the draft learns it the moment a phase carries
+        // one -- which is before any stage that could write the entry runs.
+        stateLock.withLock {
+            switch phase {
+            case .idle:
+                draft = nil
+            case let .warming(attempt):
+                if draft?.id != attempt.id {
+                    draft = Draft(id: attempt.id, target: attempt.target)
+                }
+            case .recording:
+                break
+            case let .draining(_, mode), let .processing(_, mode), let .injecting(_, mode):
+                draft?.mode = mode
+            }
+        }
         switch phase {
         case .idle:
             setWatchdog(.nothing)

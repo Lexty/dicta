@@ -96,14 +96,22 @@ public enum ClientCommand {
       --socket <path>      agterm's control socket; pass "$AGT_SOCKET"
       --control <path>     dicta's own control socket (defaults to the one under
                            ~/Library/Application Support/dev.personal.dicta)
+      --recognised         on last: print the recogniser's verbatim output instead of what was
+                           injected — the two together are how a replacement misfire is diagnosed
     """
 
     private static let modeFlag = "--mode"
     private static let sessionFlag = "--session"
     private static let agtermSocketFlag = "--socket"
     private static let controlFlag = "--control"
+    private static let recognisedFlag = "--recognised"
 
-    private static let allFlags = [modeFlag, sessionFlag, agtermSocketFlag, controlFlag]
+    private static let allFlags = [modeFlag, sessionFlag, agtermSocketFlag, controlFlag,
+                                   recognisedFlag]
+
+    /// Flags that are their own value. The only one, and it stays a list because a parser with a
+    /// special case for exactly one flag grows a second special case the next time.
+    private static let booleanFlags = [recognisedFlag]
 
     /// Which flags each verb accepts. `--socket` and `--control` are universal because both are
     /// about *reaching* something rather than about what to do; `--session` is not, because only
@@ -113,7 +121,8 @@ public enum ClientCommand {
         case .toggle: [modeFlag, sessionFlag, agtermSocketFlag, controlFlag]
         case .start: [sessionFlag, agtermSocketFlag, controlFlag]
         case .stop: [modeFlag, agtermSocketFlag, controlFlag]
-        case .abort, .status, .last: [agtermSocketFlag, controlFlag]
+        case .last: [recognisedFlag, agtermSocketFlag, controlFlag]
+        case .abort, .status: [agtermSocketFlag, controlFlag]
         }
     }
 
@@ -132,6 +141,7 @@ public enum ClientCommand {
         guard let command = Command(rawValue: verb) else { return .failure(.unknownCommand(verb)) }
 
         var values: [String: String] = [:]
+        var switches: Set<String> = []
         var index = 1
         while index < arguments.count {
             let argument = arguments[index]
@@ -139,6 +149,11 @@ public enum ClientCommand {
             guard allFlags.contains(argument) else { return .failure(.unknownFlag(argument)) }
             guard acceptedFlags(for: command).contains(argument) else {
                 return .failure(.flagNotAccepted(flag: argument, by: command))
+            }
+            if booleanFlags.contains(argument) {
+                switches.insert(argument)
+                index += 1
+                continue
             }
             guard index + 1 < arguments.count else {
                 return .failure(.missingValue(flag: argument))
@@ -174,7 +189,10 @@ public enum ClientCommand {
                 cmd: command,
                 sessionID: session,
                 agtermSocket: given(agtermSocketFlag),
-                mode: mode
+                mode: mode,
+                // `nil` rather than `false` when it was not asked for, so the frame a chord sends
+                // carries only what the chord actually said.
+                verbatim: switches.contains(recognisedFlag) ? true : nil
             ),
             controlSocket: given(controlFlag)
         ))

@@ -24,8 +24,9 @@ Conversation about this project is in Russian. The repository is not.
 
 ## Where it stands
 
-**Task 6 of 13 (plan `docs/plans/20260814-dicta-steps-1-3.md`) is done — step 1 of SPEC.md §10 is
-complete.** `DictaCore` holds the wire types, `Paths`, the sanitiser and the lifecycle state machine;
+**Task 7 of 13 (plan `docs/plans/20260814-dicta-steps-1-3.md`) is done — step 1 of SPEC.md §10 is
+complete, and the record it is scored through exists.** `DictaCore` holds the wire types, `Paths`,
+the sanitiser, the lifecycle state machine and the §9 record schema;
 `DictaIPC` holds both halves of the control socket; `dictactl` speaks all six verbs and
 `docs/keymap.snippet.conf` is checked by a test against the parser the binary uses. `DictaRuntime`
 holds the six seams with their fakes, the `agterm` adapter — target resolution off `agtermctl tree
@@ -33,9 +34,11 @@ holds the six seams with their fakes, the `agterm` adapter — target resolution
 `Daemon`, which wires the socket, the state machine and the seams into whole attempts.
 
 `Dicta` is a real daemon: it serves the socket, refuses a second instance, resolves the pane from the
-live tree, and delivers the canned hostile transcript as one sanitised line. Capture and recognition
-are still fakes (`ImmediateCapture`, `FakeTranscriber`) — Tasks 9 and 10 replace exactly those two
-lines of `Sources/Dicta/main.swift`. There is no record yet, so `dictactl last` says so.
+live tree, and delivers the canned hostile transcript as one sanitised line. Every attempt now leaves
+one entry in `record.jsonl` (`History`, `FileHistory`), written **before** the keystrokes, and
+`dictactl last` reads it back — `final` by default, `recognised` verbatim behind `--recognised`.
+Capture and recognition are still fakes (`ImmediateCapture`, `FakeTranscriber`) — Tasks 9 and 10
+replace exactly those two lines of `Sources/Dicta/main.swift`.
 
 The plan covers steps 1–3 of SPEC.md §10. Steps 4 (the filter) and 5 (the §7 audit) are out of it.
 
@@ -147,7 +150,15 @@ Distilled from SPEC.md §3. Each one is a mistake already made, or one the spec 
 - **The duration cap stops and does not inject** (D15). Ten minutes of forgotten speech landing in
   an agent's prompt is worse than losing it; whatever text was produced still reaches the record.
 - **Recognised text reaches the record before injection is attempted** (invariant 10). That is the
-  only route by which text survives a delivery failure.
+  only route by which text survives a delivery failure. The consequence is easy to get wrong: the
+  outcome of an attempt is not known until the keystrokes have been tried, and the file cannot be
+  rewritten, so a delivery that fails appends a **superseding line with the same attempt id** and
+  `Record.entries` takes the last line per id. "One entry per attempt" is a property of the reader;
+  the file itself is append-only. Do not "fix" this by writing the entry after the injection — the
+  test `the entry is on disk before the first keystroke is attempted` exists to catch exactly that,
+  and it was probed by making it fail.
+- **A failing record append never blocks a delivery** (§7). It injects, then says loudly that
+  recovery is unavailable — in that order, because a complaint arriving first reads as a refusal.
 - **A rejection is audible; a no-op is silent** (§6). Pressing stop again because nothing visibly
   happened is normal behaviour, and an alarming noise would punish it.
 - **Cancellation is refused once injection has begun** (D20). Keystrokes already in the terminal

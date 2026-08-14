@@ -282,6 +282,46 @@ public final class FakeNotifier: Notifier, @unchecked Sendable {
     }
 }
 
+/// The record, in memory, with the same superseding rule the file has.
+///
+/// It keeps EVERY line it was handed, not one per attempt: "written before injection is attempted"
+/// (invariant 10) is a claim about a line existing at a moment, and a fake that collapsed
+/// on write would make it unobservable. `entries()` collapses, exactly as `FileHistory` does.
+public final class FakeHistory: History, @unchecked Sendable {
+    /// §7's "history append fails" row, which no real filesystem produces on request.
+    public struct Unavailable: Error, CustomStringConvertible {
+        public init() {}
+        public var description: String { "the record is unavailable" }
+    }
+
+    private let lock = NSLock()
+    private var log: [RecordEntry] = []
+    private var error: (any Error)?
+
+    public init() {}
+
+    /// Every append, in order, superseded lines included.
+    public var appended: [RecordEntry] { lock.withLock { log } }
+
+    public func setError(_ error: (any Error)?) { lock.withLock { self.error = error } }
+
+    public func append(_ entry: RecordEntry) throws {
+        let error = lock.withLock { () -> (any Error)? in
+            guard let error = self.error else {
+                log.append(entry)
+                return nil
+            }
+            return error
+        }
+        if let error { throw error }
+    }
+
+    public func entries() throws -> [RecordEntry] {
+        if let error = lock.withLock({ self.error }) { throw error }
+        return Record.collapse(appended)
+    }
+}
+
 /// Time the test moves by hand.
 public final class FakeClock: Clock, @unchecked Sendable {
     private final class Pending: ScheduledWork, @unchecked Sendable {
