@@ -1,4 +1,5 @@
 import DictaCore
+import DictaIPC
 import DictaRuntime
 import Foundation
 import Testing
@@ -11,6 +12,19 @@ import Testing
 /// to account is everything around it: that the models load once and only once, that a chord
 /// arriving mid-load waits instead of losing the utterance, that a missing model is diagnosed
 /// before the first chord rather than during it, and that unusable output never becomes keystrokes.
+/// Spins until `condition` holds, and FAILS at the deadline rather than spinning for ever.
+///
+/// `while !condition { usleep(1_000) }` with no ceiling is the shape that turns a regression into a
+/// hung `Scripts/test.sh` — the only gate this project has — instead of a red assertion. The value
+/// is generous on purpose: it is a deadlock detector, not a performance budget.
+func waitUntil(_ what: String, seconds: TimeInterval = 10,
+               _ condition: () -> Bool, sourceLocation: SourceLocation = #_sourceLocation) {
+    let deadline = Date().addingTimeInterval(seconds)
+    while !condition(), Date() < deadline { usleep(1_000) }
+    #expect(condition(), "\(what) did not happen within \(Int(seconds)) s",
+            sourceLocation: sourceLocation)
+}
+
 @Suite("transcriber")
 struct TranscriberTests {
     // MARK: - a recogniser that counts what it was asked to do
@@ -181,7 +195,7 @@ struct TranscriberTests {
         loading.start()
         // Let the load get as far as blocking. Not a synchronisation point the result depends on:
         // whether `transcribe` arrives before or after the load starts, it must still answer.
-        while engine.loadCount == 0 { usleep(1_000) }
+        waitUntil("the load reached the engine") { engine.loadCount > 0 }
 
         let done = DispatchSemaphore(value: 0)
         let answer = Answer()
@@ -212,7 +226,7 @@ struct TranscriberTests {
 
         let first = Thread { _ = try? transcriber.prepare() }
         first.start()
-        while engine.loadCount == 0 { usleep(1_000) }
+        waitUntil("the first load reached the engine") { engine.loadCount > 0 }
 
         // While the first load is in flight.
         let secondDone = DispatchSemaphore(value: 0)
@@ -224,7 +238,7 @@ struct TranscriberTests {
 
         engine.releaseLoad()
         #expect(secondDone.wait(timeout: .now() + 10) == .success)
-        while !transcriber.isReady { usleep(1_000) }
+        waitUntil("the transcriber became ready") { transcriber.isReady }
 
         // And once it has finished.
         _ = try transcriber.prepare()
@@ -302,6 +316,26 @@ struct TranscriberTests {
         // `parakeet-tdt-0.6b-v3-coreml`, and its cache folder strips the `-coreml`. Spelling that
         // out anywhere in dicta would put the models one directory away from where they are read.
         #expect(ParakeetModels.directory.lastPathComponent == "parakeet-tdt-0.6b-v3")
+    }
+
+    @Test("the daemon's own ceilings fit inside the client's read timeout")
+    func daemonCeilingsFitTheClientTimeout() {
+        // The daemon does NOT answer before doing the work: a `stop` returns only after drain →
+        // recognition → dictionary → sanitiser → keystrokes, all inside the handler lock. So the
+        // client's read timeout is a ceiling on the whole pipeline, and any daemon-side ceiling
+        // above it reproduces the failure `pipelineRead` was raised to remove -- `dictactl` saying
+        // "dicta did not answer" and firing the desktop notification about a dictation that then
+        // lands a minute later.
+        //
+        // These four numbers live in three files and were set independently; before this assertion
+        // existed they read 120 + 60 against a client that gave up at 30.
+        let agtermCalls = ProcessRunner.defaultDeadline * 3 // validate, session type, announce
+        let worstCase = Double(ParakeetTranscriber.patience)
+            + Double(ParakeetEngine.inferenceCeiling)
+            + agtermCalls
+        let givesUpAt = ControlTimeouts.pipelineRead
+        #expect(worstCase <= givesUpAt,
+                "the daemon would spend \(worstCase) s; the client gives up at \(givesUpAt) s")
     }
 }
 

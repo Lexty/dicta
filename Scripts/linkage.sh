@@ -56,6 +56,19 @@ fi
 
 [ -f "$BINARY" ] || { echo "linkage: no such binary: $BINARY" >&2; exit 2; }
 
+# The tools must have UNDERSTOOD the binary before their silence means anything, and that is not a
+# hypothetical: `otool -L` on a file that is not Mach-O prints "…: is not an object file" and EXITS
+# 0. `tail -n +2` then eats that one line as if it were the normal header, `grep` finds nothing, and
+# the script reports "linkage: clean" — about a truncated build, a shell script, or a path that is
+# simply not the binary. `nm` exits non-zero in the same case, but its status was going to `|| true`
+# and its stderr to /dev/null, so it reported clean too. This is the one check no swift-testing
+# assertion can reach (invariant 8, D12) and the first thing `test.sh` runs; a vacuous pass here is
+# worse than no check at all, because it is read as evidence.
+if ! file "$BINARY" | grep -q 'Mach-O'; then
+    echo "linkage: $BINARY is not a Mach-O binary — otool and nm cannot read it" >&2
+    exit 2
+fi
+
 status=0
 fail() {
     printf 'linkage: %s\n' "$1" >&2
@@ -66,8 +79,14 @@ fail() {
 # in person, and it reaches a binary only through DictaRuntime.
 FORBIDDEN='AVFoundation|CoreML|AppKit|FluidAudio'
 
-# 1. Load commands.
-hits="$(otool -L "$BINARY" | tail -n +2 | grep -E "$FORBIDDEN" || true)"
+# 1. Load commands. The tool's own exit status is checked separately from "matched nothing", so a
+# failure to read is never mistaken for a clean result.
+if ! loaded="$(otool -L "$BINARY" 2>&1)"; then
+    printf '%s\n' "$loaded" >&2
+    fail "otool could not read $BINARY — the load-command check did not run"
+    loaded=""
+fi
+hits="$(printf '%s\n' "$loaded" | tail -n +2 | grep -E "$FORBIDDEN" || true)"
 if [ -n "$hits" ]; then
     printf '%s\n' "$hits" >&2
     fail "$BINARY links a framework the keypress client must not link (D12, §8.8)"
@@ -76,7 +95,13 @@ fi
 # 2. Undefined symbols. Mangled Swift names carry the framework's module name ('6CoreML',
 # '12AVFoundation'), and Objective-C classes arrive as _OBJC_CLASS_$_AVAudioEngine, so one pattern
 # over the whole symbol name catches both spellings.
-hits="$(nm -u "$BINARY" 2>/dev/null | grep -E "$FORBIDDEN|AVAudio|MLModel|MLMultiArray|NSApplication|NSWorkspace" || true)"
+if ! undefined="$(nm -u "$BINARY" 2>&1)"; then
+    printf '%s\n' "$undefined" >&2
+    fail "nm -u could not read $BINARY — the undefined-symbol check did not run"
+    undefined=""
+fi
+hits="$(printf '%s\n' "$undefined" \
+    | grep -E "$FORBIDDEN|AVAudio|MLModel|MLMultiArray|NSApplication|NSWorkspace" || true)"
 if [ -n "$hits" ]; then
     # A here-string, not `printf | head`: under `set -o pipefail` a `head` that closes the pipe
     # early kills printf with SIGPIPE, the pipeline fails, `set -e` ends the script — and the
@@ -86,7 +111,12 @@ if [ -n "$hits" ]; then
 fi
 
 # 3. The dependency edge itself.
-hits="$(nm "$BINARY" 2>/dev/null | grep -E 'DictaRuntime' || true)"
+if ! symbols="$(nm "$BINARY" 2>&1)"; then
+    printf '%s\n' "$symbols" >&2
+    fail "nm could not read $BINARY — the dependency-edge check did not run"
+    symbols=""
+fi
+hits="$(printf '%s\n' "$symbols" | grep -E 'DictaRuntime' || true)"
 if [ -n "$hits" ]; then
     head -20 <<< "$hits" >&2
     fail "$BINARY carries DictaRuntime symbols — the D12 dependency edge has been crossed"

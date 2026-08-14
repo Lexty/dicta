@@ -152,6 +152,13 @@ public final class Daemon: @unchecked Sendable {
     /// the complaint second, so it is parked here rather than notified where it happens.
     private var historyTrouble: String?
     private var terminal: Terminal
+    /// The `$AGT_SOCKET` `terminal` was built from, kept so the parked target can name the agterm
+    /// instance the attempt belongs to (§7's stale-indicator row).
+    private var adoptedSocket: String?
+    /// Monotonic, stamped inside the critical section that produces a transition, so that `sync`
+    /// can tell a phase it has already superseded from a new one. See `apply`.
+    private var transitionSequence: UInt64 = 0
+    private var syncedSequence: UInt64 = 0
     private var watched: Watched = .nothing
     private var watchdog: (any ScheduledWork)?
     /// D15's cap, and the attempt it is counting for. Separate from the watchdog because the two
@@ -246,9 +253,14 @@ public final class Daemon: @unchecked Sendable {
     /// one at startup means the previous daemon died mid-attempt with a light still on.
     private func clearStaleIndicator() {
         guard let data = try? Data(contentsOf: configuration.activeTargetFile),
-              let target = try? JSONDecoder().decode(Target.self, from: data)
+              let parked = ParkedAttempt.decode(data)
         else { return }
-        terminal.notifier.clearIndicator(for: target)
+        // Through the agterm the dead attempt was addressed at, not through this daemon's current
+        // `terminal` -- which at this point in `start()` is still `provider(nil)`, i.e. whichever
+        // instance answers the default socket. Clearing there after a crash in a second agterm
+        // instance reports success and leaves the red "listening" light burning on a session that
+        // is not recording, which is the very row this exists to close.
+        provider(parked.agtermSocket).notifier.clearIndicator(for: parked.target)
         try? FileManager.default.removeItem(at: configuration.activeTargetFile)
     }
 
@@ -319,7 +331,7 @@ public final class Daemon: @unchecked Sendable {
         adoptTerminal(agtermSocket: request.agtermSocket)
         let target: Target
         do {
-            target = try terminal.resolver.resolveTarget(sessionID: sessionID)
+            target = try currentTerminal.resolver.resolveTarget(sessionID: sessionID)
         } catch {
             // Fail closed (D6). A pane this build cannot name exactly is not one it guesses at:
             // the alternative is somebody else's agent receiving the user's prompt.
@@ -383,10 +395,21 @@ public final class Daemon: @unchecked Sendable {
     private func apply(_ event: Event) -> Transition {
         // The phase before and after, read under the same lock as the transition: the record needs
         // to know whether this event ENDED an attempt, and asking afterwards would race a chord.
-        let (before, transition, phase) = stateLock.withLock {
+        //
+        // The sequence number is stamped in the SAME critical section, and `sync` refuses to apply
+        // an older one. `apply` is reached from two threads that share no lock -- the socket
+        // handler, and capture's own thread by way of `faulted`, the drain watchdog and D15's cap
+        // -- and only the transition itself was serialised. A fault ending attempt N could
+        // therefore read its phase, be descheduled, and run `sync(.idle)` AFTER a chord on the
+        // socket thread had already run `sync(.warming(N+1))`: the warm-up watchdog it had just
+        // armed was disarmed and the target it had just parked was unparked. Attempt N+1 then sat
+        // in `warming` for ever if capture never confirmed -- with no watchdog, which is the one
+        // case the watchdog exists for -- and refused every later chord as "already recording".
+        let (before, transition, phase, sequence) = stateLock.withLock {
             let before = machine.phase
             let transition = machine.apply(event)
-            return (before, transition, machine.phase)
+            transitionSequence += 1
+            return (before, transition, machine.phase, transitionSequence)
         }
         // Before `sync`, which drops the draft when the attempt is over, and before the effects, so
         // that the notification the user reads is never ahead of the entry that explains it.
@@ -394,7 +417,7 @@ public final class Daemon: @unchecked Sendable {
         // Before the effects, so that `.beginCapture` and `.drainCapture` are already being watched
         // when they are performed -- a capture that reports synchronously would otherwise leave a
         // watchdog armed on an attempt that has already moved on.
-        sync(phase)
+        sync(phase, sequence)
         for effect in transition.effects { perform(effect) }
         // Last, so §7's order holds: the injection is attempted first and the complaint about the
         // record comes after it.
@@ -590,7 +613,7 @@ public final class Daemon: @unchecked Sendable {
         record(id, outcome: stateLock.withLock { draft?.degraded } ?? .injected)
         do {
             // Re-validates both halves of the target itself (D4, §8.3) and never retries (§7).
-            try terminal.injector.inject(final, into: target)
+            try currentTerminal.injector.inject(final, into: target)
             apply(.injectionFinished(id, .delivered))
         } catch let failure as DeliveryFailure {
             // The file is append-only, so the line above cannot be corrected in place: this writes
@@ -730,18 +753,43 @@ public final class Daemon: @unchecked Sendable {
     /// The notifier of the agterm this attempt belongs to.
     private var notifier: any Notifier { stateLock.withLock { terminal.notifier } }
 
+    /// The whole three-existential struct, read under the lock that writes it.
+    ///
+    /// Reading `terminal` unlocked was a torn multi-word read, not a benign stale value: `begin`
+    /// runs on the socket thread while `deliver` can be on capture's, since recognition and
+    /// injection re-enter through `drainCapture`. Every use goes through here or `notifier`.
+    private var currentTerminal: Terminal { stateLock.withLock { terminal } }
+
     private func adoptTerminal(agtermSocket: String?) {
-        stateLock.withLock { terminal = provider(agtermSocket) }
+        stateLock.withLock {
+            // A command that cannot begin an attempt must not rebind the agterm the live one is
+            // addressed at. `start` while recording IS rejected -- but by the machine, further
+            // down `begin`, and by then the in-flight attempt's remaining announcements and its
+            // injection would already be travelling to whichever agterm the rejected chord named.
+            // That is D4's substitution arriving through the one door that resolves nothing, the
+            // same door `begin` already closes for `toggle`.
+            guard machine.currentAttempt == nil else { return }
+            terminal = provider(agtermSocket)
+            adoptedSocket = agtermSocket
+        }
     }
 
     // MARK: - the watchdog, and the parked target
 
     /// Everything that must follow the phase rather than an individual event: which state is being
     /// watched, and whether a target is parked on disk for the next daemon to tidy up.
-    private func sync(_ phase: Phase) {
+    ///
+    /// `sequence` is the stamp `apply` took under the lock that produced this phase. An application
+    /// older than one already made is dropped whole -- draft included, since a stale `.idle` would
+    /// otherwise throw away the draft of the attempt that has just begun. Dropping is correct
+    /// rather than merely safe: whatever the newest sequence saw IS the machine's state, so the
+    /// older phase describes a moment that has already been overwritten.
+    private func sync(_ phase: Phase, _ sequence: UInt64) {
         // The mode is the stopping chord's (D3), so the draft learns it the moment a phase carries
         // one -- which is before any stage that could write the entry runs.
-        stateLock.withLock {
+        let superseded = stateLock.withLock { () -> Bool in
+            guard sequence > syncedSequence else { return true }
+            syncedSequence = sequence
             switch phase {
             case .idle:
                 draft = nil
@@ -754,7 +802,9 @@ public final class Daemon: @unchecked Sendable {
             case let .draining(_, mode), let .processing(_, mode), let .injecting(_, mode):
                 draft?.mode = mode
             }
+            return false
         }
+        guard !superseded else { return }
         switch phase {
         case .idle:
             setWatchdog(.nothing)
@@ -831,14 +881,35 @@ public final class Daemon: @unchecked Sendable {
         }
     }
 
-    private func park(_ attempt: Attempt) {
-        let alreadyParked = stateLock.withLock { () -> Bool in
-            rememberedTarget = attempt.target
-            guard parkedAttempt != attempt.id else { return true }
-            parkedAttempt = attempt.id
-            return false
+    /// What is parked on disk while an attempt is live. The agterm socket is half of it: a target
+    /// alone says WHERE the light is but not WHICH agterm is showing it, and the next daemon has no
+    /// other way to find out -- the attempt that lit it is gone.
+    private struct ParkedAttempt: Codable {
+        var target: Target
+        var agtermSocket: String?
+
+        /// Tolerates a file written by an earlier build, which held a bare `Target`. A parked file
+        /// that cannot be read is a stale indicator nobody puts out, so the fallback is worth four
+        /// lines.
+        static func decode(_ data: Data) -> ParkedAttempt? {
+            if let parked = try? JSONDecoder().decode(ParkedAttempt.self, from: data) {
+                return parked
+            }
+            guard let target = try? JSONDecoder().decode(Target.self, from: data) else {
+                return nil
+            }
+            return ParkedAttempt(target: target, agtermSocket: nil)
         }
-        guard !alreadyParked else { return }
+    }
+
+    private func park(_ attempt: Attempt) {
+        let parked = stateLock.withLock { () -> ParkedAttempt? in
+            rememberedTarget = attempt.target
+            guard parkedAttempt != attempt.id else { return nil }
+            parkedAttempt = attempt.id
+            return ParkedAttempt(target: attempt.target, agtermSocket: adoptedSocket)
+        }
+        guard let parked else { return }
         // Best effort: a target that cannot be parked costs a stale indicator after a crash that
         // has not happened, and an attempt is never blocked over it.
         try? FileManager.default.createDirectory(
@@ -846,7 +917,7 @@ public final class Daemon: @unchecked Sendable {
             withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700]
         )
-        if let data = try? JSONEncoder().encode(attempt.target) {
+        if let data = try? JSONEncoder().encode(parked) {
             try? data.write(to: configuration.activeTargetFile, options: .atomic)
         }
     }

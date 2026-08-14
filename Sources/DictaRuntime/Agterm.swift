@@ -38,6 +38,10 @@ public enum AgtermError: Error, Equatable, CustomStringConvertible {
     /// chord is dead until it is fixed.
     case executableMissing(String)
     case launchFailed(verb: String, reason: String)
+    /// The child ran past `ProcessRunner.deadline` and was killed. Its own case rather than a
+    /// `launchFailed`, because the two answer opposite questions about the input line: nothing was
+    /// launched versus something ran and where it got to is unknown.
+    case timedOut(verb: String, seconds: TimeInterval)
     case commandFailed(verb: String, status: Int32, message: String)
     case malformedTree(String)
     case sessionNotFound(String)
@@ -55,6 +59,8 @@ public enum AgtermError: Error, Equatable, CustomStringConvertible {
             "agtermctl is not installed at \(path) -- dicta cannot reach agterm"
         case let .launchFailed(verb, reason):
             "agtermctl \(verb) could not be run: \(reason)"
+        case let .timedOut(verb, seconds):
+            "agtermctl \(verb) did not answer within \(Int(seconds)) s -- agterm is not responding"
         case let .commandFailed(verb, status, message):
             message.isEmpty
                 ? "agtermctl \(verb) failed with status \(status)"
@@ -186,9 +192,17 @@ public struct Agterm: Injector, Notifier, Sendable {
         let output: CommandOutput
         do {
             output = try invoke("session type", arguments)
-        } catch {
+        } catch let error as AgtermError {
+            if case .timedOut = error {
+                // The one failure on this path that may NOT claim the input line is untouched:
+                // `agtermctl` ran, typed for as long as it liked, and was killed at the deadline.
+                // Where it got to is what nobody knows -- §7's own words for `mayBePartial`.
+                throw DeliveryFailure.mayBePartial(target, reason: Self.reason(error))
+            }
             // Nothing was launched, so no keystroke can have been delivered. This is the one
             // delivery failure that may honestly claim the input line is untouched.
+            throw DeliveryFailure.notStarted(target, reason: Self.reason(error))
+        } catch {
             throw DeliveryFailure.notStarted(target, reason: Self.reason(error))
         }
         if output.succeeded { return }
@@ -255,6 +269,10 @@ public struct Agterm: Injector, Notifier, Sendable {
         let arguments = Self.withSocket(agtermSocket, in: arguments)
         do {
             return try runner.run(executable, arguments)
+        } catch let AgtermError.timedOut(_, seconds) {
+            // The runner knows only the executable; the verb is what the user needs to read, and
+            // `inject` needs the case to survive intact to classify the delivery.
+            throw AgtermError.timedOut(verb: verb, seconds: seconds)
         } catch let error as AgtermError {
             throw error
         } catch {
@@ -380,10 +398,40 @@ private final class DrainedPipe: @unchecked Sendable {
     func get() -> Data { lock.withLock { data } }
 }
 
+/// A one-way flag set on the deadline thread and read on the thread that waited for the child.
+private final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    func raise() { lock.withLock { value = true } }
+    var isRaised: Bool { lock.withLock { value } }
+}
+
 /// `Process`, with the two failure modes that matter kept apart: a tool that is not installed, and
 /// one that ran and disagreed.
 public struct ProcessRunner: CommandRunner {
-    public init() {}
+    /// The ceiling on one `agtermctl` invocation, and the reason the daemon cannot be wedged by a
+    /// beachballed agterm.
+    ///
+    /// `agtermctl` has no client-side timeout of its own: pointed at a control socket that accepts
+    /// and never answers, it blocks for ever. Every invocation here runs inside `ControlServer`'s
+    /// handler lock, which serialises EVERY command -- so one hung `tree --json` on the keypress
+    /// path took the whole daemon down with it: later chords blocked on the lock and reported
+    /// "dicta did not answer", `status`/`abort`/`last` died too, and `KeepAlive` could not help
+    /// because the process was alive. It never recovered without a manual `launchctl kickstart`.
+    ///
+    /// Five seconds is about 125x the measured cost of the slowest verb (`tree --json`, 38 ms, F4),
+    /// so it is a wedge detector rather than a budget anything real has to fit inside.
+    public static let defaultDeadline: TimeInterval = 5.0
+    /// How long a child gets to honour SIGTERM before SIGKILL. A child that ignores the polite
+    /// signal would otherwise hold this thread's pipes open, and the wedge would simply move here.
+    private static let graceAfterTerminate: TimeInterval = 2.0
+
+    private let deadline: TimeInterval
+
+    public init(deadline: TimeInterval = ProcessRunner.defaultDeadline) {
+        self.deadline = deadline
+    }
 
     public func run(_ executable: String, _ arguments: [String]) throws -> CommandOutput {
         guard FileManager.default.isExecutableFile(atPath: executable) else {
@@ -418,9 +466,36 @@ public struct ProcessRunner: CommandRunner {
         }
         stderrThread.name = "dev.personal.dicta.process.stderr"
         stderrThread.start()
+
+        // The deadline, on a thread of its own because the two reads below are what it exists to
+        // unblock. Killing the child closes its ends of both pipes, so `readDataToEndOfFile`
+        // returns and this whole call unwinds instead of hanging for ever.
+        let finished = DispatchSemaphore(value: 0)
+        let expired = Flag()
+        let deadline = self.deadline
+        let watchdog = Thread {
+            guard finished.wait(timeout: .now() + deadline) == .timedOut else { return }
+            expired.raise()
+            process.terminate()
+            guard finished.wait(timeout: .now() + Self.graceAfterTerminate) == .timedOut else {
+                return
+            }
+            // `isRunning` is false only once Foundation has reaped the child, so the pid it hands
+            // back here is still this child's and not a recycled one.
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        }
+        watchdog.name = "dev.personal.dicta.process.deadline"
+        watchdog.start()
+
         let stdout = out.fileHandleForReading.readDataToEndOfFile()
         stderrDrained.wait()
         process.waitUntilExit()
+        // One signal releases the watchdog whichever of its two waits it is sitting in.
+        finished.signal()
+        if expired.isRaised {
+            // The verb is filled in by `Agterm.invoke`, which is the only caller that knows it.
+            throw AgtermError.timedOut(verb: executable, seconds: deadline)
+        }
         return CommandOutput(
             status: process.terminationStatus,
             standardOutput: String(decoding: stdout, as: UTF8.self),

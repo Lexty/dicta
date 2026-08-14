@@ -56,7 +56,13 @@ codesign --verify --verbose=2 "$APP_DEST"
 # --- the LaunchAgent ----------------------------------------------------------------------------
 echo "==> writing $AGENT"
 mkdir -p "$HOME/Library/LaunchAgents" "$(dirname "$LOG")"
-sed -e "s|__DICTA_APP__|$APP_DEST|g" -e "s|__DICTA_LOG__|$LOG|g" \
+# Escaped, because these land on sed's REPLACEMENT side, where `&` means "the whole match" and `\`
+# and the `|` delimiter mean what they always do. A home directory containing one of them would
+# produce a mangled path in a plist that `plutil -lint` then passes, since it is valid XML naming a
+# binary that does not exist -- and the symptom would be a LaunchAgent that silently never starts.
+escape_replacement() { printf '%s' "$1" | sed -e 's/[&|\\]/\\&/g'; }
+sed -e "s|__DICTA_APP__|$(escape_replacement "$APP_DEST")|g" \
+    -e "s|__DICTA_LOG__|$(escape_replacement "$LOG")|g" \
   "$ROOT/Scripts/launchagent.plist" > "$AGENT"
 plutil -lint "$AGENT" >/dev/null
 
@@ -72,8 +78,13 @@ echo "installed:"
 echo "  ~/.local/bin/dictactl"
 # Read off what was INSTALLED, not off the build tree's copy: this line is presented as confirming
 # what landed in ~/Applications, and the requirement is what the TCC grant is recorded against.
-echo "  $APP_DEST   ($(codesign -d -r- "$APP_DEST" 2>/dev/null \
-  | sed -n 's/^#\{0,1\} *designated => //p'))"
+# Captured before it is printed: a `codesign` that fails inside an `echo` argument is not caught by
+# `set -e`, so the line would print an empty parenthesis and the script would exit 0 -- a confirmed
+# install with no confirmation in it. `bundle.sh` already uses this shape.
+REQUIREMENT="$(codesign -d -r- "$APP_DEST" 2>/dev/null \
+  | sed -n 's/^#\{0,1\} *designated => //p')" || REQUIREMENT=""
+[ -n "$REQUIREMENT" ] || REQUIREMENT="no designated requirement could be read"
+echo "  $APP_DEST   ($REQUIREMENT)"
 echo "  $AGENT      (log: $LOG)"
 echo
 echo "next: add docs/keymap.snippet.conf to ~/.config/agterm/keymap.conf && agtermctl keymap reload"

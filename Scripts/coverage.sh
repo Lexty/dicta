@@ -38,6 +38,15 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
+# A floor that is not a number silently DISABLES the gate: the comparison below is `awk`'s, and
+# `f + 0` turns "8O" -- a letter O typed for a zero -- into 0, which every coverage figure clears.
+case "$FLOOR" in
+    ''|*[!0-9.]*|*.*.*)
+        echo "coverage: --floor needs a percentage, not '$FLOOR'" >&2
+        exit 2
+        ;;
+esac
+
 PROFDATA_TOOL="$(xcrun -f llvm-profdata)"
 COV_TOOL="$(xcrun -f llvm-cov)"
 

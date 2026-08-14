@@ -197,8 +197,12 @@ testing.linker` to the `DictaTests` target — otherwise the failing test cannot
   keypress would drag the capture stack through dyld.
 - `Sources/DictaRuntime/` — everything that touches the world: `Agterm` (subprocesses),
   `AudioCapture` (AVAudioEngine), `ParakeetTranscriber` (FluidAudio/CoreML), the daemon, the record
-  writer, and the seams (`Capture`, `Transcriber`, `Filter`, `Injector`, `Notifier`, `Clock`) with
-  their fakes. **The only module that links FluidAudio**, which is the whole of D12's budget:
+  writer, and the seams (`Capture`, `Transcriber`, `Filter`, `Injector`, `Notifier`, `Clock`). The
+  **fakes** behind those seams live in `Sources/DictaTestRunner/Fakes.swift`, not here: the reason
+  they were in the library — that the `Dicta` executable could bring the daemon up on fakes — died
+  when `main.swift` started wiring the real capture, transcriber and terminal, and `FakeTranscriber`
+  emits deliberately hostile text that has no business being reachable from the binary that types
+  into a terminal. **The only module that links FluidAudio**, which is the whole of D12's budget:
   `dictactl` cannot reach it even by accident, because it does not depend on this target.
   `ParakeetTranscriber.swift` is in turn the only file that knows FluidAudio exists — everything else
   sees `RecognitionEngine`, which is what makes "the models load exactly once" a countable assertion.

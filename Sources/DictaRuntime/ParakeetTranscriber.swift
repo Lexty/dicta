@@ -152,7 +152,12 @@ public final class ParakeetTranscriber: Transcriber, @unchecked Sendable {
     /// hundreds of milliseconds; a load is seconds. Anything past this is wedged rather than slow,
     /// and a wedged recognition holds the socket handler's thread -- so it becomes §7's processing
     /// failure instead of a daemon that stops answering chords.
-    public static let patience = 120
+    ///
+    /// Sixty is three and a half times the measured 17 s cold load, and it is bounded from above by
+    /// `ControlTimeouts.pipelineRead`: the daemon must never be willing to spend longer than the
+    /// client will wait, or `dictactl` reports a failure about a dictation that then lands.
+    /// `daemonCeilingsFitTheClientTimeout` is where that relationship is asserted.
+    public static let patience = 60
 
     private let engine: any RecognitionEngine
     private let lock = NSLock()
@@ -268,8 +273,10 @@ public final class ParakeetTranscriber: Transcriber, @unchecked Sendable {
 /// Parakeet behind `RecognitionEngine`. The only file in dicta that knows FluidAudio exists.
 public final class ParakeetEngine: RecognitionEngine, @unchecked Sendable {
     /// The ceiling on one inference. D15 caps a recording at ten minutes, which F1 puts at a few
-    /// seconds of decoding; a minute is far past slow and into wedged.
-    public static let inferenceCeiling = 60
+    /// seconds of decoding (66.8 s of speech in 0.42 s, measured), so thirty is seventy times the
+    /// worst case and firmly into wedged. Bounded from above by `ControlTimeouts.pipelineRead` for
+    /// the reason spelled out on `ParakeetTranscriber.patience`.
+    public static let inferenceCeiling = 30
 
     private let lock = NSLock()
     private var manager: AsrManager?

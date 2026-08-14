@@ -533,4 +533,64 @@ struct AgtermTests {
         #expect(script?.contains(#"\"hi\""#) == true)
         #expect(script?.contains(#"\\"#) == true)
     }
+
+    // MARK: - the subprocess deadline
+
+    @Test("a child that never finishes is killed rather than allowed to wedge the daemon")
+    func processRunnerEnforcesItsDeadline() {
+        // A REAL subprocess, deliberately: the seam the rest of this suite runs against cannot
+        // block, and blocking for ever is the entire failure being fixed. `agtermctl` has no
+        // client-side timeout of its own -- pointed at a control socket that accepts and never
+        // answers it runs until something kills it -- and every invocation happens inside
+        // `ControlServer`'s handler lock, which serialises every command. One hung `tree --json`
+        // therefore took the whole daemon with it: later chords blocked on the lock, `status` and
+        // `abort` died too, and only `launchctl kickstart` brought it back.
+        let started = Date()
+        var thrown: (any Error)?
+        do {
+            _ = try ProcessRunner(deadline: 0.5).run("/bin/sleep", ["30"])
+        } catch {
+            thrown = error
+        }
+        let elapsed = Date().timeIntervalSince(started)
+
+        #expect(elapsed < 10, "the deadline did not break the wait")
+        guard case let .timedOut(_, seconds)? = thrown as? AgtermError else {
+            Issue.record("expected AgtermError.timedOut, got \(String(describing: thrown))")
+            return
+        }
+        #expect(seconds == 0.5)
+    }
+
+    @Test("a timed-out injection warns the input line may be partial, never that it is untouched")
+    func aTimedOutInjectionMayBePartial() {
+        // The classification is the point, not the timeout. Every other launch-path failure may
+        // honestly claim no keystroke was sent; a timeout may not -- `agtermctl` ran, typed for as
+        // long as it liked, and was killed. §7 has a row of its own for exactly that uncertainty,
+        // and telling the user the line is untouched would invite them to re-paste on top of half
+        // their prompt.
+        let tree = Self.oneLeftPane
+        let runner = StubRunner { invocation in
+            guard invocation.verb == "session type" else {
+                return CommandOutput(status: 0, standardOutput: tree)
+            }
+            // What `ProcessRunner` throws when it kills a child at the deadline.
+            throw AgtermError.timedOut(verb: "/opt/homebrew/bin/agtermctl", seconds: 5)
+        }
+        let target = Target(sessionID: "S1", pane: .left)
+
+        var thrown: (any Error)?
+        do {
+            try Self.agterm(runner).inject("hello", into: target)
+        } catch {
+            thrown = error
+        }
+
+        guard case .mayBePartial? = thrown as? DeliveryFailure else {
+            Issue.record("expected DeliveryFailure.mayBePartial, got \(String(describing: thrown))")
+            return
+        }
+        // And the verb reaches the user, not the absolute path the runner knows it by.
+        #expect("\(thrown!)".contains("session type"))
+    }
 }

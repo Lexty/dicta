@@ -39,10 +39,22 @@ public enum ControlTimeouts {
     /// ANE compilation, measured.
     ///
     /// Three seconds therefore used to expire *while the text was being delivered*, and the user
-    /// was told dicta had not answered about a dictation that in fact landed. Thirty covers the
-    /// load with room to spare and still turns a genuinely wedged daemon into a visible failure
-    /// rather than an indefinite hang.
-    public static let pipelineRead: TimeInterval = 30.0
+    /// was told dicta had not answered about a dictation that in fact landed.
+    ///
+    /// This number is a CEILING OVER THE DAEMON'S OWN CEILINGS, not a guess. Anything smaller than
+    /// what the daemon is willing to spend reproduces exactly the misreport it was raised to
+    /// remove, just further out: the client gives up, says "dicta did not answer" and fires the
+    /// desktop notification, and the daemon goes on to inject the text a minute later. The daemon's
+    /// budget is `ParakeetTranscriber.patience` (waiting for the one start-up load) plus
+    /// `ParakeetEngine.inferenceCeiling` plus the `agtermctl` calls the delivery makes, each
+    /// bounded by `ProcessRunner.defaultDeadline` -- and `daemonCeilingsFitTheClientTimeout`
+    /// asserts the sum still fits here, so the two cannot drift apart again.
+    ///
+    /// Long is the right direction to be wrong in. `connect` and the frame write catch a daemon
+    /// that is dead or gone in well under a second; this timeout is only ever reached by a daemon
+    /// that accepted the command and is grinding on it, and giving up on that one is what costs an
+    /// utterance.
+    public static let pipelineRead: TimeInterval = 120.0
     /// How long the server waits for a connected client to say something. Bounds a client that
     /// connects and then wanders off.
     public static let serverRead: TimeInterval = 2.0

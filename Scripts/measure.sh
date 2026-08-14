@@ -63,19 +63,24 @@ options:
 EOF
 }
 
+# Every value-taking flag checks that its value is there. Without it, `measure.sh -n` dies under
+# `set -u` with bash's own "$2: unbound variable" instead of this script's usage message -- and
+# under `set -e` that exit is indistinguishable from a measurement that failed.
+need() { [ "$1" -ge 2 ] || { printf 'measure: %s needs a value\n' "$2" >&2; exit 2; }; }
+
 while [ $# -gt 0 ]; do
     case "$1" in
-        -n) ATTEMPTS="$2"; shift 2 ;;
-        --budget) BUDGET_MS="$2"; shift 2 ;;
-        --speak) SPEAK="$2"; shift 2 ;;
+        -n) need $# "-n"; ATTEMPTS="$2"; shift 2 ;;
+        --budget) need $# "--budget"; BUDGET_MS="$2"; shift 2 ;;
+        --speak) need $# "--speak"; SPEAK="$2"; shift 2 ;;
         --stop) STOP_LATENCY=1; shift ;;
-        --stop-n) STOP_ATTEMPTS="$2"; shift 2 ;;
-        --utterance) UTTERANCE="$2"; shift 2 ;;
-        --stop-budget) STOP_BUDGET_MS="$2"; shift 2 ;;
-        --session) SESSION="$2"; shift 2 ;;
-        --socket) AGTERM_SOCKET="$2"; shift 2 ;;
-        --control) CONTROL="$2"; shift 2 ;;
-        --dictactl) DICTACTL="$2"; shift 2 ;;
+        --stop-n) need $# "--stop-n"; STOP_ATTEMPTS="$2"; shift 2 ;;
+        --utterance) need $# "--utterance"; UTTERANCE="$2"; shift 2 ;;
+        --stop-budget) need $# "--stop-budget"; STOP_BUDGET_MS="$2"; shift 2 ;;
+        --session) need $# "--session"; SESSION="$2"; shift 2 ;;
+        --socket) need $# "--socket"; AGTERM_SOCKET="$2"; shift 2 ;;
+        --control) need $# "--control"; CONTROL="$2"; shift 2 ;;
+        --dictactl) need $# "--dictactl"; DICTACTL="$2"; shift 2 ;;
         --help|-h) usage; exit 0 ;;
         *) printf 'measure: unknown option %s\n' "$1" >&2; usage >&2; exit 2 ;;
     esac

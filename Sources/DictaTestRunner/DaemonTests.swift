@@ -803,6 +803,87 @@ struct DaemonTests {
         #expect(asked.value == [nil, "/tmp/a2.sock", "/tmp/a3.sock"])
     }
 
+    @Test("a command that cannot begin an attempt never re-aims the live one's agterm")
+    func aRejectedStartDoesNotRebindTheTerminal() throws {
+        // D4 again, through the door `begin` used to leave open. `toggle` is guarded -- with an
+        // attempt in flight it returns early as `.stop` and never resolves anything -- but `start`
+        // was not: `adoptTerminal` ran BEFORE the machine got the chance to reject it. So
+        // `dictactl start --session X --socket <another agterm>` fired mid-dictation rebound the
+        // daemon's terminal, and the live attempt's remaining announcements and its INJECTION then
+        // travelled to an agterm it had never been resolved against. The rejection the user saw
+        // made it look like nothing had happened.
+        let asked = Locked<[String?]>([])
+        let resolver = FakeTargetResolver()
+        resolver.setPane(.left)
+        let capture = FakeCapture()
+        let daemon = Daemon(
+            configuration: Daemon.Configuration(
+                socketPath: "/tmp/unused-\(UUID().uuidString).sock"),
+            capture: capture,
+            transcriber: FakeTranscriber(),
+            history: FakeHistory(),
+            clock: FakeClock(),
+            terminal: { socket in
+                asked.set(asked.value + [socket])
+                return Daemon.Terminal(resolver: resolver, injector: FakeInjector(),
+                                       notifier: FakeNotifier())
+            }
+        )
+
+        let started = daemon.handle(.request(Request(cmd: .toggle, sessionID: "S1",
+                                                     agtermSocket: "/tmp/live.sock")))
+        capture.reportReady(try #require(started.attempt))
+        #expect(asked.value == [nil, "/tmp/live.sock"])
+
+        let intruder = daemon.handle(.request(Request(cmd: .start, sessionID: "S9",
+                                                      agtermSocket: "/tmp/other.sock")))
+
+        #expect(intruder.kind == .rejected)
+        // The provider was never asked a third time: the live attempt still belongs to the agterm
+        // it was resolved against.
+        #expect(asked.value == [nil, "/tmp/live.sock"])
+    }
+
+    @Test("the parked target names the agterm instance it belongs to")
+    func theParkedTargetCarriesItsAgtermSocket() throws {
+        // §7's stale-indicator row, and the half of it a `Target` alone cannot express. After a
+        // crash mid-attempt the next daemon has to put out a red "listening" light -- and a target
+        // says WHERE the light is but not WHICH agterm is showing it. Sending `session status idle`
+        // to whichever instance answers the default socket reports success and leaves the light
+        // burning, which is the row failing while looking like it passed.
+        let asked = Locked<[String?]>([])
+        let resolver = FakeTargetResolver()
+        resolver.setPane(.left)
+        let directory = URL(fileURLWithPath: "/tmp")
+            .appendingPathComponent("dicta-park-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let parkedFile = directory.appendingPathComponent("active-target.json")
+
+        let daemon = Daemon(
+            configuration: Daemon.Configuration(
+                socketPath: directory.appendingPathComponent("c.sock").path,
+                activeTargetFile: parkedFile),
+            capture: FakeCapture(),
+            transcriber: FakeTranscriber(),
+            history: FakeHistory(),
+            clock: FakeClock(),
+            terminal: { socket in
+                asked.set(asked.value + [socket])
+                return Daemon.Terminal(resolver: resolver, injector: FakeInjector(),
+                                       notifier: FakeNotifier())
+            }
+        )
+        _ = daemon.handle(.request(Request(cmd: .toggle, sessionID: "S1",
+                                           agtermSocket: "/tmp/second-agterm.sock")))
+
+        let parked = try #require(try? Data(contentsOf: parkedFile))
+        let json = try #require(try JSONSerialization.jsonObject(with: parked) as? [String: Any])
+        #expect(json["agtermSocket"] as? String == "/tmp/second-agterm.sock")
+        let target = try #require(json["target"] as? [String: Any])
+        #expect(target["sessionID"] as? String == "S1")
+    }
+
     @Test("a degraded dictionary is reported even when the attempt ends with no text")
     func degradedDictionaryIsReportedOnTheEmptyBranchToo() throws {
         // §7 wants the degradation notified once per attempt. It used to be told only on the branch

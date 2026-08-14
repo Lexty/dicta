@@ -1,12 +1,17 @@
 import DictaCore
+import DictaRuntime
 import Foundation
 
-// The fakes behind every seam, shipped in the library rather than in the test runner.
+// The fakes behind every seam.
 //
-// They live here for one reason: the `Dicta` executable must be able to bring the daemon up with
-// fakes behind the microphone and the terminal (Task 6), so the whole lifecycle can be exercised on
-// a machine with no TCC grant and no models. A fake that only the test runner can reach cannot do
-// that, because SwiftPM will not let an executable target import the test runner.
+// They used to live in DictaRuntime, on the grounds that the `Dicta` executable had to be able to
+// bring the daemon up with fakes behind the microphone and the terminal (Task 6). That reason
+// expired: `Sources/Dicta/main.swift` now wires `AudioCapture`, `ParakeetTranscriber`, `Agterm` and
+// `FileHistory`, and references no fake at all. What was left was four hundred lines of test
+// doubles inside the shipped library -- `FakeTranscriber` among them, whose entire design point is
+// emitting a newline that would submit a half-written prompt if the sanitiser were ever bypassed.
+// Nothing constructs it in the daemon, but a hostile canned transcript should not be reachable from
+// the binary that types into a terminal at all.
 //
 // Every one of them is @unchecked Sendable over a lock rather than an actor. The daemon serialises
 // its own work already (see `ControlServer`'s handler lock), and a fake that needed `await` would
