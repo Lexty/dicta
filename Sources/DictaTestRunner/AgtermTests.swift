@@ -291,6 +291,64 @@ struct AgtermTests {
         #expect(runner.verbs.filter { $0 == "tree --json" }.count == Agterm.maxWindowsSearched)
     }
 
+    @Test("a truncated search is a delivery that never started, never a target that is gone")
+    func aTruncatedSearchIsNotAGoneTarget() throws {
+        // The bound is disclosed all the way through, or it is not disclosed at all: `validate`
+        // used to wrap EVERY lookup failure as `targetGone`, so the sentence the user read
+        // contradicted itself inside one line -- "the target is gone: ... -- refusing to call it
+        // gone" -- and §9's `outcome` said `target-gone` for a session nothing had established was
+        // gone. The record is what a human greps afterwards; it must not name a cause the code
+        // itself refuses to claim.
+        let ids = (1...Agterm.maxWindowsSearched + 2).map { "W\($0)" }
+        let runner = Self.windowedRunner([:], windows: Self.windows(ids, active: "W1"))
+        let target = Target(sessionID: "S1", pane: .left)
+
+        do {
+            try Self.agterm(runner).inject("hello", into: target)
+            Issue.record("a truncated search was injected into anyway")
+        } catch let failure as DeliveryFailure {
+            #expect(failure.recordOutcome == .injectionFailed)
+            #expect(failure.description.hasPrefix("nothing was inserted:"))
+            #expect(failure.description.contains("refusing to call it gone"))
+        }
+        #expect(!runner.verbs.contains("session type"), "text was typed after a truncated search")
+    }
+
+    @Test("a missing agtermctl is not a session that has gone either")
+    func anUnreadableTreeIsNotAGoneTarget() throws {
+        // Same rule, the other cause: agtermctl having been uninstalled mid-session says nothing
+        // whatever about the session, and `notStarted` claims only what is certain.
+        let runner = StubRunner { _ in throw AgtermError.executableMissing("/nope/agtermctl") }
+        let target = Target(sessionID: "S1", pane: .left)
+
+        do {
+            try Self.agterm(runner).inject("hello", into: target)
+            Issue.record("an unreadable tree was injected into anyway")
+        } catch let failure as DeliveryFailure {
+            #expect(failure.recordOutcome == .injectionFailed)
+            #expect(failure.injectionResult == .failed(reason: failure.description))
+        }
+        #expect(!runner.verbs.contains("session type"))
+    }
+
+    @Test("a session the tree does not hold is still, and only, a target that is gone")
+    func aMissingSessionIsStillGone() throws {
+        // The one error that HAS established it: the narrowing above must not swallow the case
+        // §7's `targetGone` row exists for.
+        let runner = StubRunner(tree: Self.tree([
+            (id: "S2", surfaces: [(kind: "left", active: true)]),
+        ]))
+        let target = Target(sessionID: "S1", pane: .left)
+
+        do {
+            try Self.agterm(runner).inject("hello", into: target)
+            Issue.record("a dead session was injected into anyway")
+        } catch let failure as DeliveryFailure {
+            #expect(failure.recordOutcome == .targetGone)
+            #expect(failure.description.hasPrefix("the target is gone:"))
+        }
+    }
+
     @Test("a window list that cannot be read leaves the frontmost window as the whole search")
     func anUnreadableWindowListStillAnswers() {
         // Best effort: the sweep is an improvement on looking in one window, and a `window list`

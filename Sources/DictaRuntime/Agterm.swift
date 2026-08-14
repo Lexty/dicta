@@ -172,9 +172,16 @@ public struct Agterm: Injector, Notifier, Sendable {
         do {
             surfaces = try self.surfaces(ofSession: target.sessionID)
         } catch {
-            // Including "agtermctl is not installed any more": whatever the reason, the target
-            // cannot be confirmed, and an unconfirmed target is never typed into (invariant 3).
-            throw DeliveryFailure.targetGone(target, reason: Self.reason(error))
+            // An unconfirmed target is never typed into, whatever the reason (invariant 3) -- but
+            // WHY it could not be confirmed is not one answer, and §9's `outcome` is the field a
+            // human greps to decide what went wrong. Only `sessionNotFound` establishes that the
+            // session is gone. `searchTruncated` says in so many words that it does not, and
+            // calling it `targetGone` put a sentence in front of the user that contradicts itself
+            // inside one line -- "the target is gone: ... -- refusing to call it gone" -- while
+            // writing `target-gone` into the record for a session that is almost certainly alive.
+            // A missing `agtermctl`, a timeout or a refused command say nothing about the session
+            // at all. `notStarted` is the truthful one for all of those: no keystroke was sent.
+            throw Self.unconfirmed(target, error)
         }
         guard surfaces.contains(where: { $0.kind == target.pane.rawValue }) else {
             throw DeliveryFailure.targetGone(
@@ -182,6 +189,16 @@ public struct Agterm: Injector, Notifier, Sendable {
                 reason: "the \(target.pane.rawValue) pane of \(target.sessionID) is gone"
             )
         }
+    }
+
+    /// How a failed re-validation is named. `targetGone` is reserved for the one error that has
+    /// established the session is gone; everything else is `notStarted`, which claims only what is
+    /// certain -- that nothing was typed.
+    static func unconfirmed(_ target: Target, _ error: any Error) -> DeliveryFailure {
+        if case AgtermError.sessionNotFound = error {
+            return .targetGone(target, reason: reason(error))
+        }
+        return .notStarted(target, reason: reason(error))
     }
 
     /// The session's panes, looked for in every window rather than only in the frontmost one.

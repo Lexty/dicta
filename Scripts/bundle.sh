@@ -47,14 +47,28 @@ requirement() {
   printf '%s\n' "$described" | sed -n 's/^#\{0,1\} *designated => //p'
 }
 
-if [[ "${1:-}" == "--print-requirement" ]]; then
-  if [[ ! -d "$APP_DIR" ]]; then
-    echo "error: $APP_DIR does not exist -- run bundle.sh first" >&2
-    exit 1
-  fi
-  requirement "$APP_DIR"
-  exit 0
-fi
+# Unknown arguments are refused rather than ignored. Falling through to the default was not a
+# harmless default: a typo -- `--print-requirment` -- turned a read-only query into a release
+# rebuild and a full re-sign of the bundle every TCC grant is anchored to.
+case "${1:-}" in
+  --print-requirement)
+    if [[ "$#" -gt 1 ]]; then
+      echo "error: --print-requirement takes no further arguments" >&2
+      exit 2
+    fi
+    if [[ ! -d "$APP_DIR" ]]; then
+      echo "error: $APP_DIR does not exist -- run bundle.sh first" >&2
+      exit 1
+    fi
+    requirement "$APP_DIR"
+    exit 0
+    ;;
+  '') ;;
+  *)
+    echo "bundle: unknown argument: $1" >&2
+    exit 2
+    ;;
+esac
 
 GIT_DESC="$(git describe --tags --always --dirty 2>/dev/null || echo unknown)"
 

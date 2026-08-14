@@ -223,6 +223,26 @@ struct AudioCaptureTests {
         #expect(events.all.count == 1)
     }
 
+    @Test("a discard that outruns its begin still closes the device")
+    func aDiscardThatArrivesFirstStillWins() {
+        // The failure this rule prevents is the worst one capture has: the microphone held open
+        // for the life of the daemon, orange indicator lit, for an attempt that is already over.
+        // `begin` does several AVFoundation calls before it can register anything -- `inputNode`
+        // can block on a wedged HAL -- and the discard that ends the attempt arrives from a thread
+        // that does not wait for it: `abort` is served concurrently, and the warm-up watchdog is
+        // armed BEFORE `.beginCapture` is performed, so the discard it fires for a wedged device
+        // outruns the begin it belongs to. Both windows are enumerated here rather than raced,
+        // because racing them needs a granted microphone and a second thread inside
+        // `AVAudioEngine.start()`.
+        #expect(AudioCapture.retainsDevice(isRegistered: true, wasCancelled: false))
+        // The discard took the recording back out between the registration and the start.
+        #expect(!AudioCapture.retainsDevice(isRegistered: false, wasCancelled: true))
+        // The discard arrived before there was anything to take: it found nothing, and the only
+        // trace it could leave was the parked id.
+        #expect(!AudioCapture.retainsDevice(isRegistered: true, wasCancelled: true))
+        #expect(!AudioCapture.retainsDevice(isRegistered: false, wasCancelled: false))
+    }
+
     // MARK: - the words (invariant 7, §7)
 
     @Test("no capture fault can be read as silence")

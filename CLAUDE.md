@@ -237,6 +237,20 @@ Distilled from SPEC.md §3. Each one is a mistake already made, or one the spec 
 - **A dead target is never replaced by the focused one** (D4, invariant 3). If the captured target
   is gone, the text goes to the record plus a notification. Injecting into whatever has focus now
   means somebody else's agent gets your prompt.
+- **Only `sessionNotFound` is allowed to be called `targetGone`.** `Agterm.validate` wrapped *every*
+  lookup failure that way, which made the user read a sentence that contradicts itself inside one
+  line — "the target is gone: … — refusing to call it gone" — and wrote `target-gone` into §9's
+  `outcome` for a session `searchTruncated` had explicitly refused to declare dead. A missing
+  `agtermctl`, a timeout or a refused command say nothing about the session at all. `notStarted` is
+  the truthful name for all of them: it claims only that no keystroke was sent.
+- **A `discard` can outrun the `begin` it belongs to, and `begin` must re-assert ownership after
+  `engine.start()`.** `begin` spends several AVFoundation calls before it can register anything —
+  `inputNode` alone can block on a wedged CoreAudio HAL — while `abort` is served concurrently and
+  the warm-up watchdog is armed by `sync` *before* `.beginCapture` is performed. A discard landing
+  in either window (before the registration, or after taking the recording back out) used to leave
+  `begin` free to start the engine afterwards: the microphone held open for the life of the daemon,
+  orange indicator lit, for an attempt already over. `discard` therefore parks an id it did not
+  find, and `begin` tears the engine down rather than announcing `.ready`.
 - **A capture fault always discards, and is never reported as silence** (D16, invariants 6–7). The
   audio boundary is in doubt, so the recording dies rather than being guessed at. A fault while
   *stopping* is the row most likely to be mistaken for an empty dictation.

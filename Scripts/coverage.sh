@@ -40,8 +40,11 @@ done
 
 # A floor that is not a number silently DISABLES the gate: the comparison below is `awk`'s, and
 # `f + 0` turns "8O" -- a letter O typed for a zero -- into 0, which every coverage figure clears.
+# A bare "." is the hole the character class alone leaves open: it is neither empty nor made of
+# anything outside [0-9.] nor two-dotted, and `awk` reads it as 0 -- the disabled gate this check
+# exists to prevent, reached by the shortest possible typo.
 case "$FLOOR" in
-    ''|*[!0-9.]*|*.*.*)
+    ''|.|*[!0-9.]*|*.*.*)
         echo "coverage: --floor needs a percentage, not '$FLOOR'" >&2
         exit 2
         ;;

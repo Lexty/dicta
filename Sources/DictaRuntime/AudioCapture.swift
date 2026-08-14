@@ -192,6 +192,18 @@ public final class AudioCapture: Capture, @unchecked Sendable {
     /// At most one, because there is one microphone: the state machine refuses a second start while
     /// the first attempt still owns the device (§8.9), and this is that rule's other half.
     private var live: Recording?
+    /// The last attempt a `discard` asked for and did not find live.
+    ///
+    /// `begin` does several AVFoundation calls before it can register anything -- `inputNode` alone
+    /// can block on a wedged CoreAudio HAL -- and the discard that ends an attempt is reached from
+    /// threads that do not wait for it. Two of them are ordinary: `abort` is the one verb the
+    /// control socket serves concurrently (`Command.isServedConcurrently`), and the warm-up
+    /// watchdog is armed by `sync` BEFORE `.beginCapture` is performed, so the discard it fires
+    /// outruns the begin it belongs to -- which is precisely the wedged-device case the watchdog
+    /// exists for. A discard that found nothing used to return silently and leave `begin` free to
+    /// start the engine afterwards: the microphone held open for the life of the daemon, with the
+    /// orange indicator lit, for an attempt that was already over.
+    private var cancelled: AttemptID?
 
     public init(access probe: @escaping AccessProbe = { MicrophoneAccess.current }) {
         self.probe = probe
@@ -271,8 +283,48 @@ public final class AudioCapture: Capture, @unchecked Sendable {
             fault(recording, kind: .hardware, reason: FaultReason.engineStopped)
             return
         }
+        // The device is confirmed ours only HERE, and not at the registration above: a discard can
+        // arrive at any point inside this function, and the two windows fail differently. Before
+        // the registration it finds nothing and returns silently; after it, it takes the recording
+        // and tears down an engine that has not started yet. Either way the engine below would go
+        // on running with nobody holding it -- so ownership is re-asserted once the engine is up,
+        // which is the only point at which both windows are behind us.
+        guard claimStarted(recording) else {
+            tearDown(recording)
+            // The sink is consumed rather than used: the attempt is over, and `.ready` for an
+            // attempt the daemon has already ended is an event whose only correct handling is to
+            // be ignored.
+            _ = recording.claimSink()
+            return
+        }
         // Only now (D13, invariant 4): the engine is running and the tap is delivering.
         recording.sinkForReady()?(.ready(attempt))
+    }
+
+    /// Whether the recording whose engine has just started still owns the microphone.
+    ///
+    /// Clears `live` when it does not, so a recording that lost the race leaves nothing behind it.
+    private func claimStarted(_ recording: Recording) -> Bool {
+        lock.withLock {
+            guard Self.retainsDevice(isRegistered: live === recording,
+                                     wasCancelled: cancelled == recording.attempt)
+            else {
+                if live === recording { live = nil }
+                return false
+            }
+            return true
+        }
+    }
+
+    /// The rule `claimStarted` applies, as a value.
+    ///
+    /// Pure, and separated from the engine for the reason `drainOutcome` is: producing this race
+    /// needs a granted microphone and a second thread inside `AVAudioEngine.start()`, and a rule
+    /// that can only be exercised by winning a race is a rule with no test. `isRegistered` is false
+    /// for a discard that took the recording back out; `wasCancelled` is true for one that arrived
+    /// before there was anything to take.
+    public static func retainsDevice(isRegistered: Bool, wasCancelled: Bool) -> Bool {
+        isRegistered && !wasCancelled
     }
 
     public func drain(attempt: AttemptID) {
@@ -299,7 +351,14 @@ public final class AudioCapture: Capture, @unchecked Sendable {
     }
 
     public func discard(attempt: AttemptID) {
-        guard let recording = take(attempt) else { return }
+        guard let recording = take(attempt) else {
+            // Parked rather than dropped (see `cancelled`): this discard may have outrun the
+            // `begin` it belongs to, and the begin still on its way up has to be able to find out
+            // that the attempt it is opening the microphone for is already over. An id capture
+            // never opened parks harmlessly -- ids are issued once and never reused.
+            lock.withLock { cancelled = attempt }
+            return
+        }
         tearDown(recording)
         // Silently, and with the audio dropped on the floor: a discard is the daemon having already
         // decided the attempt is over, so an event here would only be something to ignore.
