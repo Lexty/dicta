@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Minimal by intent. A personal, locally-signed tool: no App Sandbox, and exactly one capability.
+
+  `com.apple.security.device.audio-input` is the entitlement half of the microphone; the user-facing
+  half is the TCC prompt driven by NSMicrophoneUsageDescription in Info.plist. Both belong to the
+  daemon's bundle and to nothing else — `dictactl` is an unsigned bare executable that never opens
+  the device, because a second binary opening it would fracture the grant (D11, D12, invariant 8).
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+</dict>
+</plist>

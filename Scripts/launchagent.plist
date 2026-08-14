@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template. `Scripts/install.sh` substitutes the two placeholders below and writes the result to
+  ~/Library/LaunchAgents/dev.personal.dicta.plist. It is a template rather than a finished file
+  because launchd resolves neither `~` nor `$HOME` in any of these keys. A test asserts that every
+  placeholder this file contains is one the installer actually replaces.
+
+  A USER agent, not a system daemon (D11): dicta needs this user's audio session, this user's TCC
+  grant, this user's Application Support directory and this user's agterm. There is nothing for it
+  to do in a context where none of those exist.
+
+  It runs the binary INSIDE the signed bundle. That is the whole point of Task 8 — launching
+  .build/release/Dicta directly would work and would have the microphone grant attributed to
+  whatever terminal started it, which is the failure D11 describes.
+-->
+<plist version="1.0">
+<dict>
+    <!-- Same string as CFBundleIdentifier and as `Paths.bundleID`: one identity everywhere. It is
+         also the label `launchctl bootout gui/$UID/…` takes. -->
+    <key>Label</key>
+    <string>dev.personal.dicta</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__DICTA_APP__/Contents/MacOS/Dicta</string>
+    </array>
+
+    <!-- At login, and again whenever it dies: the chords are dead while the daemon is not running,
+         and the user finds that out by pressing one and getting silence. launchd throttles restarts
+         to one per ten seconds, so a daemon that cannot start (agtermctl missing, for instance)
+         loops slowly and says why in the log rather than spinning. -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- The keypress budget is 150 ms (F4). The default process type lets launchd treat a resident
+         background job as throttleable; Interactive says this one is on a human's critical path. -->
+    <key>ProcessType</key>
+    <string>Interactive</string>
+
+    <!-- The daemon logs to stderr only (Scripts/run.sh reads it the same way). Absolute path,
+         written by install.sh -- launchd does not expand ~ here. -->
+    <key>StandardErrorPath</key>
+    <string>__DICTA_LOG__</string>
+</dict>
+</plist>

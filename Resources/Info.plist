@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The daemon's bundle. It exists for exactly one reason: the microphone TCC grant attaches to a
+  signed bundle identity, and a bare executable would have the grant attributed to whatever terminal
+  launched it (D11). Everything here is either what makes that grant possible or what keeps the
+  bundle from becoming an application in any other sense (§12, §13): no icon file, no main nib, no
+  document types, no URL schemes.
+
+  CFBundleIdentifier is the anchor. It is the same string as `Paths.bundleID`, which names the
+  Application Support directory the socket and the record live in — one identity, one directory, one
+  grant. A test asserts the two have not drifted.
+-->
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Dicta</string>
+    <key>CFBundleDisplayName</key>
+    <string>Dicta</string>
+    <!-- The SwiftPM product is named `Dicta`; bundle.sh copies it in under this name. -->
+    <key>CFBundleExecutable</key>
+    <string>Dicta</string>
+    <key>CFBundleIdentifier</key>
+    <string>dev.personal.dicta</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <!-- No dock icon, no menu bar, no windows (D11, §12). Without this the daemon would appear in
+         the dock and in ⌘-tab, and a dictation would be one stray click away from stealing focus
+         from the terminal it is about to type into. -->
+    <key>LSUIElement</key>
+    <true/>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <!-- Shown in the TCC prompt, once. It names the tool, says what the audio is for, and says where
+         it goes — because "Dicta would like to access the microphone" with no sentence under it is
+         exactly the prompt people deny. English, like everything else in this repository. -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>dicta records the microphone while you dictate, and types the words into the terminal you pressed the chord in. The audio stays on this Mac and is never uploaded.</string>
+</dict>
+</plist>

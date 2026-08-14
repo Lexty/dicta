@@ -24,8 +24,9 @@ Conversation about this project is in Russian. The repository is not.
 
 ## Where it stands
 
-**Task 7 of 13 (plan `docs/plans/20260814-dicta-steps-1-3.md`) is done — step 1 of SPEC.md §10 is
-complete, and the record it is scored through exists.** `DictaCore` holds the wire types, `Paths`,
+**Task 8 of 13 (plan `docs/plans/20260814-dicta-steps-1-3.md`) is done — step 1 of SPEC.md §10 is
+complete, the record it is scored through exists, and the signed bundle the microphone grant will
+attach to exists before any audio code does.** `DictaCore` holds the wire types, `Paths`,
 the sanitiser, the lifecycle state machine and the §9 record schema;
 `DictaIPC` holds both halves of the control socket; `dictactl` speaks all six verbs and
 `docs/keymap.snippet.conf` is checked by a test against the parser the binary uses. `DictaRuntime`
@@ -40,6 +41,10 @@ one entry in `record.jsonl` (`History`, `FileHistory`), written **before** the k
 Capture and recognition are still fakes (`ImmediateCapture`, `FakeTranscriber`) — Tasks 9 and 10
 replace exactly those two lines of `Sources/Dicta/main.swift`.
 
+`Scripts/bundle.sh` now produces a signed `Dicta.app` and `Scripts/install.sh` installs it as a user
+LaunchAgent. That is deliberately ahead of the microphone: if the bundle identity were wrong, every
+measurement taken afterwards would be taken against a grant that evaporates on the next rebuild.
+
 The plan covers steps 1–3 of SPEC.md §10. Steps 4 (the filter) and 5 (the §7 audit) are out of it.
 
 ## Commands
@@ -51,8 +56,15 @@ The plan covers steps 1–3 of SPEC.md §10. Steps 4 (the filter) and 5 (the §7
   mechanical checks (Cyrillic, tabs, line length, trailing whitespace, script permissions) always.
   Each check was probed with a file that should trip it; two of them were silently passing until
   that probe, which is the same lesson as D18 in a different costume.
-- Run the daemon in the foreground: `bash Scripts/run.sh`
-- Install the binaries: `bash Scripts/install.sh`
+- Run the daemon in the foreground: `bash Scripts/run.sh` — the development path, with no bundle and
+  therefore no stable TCC anchor. Fine until Task 9; not how the installed daemon runs.
+- Build and sign the bundle: `bash Scripts/bundle.sh` → `./Dicta.app`; `bash Scripts/bundle.sh
+  --print-requirement` prints the designated requirement of an existing one.
+- Install everything: `bash Scripts/install.sh` — `dictactl` to `~/.local/bin`, the signed bundle to
+  `~/Applications/Dicta.app`, the LaunchAgent to `~/Library/LaunchAgents/dev.personal.dicta.plist`,
+  then bootout/bootstrap/kickstart. It never touches `~/.config/agterm/keymap.conf`.
+- One-time signing setup: `bash Scripts/setup-signing.sh` — idempotent, non-interactive, and called
+  by `bundle.sh` on its own when the identity is missing, so it is rarely run by hand.
 - One suite only: `bash Scripts/test.sh --filter "sanitiser"` (arguments pass through to
   swift-testing).
 
@@ -101,6 +113,17 @@ testing.linker` to the `DictaTests` target — otherwise the failing test cannot
 - **`agtermctl session type` injects real keystrokes with no bracketed paste** — every `\n` is a
   Return that SUBMITS the input line. This is the single most dangerous fact in the project and the
   entire reason `Sanitizer` exists (D8, invariants 1–2).
+- **The signature is identity-based, and that was verified by rebuilding (Task 8, 2026-08-14).**
+  `Dicta.app` signed by `Scripts/bundle.sh` reports
+  `designated => identifier "dev.personal.dicta" and certificate leaf = H"3dcb99…"`. Changing a
+  string literal in `Sources/Dicta/main.swift` and rebuilding moved the cdhash
+  (`6764650c…` → `acc55018…`) and left the requirement **byte-identical** — which is the property a
+  surviving TCC grant rests on (D11). The contrast was measured too: the same bundle re-signed with
+  `codesign -s -` reports `designated => cdhash H"…"`, so every rebuild would revoke the grant.
+  `bundle.sh` fails on that string rather than trusting the intent. Note codesign comments the line
+  out (`# designated => …`) precisely when the requirement is implicit, i.e. ad-hoc — a parser that
+  does not strip the `#` reports "not signed" instead of "ad-hoc" and sends you looking in the wrong
+  place.
 
 ## Structure
 
@@ -169,6 +192,10 @@ Distilled from SPEC.md §3. Each one is a mistake already made, or one the spec 
   offending rules, applies the rest, and notifies once.
 - **Do not copy acta's crash-safety machinery** (D14). Losing an utterance costs one keypress, not a
   meeting: no segmentation, no disk journal, no recovery pass. Audio stays in RAM.
+- **The installed daemon runs from the signed bundle, never from a bare executable** (D11). That is
+  why `Scripts/install.sh` no longer copies `Dicta` into `~/.local/bin`: a bare copy runs perfectly
+  well and takes its microphone grant under whatever terminal launched it, so the bundle would exist
+  and be bypassed — worse than not having built one. `Scripts/run.sh` is the honest development path.
 - **Never install anything globally to make a check pass.** SwiftLint is absent by design; the lint
   script works without it.
 - **The control socket serves each connection on a real `Thread`, never on `DispatchQueue.global()`
