@@ -26,10 +26,16 @@ public struct FileDictionary: Sendable {
     /// dismiss dicta's notifications, which is the property §7 exists to protect. A file that
     /// exists and cannot be read or parsed is a different claim entirely, and that one is loud.
     public func load() -> ReplacementDictionary {
-        guard FileManager.default.fileExists(atPath: url.path) else { return .none }
         let data: Data
         do {
             data = try Data(contentsOf: url)
+        } catch let error as NSError where Self.isAbsent(error) {
+            // Absence is decided by the read that failed, not by a `fileExists` asking first. The
+            // pre-check was the same class of race as every other check-then-act: a file removed
+            // between the two answers made `Data(contentsOf:)` throw ENOENT, which landed in the
+            // branch below and notified the user about a **degraded** dictionary -- the one
+            // notification the paragraph above exists to forbid.
+            return .none
         } catch {
             return ReplacementDictionary(
                 problems: [DictionaryProblem(line: nil,
@@ -45,6 +51,20 @@ public struct FileDictionary: Sendable {
             )
         }
         return Replacements.parse(text, version: version)
+    }
+
+    /// Whether a failed read means "there is no such file" -- the normal state of a fresh install
+    /// -- rather than "this file cannot be read", which is loud. The enclosing directory not
+    /// existing counts too: a user with no `~/.config/dicta` has not configured a dictionary.
+    static func isAbsent(_ error: NSError) -> Bool {
+        switch error.domain {
+        case NSCocoaErrorDomain:
+            return error.code == NSFileReadNoSuchFileError || error.code == NSFileNoSuchFileError
+        case NSPOSIXErrorDomain:
+            return error.code == Int(ENOENT) || error.code == Int(ENOTDIR)
+        default:
+            return false
+        }
     }
 
     /// §9's "version or mtime". The mtime, in the record's own timestamp format, so a `rules` field

@@ -477,13 +477,23 @@ public final class Daemon: @unchecked Sendable {
         // back -- `record`'s `current.id == id` guard then matched nothing and the line was never
         // written. Attempt N vanished from `record.jsonl` entirely, which is D17 and property 2
         // breaking for precisely the capped and faulted attempts §9 exists to preserve.
-        let (transition, phase, sequence, ending) = stateLock.withLock {
+        //
+        // The TARGET the announcements and notifications are aimed at is snapshotted there too,
+        // and for the third time for the same reason. `.announce` and `.notify` carry no target of
+        // their own -- unlike `.beginCapture` and `.inject` -- so they used to read `knownTarget`
+        // at perform time, i.e. after the lock had been released. A fault or D15's cap ending
+        // attempt N on the clock or capture thread could be descheduled between the transition and
+        // its effects, and a chord arriving in that window parks attempt N+1's target: N's
+        // `blocked` indicator -- which carries no `--auto-reset` -- and N's failure notification
+        // then landed on a pane that was at that moment recording somebody else's dictation.
+        let (transition, phase, sequence, ending, target) = stateLock.withLock {
             let before = machine.phase
             let transition = machine.apply(event)
             transitionSequence += 1
             let ending = endingLocked(event, before: before, after: machine.phase,
                                       transition: transition)
-            return (transition, machine.phase, transitionSequence, ending)
+            return (transition, machine.phase, transitionSequence, ending,
+                    machine.currentAttempt?.target ?? rememberedTarget)
         }
         // Before `sync`, which drops the draft when the attempt is over, and before the effects, so
         // that the notification the user reads is never ahead of the entry that explains it.
@@ -492,14 +502,16 @@ public final class Daemon: @unchecked Sendable {
         // when they are performed -- a capture that reports synchronously would otherwise leave a
         // watchdog armed on an attempt that has already moved on.
         sync(phase, sequence)
-        for effect in transition.effects { perform(effect) }
+        for effect in transition.effects { perform(effect, aimedAt: target) }
         // Last, so §7's order holds: the injection is attempted first and the complaint about the
         // record comes after it.
-        reportHistoryTrouble()
+        reportHistoryTrouble(aimedAt: target)
         return transition
     }
 
-    private func perform(_ effect: Effect) {
+    /// `target` is the one snapshotted with the transition, never the daemon's live one -- see the
+    /// third paragraph of `apply`'s note.
+    private func perform(_ effect: Effect, aimedAt target: Target?) {
         switch effect {
         case let .beginCapture(id, _):
             // Announces NOTHING (D13, invariant 4). The user is told to speak by `.captureReady`.
@@ -511,15 +523,15 @@ public final class Daemon: @unchecked Sendable {
             capture.discard(attempt: id)
             forget(id)
         case let .transcribe(id, mode):
-            recognise(id, mode: mode)
-        case let .inject(id, target):
-            deliver(id, to: target)
+            recognise(id, mode: mode, aimedAt: target)
+        case let .inject(id, injectionTarget):
+            deliver(id, to: injectionTarget)
         case let .announce(feedback):
             // An indicator needs a pane. There is one for every announcement the machine emits,
             // because each is about an attempt that reached a state.
-            if let target = knownTarget { notifier.announce(feedback, for: target) }
+            if let target { notifier.announce(feedback, for: target) }
         case let .notify(message):
-            notifier.notify(message, for: knownTarget)
+            notifier.notify(message, for: target)
         }
     }
 
@@ -551,7 +563,10 @@ public final class Daemon: @unchecked Sendable {
 
     // MARK: - the text pipeline (§2)
 
-    private func recognise(_ id: AttemptID, mode: Mode) {
+    /// `target` is the attempt's own, snapshotted with the transition that started this stage --
+    /// §7's config notifications are about THIS dictation, so they go where it was aimed rather
+    /// than at whatever the daemon is doing by the time the recogniser answers.
+    private func recognise(_ id: AttemptID, mode: Mode, aimedAt target: Target?) {
         guard let audio = takeAudio(id) else {
             apply(.recognised(id, .failed(reason: "the audio was lost before it could be read")))
             return
@@ -651,8 +666,8 @@ public final class Daemon: @unchecked Sendable {
         // rules, and never instead of the attempt's own report. Told AFTER the outcome has been
         // applied, so the entry that explains the notification is already on disk.
         func reportConfigTrouble() {
-            if let degraded = book.degradedReason { notifier.notify(degraded, for: knownTarget) }
-            if let filterFailure { notifier.notify(filterFailure, for: knownTarget) }
+            if let degraded = book.degradedReason { notifier.notify(degraded, for: target) }
+            if let filterFailure { notifier.notify(filterFailure, for: target) }
         }
 
         switch Sanitizer.sanitize(text) {
@@ -886,13 +901,13 @@ public final class Daemon: @unchecked Sendable {
         }
     }
 
-    private func reportHistoryTrouble() {
+    private func reportHistoryTrouble(aimedAt target: Target?) {
         let message = stateLock.withLock { () -> String? in
             defer { historyTrouble = nil }
             return historyTrouble
         }
         guard let message else { return }
-        notifier.notify(message, for: knownTarget)
+        notifier.notify(message, for: target)
     }
 
     /// Stores §9's `recognised` on the live draft, answering whether the attempt is still live.

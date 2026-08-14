@@ -33,14 +33,28 @@ struct AgtermTests {
             self.answer = answer
         }
 
-        /// The common case: one canned tree, everything else succeeding silently.
+        /// One canned tree in a machine with one window open, everything else succeeding silently.
+        ///
+        /// `window list` answers properly rather than with a bare `{"ok":true}`: a lookup that
+        /// cannot enumerate the windows now refuses to call the session gone, so a fixture that
+        /// answers nonsense there would test the refusal instead of the tree. One window, and it
+        /// is the frontmost, which makes the frontmost tree the whole search honestly.
         convenience init(tree: String) {
             self.init { invocation in
-                invocation.arguments.first == "tree"
-                    ? CommandOutput(status: 0, standardOutput: tree)
-                    : CommandOutput(status: 0, standardOutput: #"{"ok":true}"#)
+                switch invocation.arguments.first {
+                case "tree":
+                    return CommandOutput(status: 0, standardOutput: tree)
+                case "window":
+                    return CommandOutput(status: 0, standardOutput: Self.oneWindow)
+                default:
+                    return CommandOutput(status: 0, standardOutput: #"{"ok":true}"#)
+                }
             }
         }
+
+        /// The frontmost window, alone. `otherWindowIDs` drops it, so the sweep finds none.
+        static let oneWindow =
+            #"{"ok":true,"result":{"windows":[{"id":"W1","active":true,"open":true}]}}"#
 
         var invocations: [Invocation] { lock.withLock { log } }
 
@@ -349,19 +363,52 @@ struct AgtermTests {
         }
     }
 
-    @Test("a window list that cannot be read leaves the frontmost window as the whole search")
-    func anUnreadableWindowListStillAnswers() {
-        // Best effort: the sweep is an improvement on looking in one window, and a `window list`
-        // that fails must not turn a plain "the session is gone" into an error about windows.
+    @Test("a window list that cannot be read is a search that stopped early, not a dead session")
+    func anUnreadableWindowListIsNotGone() throws {
+        // The frontmost window is then the whole search, out of an unknown number of windows --
+        // the same claim `searchTruncated` refuses to make, so this refuses it too. It used to
+        // fall through the truncation guard on an empty list and report `sessionNotFound`, which
+        // `validate` turns into `targetGone`: a live session declared dead by a `window list`
+        // that merely timed out.
         let runner = StubRunner { invocation in
             invocation.arguments.first == "tree"
                 ? CommandOutput(status: 0, standardOutput: Self.tree([]))
                 : CommandOutput(status: 1, standardError: "no")
         }
 
-        #expect(throws: AgtermError.sessionNotFound("S1")) {
-            try Self.agterm(runner).resolveTarget(sessionID: "S1")
+        do {
+            _ = try Self.agterm(runner).resolveTarget(sessionID: "S1")
+            Issue.record("an unlistable window set was reported as a resolved target")
+        } catch let error as AgtermError {
+            guard case let .searchUnavailable(session, _) = error else {
+                Issue.record("expected searchUnavailable, got \(error)")
+                return
+            }
+            #expect(session == "S1")
+            #expect(error.description.contains("refusing to call it gone"))
         }
+    }
+
+    @Test("a window list that cannot be read leaves the text unsent rather than mis-named")
+    func anUnreadableWindowListIsNotStarted() throws {
+        // The half that matters to §9: `unconfirmed` maps everything but `sessionNotFound` to
+        // `notStarted`, whose record outcome is `injection-failed` -- what is certain is that no
+        // keystroke was sent, and NOT that the session is gone.
+        let runner = StubRunner { invocation in
+            invocation.arguments.first == "tree"
+                ? CommandOutput(status: 0, standardOutput: Self.tree([]))
+                : CommandOutput(status: 1, standardError: "no")
+        }
+        let target = Target(sessionID: "S1", pane: .left)
+
+        do {
+            try Self.agterm(runner).inject("hello", into: target)
+            Issue.record("an unconfirmed target was injected into anyway")
+        } catch let failure as DeliveryFailure {
+            #expect(failure.recordOutcome == .injectionFailed)
+            #expect(!failure.description.hasPrefix("the target is gone:"))
+        }
+        #expect(!runner.verbs.contains("session type"))
     }
 
     @Test("the window list names every open window except the frontmost")

@@ -50,6 +50,10 @@ public enum AgtermError: Error, Equatable, CustomStringConvertible {
     /// has not established that the session is gone -- and `validate` turns "gone" into a delivery
     /// failure the user is told about by name.
     case searchTruncated(session: String, searched: Int, windows: Int)
+    /// The session was not in the frontmost window and the remaining windows could not even be
+    /// listed. `searchTruncated`'s sibling and for the same reason: one window out of an unknown
+    /// number is not a search that has established the session is gone.
+    case searchUnavailable(session: String, reason: String)
     /// The tree names no active pane for the session. The attempt does not start (D6).
     case noActivePane(session: String)
     /// More than one. Picking one would be a coin flip with the user's prompt as the stake.
@@ -77,6 +81,9 @@ public enum AgtermError: Error, Equatable, CustomStringConvertible {
         case let .searchTruncated(session, searched, windows):
             "session \(session) was not in the \(searched) of \(windows) agterm windows dicta"
                 + " looked in -- refusing to call it gone"
+        case let .searchUnavailable(session, reason):
+            "session \(session) was not in the frontmost agterm window, and the others could not"
+                + " be listed (\(reason)) -- refusing to call it gone"
         case let .noActivePane(session):
             "session \(session) has no active pane -- refusing to guess where the text goes"
         case let .ambiguousPane(session, panes):
@@ -218,9 +225,18 @@ public struct Agterm: Injector, Notifier, Sendable {
         } catch AgtermError.sessionNotFound {
             // Absent from the frontmost window's tree, which is not the same as gone.
         }
-        // Best effort: a `window list` that fails leaves the frontmost window as the whole search,
-        // which is exactly where this stood before.
-        let others = (try? otherWindowIDs()) ?? []
+        // A `window list` that fails leaves the frontmost window as the whole search -- and a
+        // search that could not be enumerated has established nothing about the session, exactly
+        // as the cap below has not. Swallowing the failure into an empty list walked straight past
+        // the truncation guard (`0 <= 0`) and reported `sessionNotFound`, i.e. `targetGone`, for a
+        // session dicta had looked for in one window out of an unknown number: the false sentence
+        // this whole sweep exists to stop, reached through the one door that was still open.
+        let others: [String]
+        do {
+            others = try otherWindowIDs()
+        } catch {
+            throw AgtermError.searchUnavailable(session: sessionID, reason: Self.reason(error))
+        }
         let searched = others.prefix(Self.maxWindowsSearched - 1)
         for window in searched {
             do {

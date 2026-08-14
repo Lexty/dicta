@@ -302,7 +302,10 @@ Distilled from SPEC.md §3. Each one is a mistake already made, or one the spec 
   answer on every ordinary chord) and then sweeps the rest off `window list --json`, bounded by
   `maxWindowsSearched` because each window is another subprocess inside the handler lock. Past the
   bound it throws `searchTruncated` rather than `sessionNotFound`: a search that stopped early has
-  not established that anything is gone.
+  not established that anything is gone. **A `window list` that fails is the same claim**, and it
+  throws `searchUnavailable` for that reason — swallowing it into an empty list (`try? … ?? []`)
+  walked straight past the truncation guard, since `0 <= 0`, and reported a session looked for in
+  one window out of an unknown number as gone. A timeout on a busy machine was enough.
 - **A killed child does not end a pipe read.** Foundation dups the pipe's write end into the child
   and **every descendant inherits it**, so `readDataToEndOfFile` returns at EOF — the last holder
   closing — not when the direct child dies. Measured: SIGKILL at 2 s, read returned at 8 s when the
