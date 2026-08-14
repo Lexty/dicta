@@ -35,12 +35,21 @@ var fetchModels = false
 var arguments = Array(CommandLine.arguments.dropFirst())
 while let argument = arguments.first {
     arguments.removeFirst()
+    /// An empty value is refused rather than taken, and that is the client's rule arriving through
+    /// the other door (`ClientCommand.parse`): an unset environment variable expands to an empty
+    /// string, not to an absent argument, so a wrapper passing `--agterm-socket "$AGT_SOCKET"` with
+    /// nothing in it would otherwise splice `--socket ""` into every `agtermctl` call the daemon
+    /// makes — every chord refused, for a reason no message names.
     func value(_ flag: String) -> String {
         guard let next = arguments.first else {
             FileHandle.standardError.write(Data("dicta: \(flag) needs a value\n".utf8))
             exit(2)
         }
         arguments.removeFirst()
+        guard !next.isEmpty else {
+            FileHandle.standardError.write(Data("dicta: \(flag) was given an empty value\n".utf8))
+            exit(2)
+        }
         return next
     }
     switch argument {

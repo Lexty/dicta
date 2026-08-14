@@ -127,6 +127,17 @@ public final class AudioCapture: Capture, @unchecked Sendable {
         /// once: a route change that arrives while the drain is running must not turn into a second
         /// event for an attempt the daemon has already finished with.
         private var reported = false
+        /// Serialises `tearDown`, and guards `observers` with it.
+        ///
+        /// Its own lock rather than `lock`, and not merely for tidiness: teardown calls
+        /// `engine.stop()`, which returns only once the render thread has quiesced -- and the
+        /// render thread takes `lock` in `absorb`. Holding that one across `stop()` is a deadlock.
+        let teardownLock = NSLock()
+        /// **Guarded by `teardownLock`.** Two threads can reach `tearDown` for the same recording
+        /// at once: a discard or a fault takes the recording and tears it down while `begin` is
+        /// still blocked inside `engine.start()`, and `begin` tears it down again the moment that
+        /// call returns (it must -- see `claimStarted`). Unsynchronised, that is one thread
+        /// iterating this array while the other assigns over it.
         var observers: [any NSObjectProtocol] = []
 
         init(attempt: AttemptID, sink: @escaping CaptureEventSink, engine: AVAudioEngine,
@@ -455,7 +466,7 @@ public final class AudioCapture: Capture, @unchecked Sendable {
             guard let self, let recording else { return }
             escalate(recording, kind: .hardware, reason: FaultReason.wentToSleep)
         }
-        recording.observers = [configuration, sleep]
+        recording.teardownLock.withLock { recording.observers = [configuration, sleep] }
     }
 
     /// A fault raised by something that must not be made to run the daemon's pipeline: a system
@@ -512,13 +523,24 @@ public final class AudioCapture: Capture, @unchecked Sendable {
 
     /// Idempotent: `drain` and a route change can both reach it, and an engine stopped twice is
     /// cheaper than a branch that has to be right about which of them arrived first.
+    ///
+    /// Idempotent is not the same as thread-safe, and both are needed. `take` hands the recording
+    /// to one thread, so `drain`, `discard`, `fault` and `escalate` cannot overlap -- but the
+    /// `claimStarted` branch in `begin` tears down a recording ANOTHER thread has already taken,
+    /// deliberately, because that thread's teardown ran before `engine.start()` and left the engine
+    /// running with nobody holding it. Those two are genuinely concurrent whenever a discard lands
+    /// while `begin` is blocked inside `start()` on a wedged HAL, which is the case the warm-up
+    /// watchdog exists to produce. So each run is serialised against the other, and both still do
+    /// the work: whichever is second stops an engine the first could not have stopped yet.
     private func tearDown(_ recording: Recording) {
-        for observer in recording.observers {
-            NotificationCenter.default.removeObserver(observer)
-            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        recording.teardownLock.withLock {
+            for observer in recording.observers {
+                NotificationCenter.default.removeObserver(observer)
+                NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            }
+            recording.observers = []
+            if recording.engine.isRunning { recording.engine.stop() }
+            recording.engine.inputNode.removeTap(onBus: 0)
         }
-        recording.observers = []
-        if recording.engine.isRunning { recording.engine.stop() }
-        recording.engine.inputNode.removeTap(onBus: 0)
     }
 }

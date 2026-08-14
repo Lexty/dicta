@@ -99,16 +99,59 @@ struct ChecklistTests {
         return names
     }
 
-    /// The first column of the checklist's own §7 table.
-    static var checklistFailureRows: [String] {
+    /// Every table row of the checklist, as its cells, with the rule rows excluded. The leading and
+    /// trailing empty cells of a pipe table survive, so cell 1 is the first column.
+    static var checklistRows: [[String]] {
         checklist.components(separatedBy: "\n").compactMap { line in
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             guard trimmed.hasPrefix("|") else { return nil }
             let cells = trimmed.split(separator: "|", omittingEmptySubsequences: false)
                 .map { $0.trimmingCharacters(in: .whitespaces) }
-            guard cells.count > 1 else { return nil }
-            return cells[1]
+            guard cells.count > 2, !cells[1].hasPrefix("---") else { return nil }
+            return cells
         }
+    }
+
+    /// The invariant table's rows: `| # | invariant | checked by |`. Told from the other table by
+    /// the first column being a number, which is also what excludes its header.
+    static var invariantRows: [(number: Int, invariant: String, checkedBy: String)] {
+        checklistRows.compactMap { cells in
+            guard cells.count > 3, let number = Int(cells[1]) else { return nil }
+            return (number, cells[2], cells[3])
+        }
+    }
+
+    /// The §7 table's rows: `| event | checked by |`, header excluded.
+    static var failureRows: [(event: String, checkedBy: String)] {
+        checklistRows.compactMap { cells in
+            guard Int(cells[1]) == nil else { return nil }
+            let event = cells[1]
+            guard !event.isEmpty, event != "event", event != "#" else { return nil }
+            return (event, cells[2])
+        }
+    }
+
+    /// The first column of the checklist's own §7 table.
+    static var checklistFailureRows: [String] { failureRows.map(\.event) }
+
+    /// Whether a "checked by" cell names anything at all that could go red.
+    ///
+    /// This is the audit's whole point and it was for a while unasserted: the two audits compared
+    /// only the FIRST column, so blanking a "checked by" cell — or leaving one empty for a row
+    /// added in a hurry — kept the suite green while the mapping the file exists to hold quietly
+    /// stopped existing. Three things count, and nothing else does: a cited test, a script that
+    /// stands in for one where no assertion can reach (invariant 8), and a numbered human item
+    /// from this file's own list, which is the honest answer for the rows a machine cannot score.
+    static func namesEvidence(_ cell: String) -> Bool {
+        if cell.contains("`test: ") { return true }
+        if cell.contains("Scripts/") { return true }
+        var rest = Substring(cell)
+        while let marker = rest.range(of: "**H") {
+            let after = rest[marker.upperBound...]
+            if after.first?.isNumber == true { return true }
+            rest = after
+        }
+        return false
     }
 
     // MARK: - Reading the suite itself
@@ -163,26 +206,51 @@ struct ChecklistTests {
 
     @Test("every invariant in §8 has a row naming what checks it")
     func everyInvariantIsAudited() {
+        let rows = Self.invariantRows
         for invariant in Self.invariants {
             // The bold title, verbatim except for a trailing full stop, which two of §8's items
             // carry inside the bold and which reads badly in a table cell.
             let title = invariant.title.hasSuffix(".")
                 ? String(invariant.title.dropLast())
                 : invariant.title
-            let named = Self.checklist.contains(title)
+            // Its OWN row, and not merely somewhere in the file: a global substring search passes
+            // an invariant whose title happens to appear in a paragraph, and passes two invariants
+            // whose rows have swapped their citations.
+            guard let row = rows.first(where: { $0.number == invariant.number }) else {
+                #expect(Bool(false), "invariant \(invariant.number) has no row in the checklist")
+                continue
+            }
             #expect(
-                named,
-                "invariant \(invariant.number) is not named in the checklist: \"\(title)\""
+                row.invariant.contains(title),
+                "the checklist's row \(invariant.number) does not name \"\(title)\""
+            )
+            #expect(
+                Self.namesEvidence(row.checkedBy),
+                """
+                invariant \(invariant.number) is audited by nothing: its "checked by" cell names \
+                no test, no script and no human item
+                """
             )
         }
     }
 
     @Test("every row of §7 has a line in the checklist, quoting the event verbatim")
     func everyFailureRowIsAudited() {
-        let audited = Set(Self.checklistFailureRows)
+        let audited = Self.failureRows
         for event in Self.failureMatrixEvents {
-            let covered = audited.contains(event)
-            #expect(covered, "§7's row \"\(event)\" has no line in docs/manual-checklist.md")
+            guard let row = audited.first(where: { $0.event == event }) else {
+                #expect(Bool(false), "§7's row \"\(event)\" has no line in the checklist")
+                continue
+            }
+            // The second column is the audit; a row that quotes the event and then says nothing is
+            // a row that documents the gap it was written to close.
+            #expect(
+                Self.namesEvidence(row.checkedBy),
+                """
+                §7's row "\(event)" is audited by nothing: its "checked by" cell names no test, \
+                no script and no human item
+                """
+            )
         }
     }
 

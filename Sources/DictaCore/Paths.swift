@@ -63,12 +63,18 @@ public struct Paths: Sendable, Equatable {
     /// (restored from a backup, left by an earlier build, created under a loose umask) kept
     /// whatever mode it had, for ever, with nothing here noticing. The premise above would then be
     /// a sentence in a comment rather than a fact about the filesystem.
-    public static func createPrivateDirectory(_ directory: URL) throws {
+    /// `repairingMode` is what decides whether that `chmod` runs at all, and it is false for one
+    /// caller alone: the directory holding the control socket, whose path a user can name with
+    /// `--control`. Repairing a directory dicta owns is maintenance; re-permissioning one the user
+    /// merely pointed at is not. `Dicta --control ~/dicta.sock` would otherwise chmod `$HOME` to
+    /// 0700 -- silently, since the call site cannot even see the failure it swallows.
+    public static func createPrivateDirectory(_ directory: URL, repairingMode: Bool = true) throws {
         try FileManager.default.createDirectory(
             at: directory,
             withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700]
         )
+        guard repairingMode else { return }
         try FileManager.default.setAttributes([.posixPermissions: 0o700],
                                               ofItemAtPath: directory.path)
     }

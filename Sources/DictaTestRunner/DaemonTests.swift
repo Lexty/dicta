@@ -1296,6 +1296,66 @@ struct DaemonTests {
         #expect(entry.recognised == FakeTranscriber.hostileText)
     }
 
+    @Test("a cap firing while the recogniser is still running does not lose the text it returns")
+    func capDuringRecognitionKeepsTheText() throws {
+        // The window the test above does not reach. `capDuringProcessingKeepsTheText` fires the cap
+        // from the FILTER, i.e. after the recognised text has been stored on the draft, so the
+        // ending's own snapshot carries it. Here the cap fires from inside the recogniser, before
+        // the text exists — the attempt ends, its draft is dropped, and the text is returned into a
+        // daemon that has already written the entry describing it.
+        //
+        // In life this is the last second of a ten-minute dictation, or the first chord after a
+        // rebuild, where recognition waits up to `patience` on the one start-up model load. It is
+        // the largest loss the system can produce: audio discarded, nothing injected, and — before
+        // this — nothing in the record either, so `dictactl last --recognised` had nothing to give
+        // back. Invariant 10 and §7's cap row both say otherwise.
+        let harness = Locked<Harness?>(nil)
+        let transcriber = ReentrantTranscriber {
+            harness.value?.clock.advance(by: 600)
+        }
+        let fixture = Harness(transcriber: transcriber)
+        harness.set(fixture)
+        defer { harness.set(nil) }
+
+        let id = fixture.dictate()
+
+        #expect(fixture.daemon.state == .idle)
+        #expect(fixture.injector.delivered.isEmpty, "a capped attempt was typed anyway")
+        // The record is append-only, so the entry describing the cap and the one carrying the text
+        // are two lines with one id — and §9's reader takes the last (`Record.entries`).
+        let entries = Record.collapse(fixture.history.appended)
+        #expect(entries.count == 1)
+        let entry = try #require(entries.last)
+        #expect(entry.id == id)
+        #expect(entry.outcome == .capped)
+        #expect(entry.recognised == FakeTranscriber.hostileText)
+        // Recorded, never delivered: the text reaching the record is recovery, not injection.
+        #expect(entry.final.isEmpty)
+    }
+
+    @Test("an abort while the recogniser is running still drops the text, as the user asked")
+    func abortDuringRecognitionDropsTheText() throws {
+        // The other side of the rule above, and the reason it is written as an outcome-by-outcome
+        // decision rather than "late text always lands": an abort is the user saying they do not
+        // want this dictation, so text that arrives a moment later is not a rescue.
+        let harness = Locked<Harness?>(nil)
+        let transcriber = ReentrantTranscriber {
+            _ = harness.value?.send(Request(cmd: .abort))
+        }
+        let fixture = Harness(transcriber: transcriber)
+        harness.set(fixture)
+        defer { harness.set(nil) }
+
+        let id = fixture.dictate()
+
+        #expect(fixture.injector.delivered.isEmpty)
+        #expect(fixture.history.appended.count == 1, "the cancelled text was written after all")
+        let entry = try #require(fixture.history.appended.last)
+        #expect(entry.id == id)
+        #expect(entry.outcome == .aborted)
+        #expect(entry.recognised.isEmpty)
+    }
+
     @Test("the cap is not disarmed by the stop chord, because a wedged drain is still ten minutes")
     func capSurvivesTheStopChord() throws {
         let harness = Harness(drainTimeout: 3_600)

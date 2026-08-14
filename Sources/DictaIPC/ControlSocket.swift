@@ -141,6 +141,11 @@ public enum Framing {
                     offset += written
                     continue
                 }
+                // Zero with bytes still to write sets no `errno`, so the value below would be some
+                // earlier call's -- and an `EINTR` left lying around there would spin this loop for
+                // ever, on a thread that may be holding the daemon's handler lock. `FileHistory`
+                // treats the same return as a refusal to make progress; so does this.
+                if written == 0 { throw TransportError.io("write()", code: ENOSPC) }
                 let code = errno
                 if code == EINTR { continue }
                 if code == EAGAIN || code == EWOULDBLOCK { throw TransportError.timedOut }
@@ -308,7 +313,12 @@ public final class ControlServer: @unchecked Sendable {
     /// stale-socket check probes by connecting rather than by looking at the file.
     public func start() throws {
         let directory = (path as NSString).deletingLastPathComponent
-        try? Paths.createPrivateDirectory(URL(fileURLWithPath: directory, isDirectory: true))
+        // `repairingMode: false`: the path is a flag's value, and a directory the user pointed at
+        // is not one to re-permission. A directory created HERE is still 0700, which is the case
+        // that matters -- the default one is dicta's own, and `Paths.support` repairs its mode by
+        // the routes that do own it.
+        try? Paths.createPrivateDirectory(URL(fileURLWithPath: directory, isDirectory: true),
+                                          repairingMode: false)
         try clearStaleSocket()
 
         var address: sockaddr_un

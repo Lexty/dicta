@@ -77,7 +77,13 @@ fail() {
 
 # The frameworks D12 keeps off the keypress path. FluidAudio is named too: it is the CoreML weight
 # in person, and it reaches a binary only through DictaRuntime.
-FORBIDDEN='AVFoundation|CoreML|AppKit|FluidAudio'
+#
+# AVFAudio is listed separately from AVFoundation and is not a synonym for it: `AVAudioEngine` lives
+# in AVFAudio, and `otool -L` names both frameworks on a binary that captures audio. A regex holding
+# only the umbrella therefore passes a binary that pulled in the whole capture stack — which check 2
+# would still catch, but check 1 is deliberately overlapping rather than decorative, and a check
+# that cannot fail is the vacuous pass this script exists to refuse.
+FORBIDDEN='AVFAudio|AVFoundation|CoreML|AppKit|FluidAudio'
 
 # 1. Load commands. The tool's own exit status is checked separately from "matched nothing", so a
 # failure to read is never mistaken for a clean result.

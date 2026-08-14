@@ -180,6 +180,22 @@ public final class Daemon: @unchecked Sendable {
     private var faultKind: (attempt: AttemptID, kind: FaultKind)?
     private var server: ControlServer?
 
+    /// Orders the record's two concurrent writers against each other: the thread ending an attempt
+    /// and the pipeline thread that is still recognising it. Held across `history.append`, because
+    /// what has to be ordered is the bytes on disk and not merely the decision to write them --
+    /// §9's superseding line is only a superseding line if it lands second.
+    ///
+    /// Never taken while `stateLock` is held. `append` takes `stateLock` on failure, so the one
+    /// order that exists here is `appendLock` → `stateLock`.
+    private let appendLock = NSLock()
+    /// **Guarded by `appendLock`.** The ending already written for an attempt that can still be
+    /// handed text (see `keepsLateRecognisedText`), kept so that text can supersede it.
+    private var supersedable: Ending?
+    /// **Guarded by `appendLock`.** Recognised text that arrived before the ending which must carry
+    /// it was written, parked for `appendEnding` to fold in. Cleared by every ending, so it can
+    /// never reach the attempt after the one that produced it.
+    private var lateRecognised: (attempt: AttemptID, text: String)?
+
     // MARK: - construction
 
     /// `history` has no default, deliberately. The obvious one -- `FileHistory()` -- points at the
@@ -458,7 +474,7 @@ public final class Daemon: @unchecked Sendable {
         }
         // Before `sync`, which drops the draft when the attempt is over, and before the effects, so
         // that the notification the user reads is never ahead of the entry that explains it.
-        if let ending { append(ending.draft, outcome: ending.outcome) }
+        if let ending { appendEnding(ending) }
         // Before the effects, so that `.beginCapture` and `.drainCapture` are already being watched
         // when they are performed -- a capture that reports synchronously would otherwise leave a
         // watchdog armed on an attempt that has already moved on.
@@ -553,7 +569,13 @@ public final class Daemon: @unchecked Sendable {
         // §9's `recognised`, verbatim: no cleaning, no trimming, and stored BEFORE any later stage
         // can touch the text. An entry whose `recognised` had already been through the dictionary
         // would make a misfire invisible, which is the one thing the field exists to prevent.
-        updateDraft(id) { $0.recognised = recognised }
+        //
+        // Not `updateDraft`: recognition is the one stage long enough for the attempt to end
+        // underneath it -- D15's cap fires from the clock's thread, and a sleep or a route change
+        // from capture's -- and a draft that is dropped a moment later takes the text with it. The
+        // store therefore answers whether the attempt is still live, and text that missed goes to
+        // the record by the one route left (invariant 10, §7's cap row).
+        if !storeRecognised(id, recognised) { recordLateRecognised(id, recognised) }
 
         // **replaced** (§2, D9a): the Tier 0 dictionary, applied in BOTH modes. raw skips the
         // filter and nothing else (D3), so this stage is above the mode check rather than inside
@@ -693,7 +715,7 @@ public final class Daemon: @unchecked Sendable {
     /// What the record needs about an attempt that has just ended, taken whole so that appending
     /// the line needs nothing from the daemon's state afterwards.
     private struct Ending {
-        let draft: Draft
+        var draft: Draft
         let outcome: AttemptOutcome
     }
 
@@ -760,7 +782,70 @@ public final class Daemon: @unchecked Sendable {
             return current
         }
         guard let snapshot else { return }
-        append(snapshot, outcome: outcome)
+        appendLock.withLock {
+            // Every write to the record goes through this lock, so that "which line landed last"
+            // is a fact rather than a race. Nothing can be waiting to supersede here -- an attempt
+            // that reached delivery stored its text on the live draft -- so the two slots are
+            // dropped rather than consulted, which is also what keeps a faulted attempt's draft
+            // from being held past the dictation that follows it.
+            supersedable = nil
+            lateRecognised = nil
+            append(snapshot, outcome: outcome)
+        }
+    }
+
+    /// Whether an outcome may still be handed text produced after it was decided.
+    ///
+    /// The two capture faults may: §7's cap row and D15 both promise that whatever text the attempt
+    /// produced still reaches the record, and a fault that lands while the recogniser is running
+    /// leaves that text with nowhere else to go -- the audio is discarded and nothing is injected,
+    /// so the record is the only copy (invariant 10).
+    ///
+    /// `aborted` deliberately may not. An abort is the user asking for the dictation to be dropped,
+    /// and text arriving a moment later is text they have already said they do not want; keeping it
+    /// would put a cancelled utterance into the file `dictactl last` reads back.
+    private static func keepsLateRecognisedText(_ outcome: AttemptOutcome) -> Bool {
+        outcome == .capped || outcome == .captureFault
+    }
+
+    /// Writes the line for an attempt that has ended, folding in text that arrived while it was
+    /// being written. One of the two orders this function exists for; see `recordLateRecognised`
+    /// for the other.
+    private func appendEnding(_ ending: Ending) {
+        appendLock.withLock {
+            var draft = ending.draft
+            let keepsText = Self.keepsLateRecognisedText(ending.outcome)
+            if keepsText, draft.recognised.isEmpty,
+               let late = lateRecognised, late.attempt == draft.id {
+                draft.recognised = late.text
+            }
+            // Unconditionally, including for an ending that refuses the text: it belongs to this
+            // attempt, and this attempt is over.
+            lateRecognised = nil
+            supersedable = keepsText ? Ending(draft: draft, outcome: ending.outcome) : nil
+            append(draft, outcome: ending.outcome)
+        }
+    }
+
+    /// Where recognised text goes when the attempt it belongs to has already ended.
+    ///
+    /// Two orders are possible and both are handled under `appendLock`, which is the whole point of
+    /// that lock: either the ending has already been written -- in which case this appends a
+    /// **superseding** line with the same id, which §9 defines as the last line winning -- or it
+    /// has not, in which case the text is parked and `appendEnding` folds it into the one line that
+    /// is still to come. Without the lock the two could write in either order and the text-less
+    /// line could land second, which is the loss this is here to prevent.
+    private func recordLateRecognised(_ id: AttemptID, _ text: String) {
+        appendLock.withLock {
+            guard var written = supersedable, written.draft.id == id else {
+                lateRecognised = (id, text)
+                return
+            }
+            guard written.draft.recognised.isEmpty else { return }
+            written.draft.recognised = text
+            supersedable = nil
+            append(written.draft, outcome: written.outcome)
+        }
     }
 
     /// The one place a line reaches the record, whichever route produced the draft.
@@ -795,6 +880,25 @@ public final class Daemon: @unchecked Sendable {
         }
         guard let message else { return }
         notifier.notify(message, for: knownTarget)
+    }
+
+    /// Stores §9's `recognised` on the live draft, answering whether the attempt is still live.
+    ///
+    /// The MACHINE is the authority on that, not the draft: the draft outlives the transition that
+    /// ended it by one `sync`, so a draft whose id still matches can already be doomed, and writing
+    /// text into it would be writing text into something about to be dropped. Both this and
+    /// `endingLocked` run under `stateLock`, which is what makes the two answers exhaustive -- an
+    /// ending that has not happened yet is guaranteed to snapshot the text stored here, and one
+    /// that has already happened is guaranteed to be visible as `false`.
+    private func storeRecognised(_ id: AttemptID, _ text: String) -> Bool {
+        stateLock.withLock {
+            guard machine.currentAttempt?.id == id else { return false }
+            if var current = draft, current.id == id {
+                current.recognised = text
+                draft = current
+            }
+            return true
+        }
     }
 
     private func updateDraft(_ id: AttemptID, _ body: (inout Draft) -> Void) {

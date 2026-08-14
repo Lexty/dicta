@@ -250,7 +250,12 @@ Distilled from SPEC.md §3. Each one is a mistake already made, or one the spec 
   in either window (before the registration, or after taking the recording back out) used to leave
   `begin` free to start the engine afterwards: the microphone held open for the life of the daemon,
   orange indicator lit, for an attempt already over. `discard` therefore parks an id it did not
-  find, and `begin` tears the engine down rather than announcing `.ready`.
+  find, and `begin` tears the engine down rather than announcing `.ready`. That teardown is the one
+  place two threads run `tearDown` on the same `Recording` at once — every other caller holds it
+  through `take` — so it is serialised on the recording's own `teardownLock` and **not** on `lock`:
+  teardown calls `engine.stop()`, which returns only once the render thread has quiesced, and the
+  render thread takes `lock` in `absorb`. Idempotent was never the same as thread-safe; unguarded,
+  one thread iterated `observers` while the other assigned over it.
 - **A capture fault always discards, and is never reported as silence** (D16, invariants 6–7). The
   audio boundary is in doubt, so the recording dies rather than being guessed at. A fault while
   *stopping* is the row most likely to be mistaken for an empty dictation.
@@ -264,6 +269,21 @@ Distilled from SPEC.md §3. Each one is a mistake already made, or one the spec 
   the file itself is append-only. Do not "fix" this by writing the entry after the injection — the
   test `the entry is on disk before the first keystroke is attempted` exists to catch exactly that,
   and it was probed by making it fail.
+- **Recognition is long enough for the attempt to end underneath it, and the text still has to
+  land** (invariant 10, §7's cap row). D15's cap fires from the clock's thread and a route change
+  from capture's, so a fault can end an attempt while `transcriber.transcribe` is still running —
+  the last second of a ten-minute dictation, or the first chord after a rebuild, where recognition
+  waits up to `patience` on the one start-up model load. The text then comes back to a daemon that
+  has already written the entry describing it: the draft is gone, and `updateDraft` silently does
+  nothing. `storeRecognised` therefore asks the **machine**, not the draft, whether the attempt is
+  still live (the draft outlives the transition by one `sync`, so a matching id can already be
+  doomed), and text that missed goes through `recordLateRecognised`. Both writers take `appendLock`
+  across `history.append`, because what must be ordered is the bytes on disk — a superseding line is
+  only superseding if it lands second — and the two orders are handled symmetrically: supersede the
+  ending if it is written, park the text for `appendEnding` to fold in if it is not. `aborted`
+  refuses the text on purpose; the user asked for that dictation to be dropped. Do NOT "fix" this by
+  disarming the cap during `processing`: a ten-minute dictation would then be injected, which is the
+  one thing D15 exists to prevent.
 - **A failing record append never blocks a delivery** (§7). It injects, then says loudly that
   recovery is unavailable — in that order, because a complaint arriving first reads as a refusal.
 - **A rejection is audible; a no-op is silent** (§6). Pressing stop again because nothing visibly
