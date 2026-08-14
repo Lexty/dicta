@@ -56,16 +56,40 @@ fi
 
 # --- 2. Checks that always run ----------------------------------------------------------------
 
-if [ "${#FILES[@]}" -gt 0 ]; then
-    # English only, no exceptions (SPEC.md, preamble).
+# The one file whose Cyrillic is DATA rather than language: the example replacement dictionary.
+# Tier 0 exists to undo Parakeet transliterating English technical terms into Cyrillic (D9a), so
+# every pattern in it is a Cyrillic string by construction and an example without them would teach
+# nothing. This stays a single named path rather than a category — "user-facing strings" was the
+# carve-out that turned every new string into a judgement call and disarmed this check, and one file
+# named here is not a judgement call. A missing file is a failure, so the exemption cannot outlive
+# what it exempts.
+CYRILLIC_EXEMPT=(docs/replacements.example.conf)
+for exempt in "${CYRILLIC_EXEMPT[@]}"; do
+    [ -f "$exempt" ] || fail "$exempt is exempt from the Cyrillic check but does not exist"
+done
+
+CYRILLIC_FILES=()
+for f in "${FILES[@]}"; do
+    skip=
+    for exempt in "${CYRILLIC_EXEMPT[@]}"; do
+        [ "$f" = "$exempt" ] && skip=1
+    done
+    [ -n "$skip" ] || CYRILLIC_FILES+=("$f")
+done
+
+if [ "${#CYRILLIC_FILES[@]}" -gt 0 ]; then
+    # English only, no exceptions (SPEC.md, preamble) beyond the one named above.
     hits="$(perl -CSD -ne '
         print "$ARGV:$.: $_" if /[\x{0400}-\x{04FF}]/;
         close ARGV if eof;
-    ' "${FILES[@]}" || true)"
+    ' "${CYRILLIC_FILES[@]}" || true)"
     if [ -n "$hits" ]; then
         printf '%s\n' "$hits" >&2
         fail "Cyrillic found — this repository is English-only, with no exceptions"
     fi
+fi
+
+if [ "${#FILES[@]}" -gt 0 ]; then
 
     hits="$(perl -CSD -ne '
         printf "%s:%d: trailing whitespace\n", $ARGV, $. if /[ \t]+$/;

@@ -47,6 +47,13 @@ public final class Daemon: @unchecked Sendable {
     /// Builds the trio for the agterm socket the chord carried; `nil` means agterm's default.
     public typealias TerminalProvider = @Sendable (String?) -> Terminal
 
+    /// The Tier 0 dictionary for the attempt about to be processed (D9a).
+    ///
+    /// A closure rather than a stored value, because the file is re-read per attempt: the workflow
+    /// step 3 is scored on is "edit a rule, dictate once, read the record", and a dictionary the
+    /// daemon cached at login would answer with the previous version of the file.
+    public typealias DictionaryProvider = @Sendable () -> ReplacementDictionary
+
     public struct Configuration: Sendable {
         public var socketPath: String
         /// Where the live attempt's target is parked, so that a crash mid-attempt can be cleaned up
@@ -125,6 +132,7 @@ public final class Daemon: @unchecked Sendable {
     private let history: any History
     private let clock: any Clock
     private let provider: TerminalProvider
+    private let dictionary: DictionaryProvider
 
     /// Guards the machine and the small amount of per-attempt state that travels with it. Held for
     /// the duration of a `machine.apply` and never across an effect.
@@ -162,6 +170,12 @@ public final class Daemon: @unchecked Sendable {
     /// `history` has no default, deliberately. The obvious one -- `FileHistory()` -- points at the
     /// user's real record, and a test that forgot the parameter would append to the file holding
     /// every word they have ever dictated.
+    ///
+    /// `dictionary` does have one -- an empty dictionary rather than the user's file. The asymmetry
+    /// is deliberate: a forgotten `history` would append to the file holding every word they have
+    /// dictated, while a forgotten dictionary only means no rule fires, and a default that read the
+    /// real file would make every test's output depend on what the user happens to have written in
+    /// it. The daemon executable passes `FileDictionary` explicitly.
     public init(
         configuration: Configuration = Configuration(),
         capture: any Capture,
@@ -169,6 +183,7 @@ public final class Daemon: @unchecked Sendable {
         filter: any Filter = NoFilter(),
         history: any History,
         clock: any Clock = SystemClock(),
+        dictionary: @escaping DictionaryProvider = { .none },
         terminal provider: @escaping TerminalProvider
     ) {
         self.configuration = configuration
@@ -177,6 +192,7 @@ public final class Daemon: @unchecked Sendable {
         self.filter = filter
         self.history = history
         self.clock = clock
+        self.dictionary = dictionary
         self.provider = provider
         terminal = provider(nil)
     }
@@ -189,13 +205,15 @@ public final class Daemon: @unchecked Sendable {
         filter: any Filter = NoFilter(),
         history: any History,
         clock: any Clock = SystemClock(),
+        dictionary: @escaping DictionaryProvider = { .none },
         resolver: any TargetResolver,
         injector: any Injector,
         notifier: any Notifier
     ) {
         let fixed = Terminal(resolver: resolver, injector: injector, notifier: notifier)
         self.init(configuration: configuration, capture: capture, transcriber: transcriber,
-                  filter: filter, history: history, clock: clock, terminal: { _ in fixed })
+                  filter: filter, history: history, clock: clock, dictionary: dictionary,
+                  terminal: { _ in fixed })
     }
 
     // MARK: - lifecycle
@@ -462,10 +480,24 @@ public final class Daemon: @unchecked Sendable {
         // would make a misfire invisible, which is the one thing the field exists to prevent.
         updateDraft(id) { $0.recognised = recognised }
 
-        // **replaced** (§2). The Tier 0 dictionary arrives in Task 11; until then this stage is the
-        // identity, which is why it is named rather than skipped -- the filter's fallback is
-        // *replaced*, not *recognised*, and that distinction has to have somewhere to live.
-        let replaced = recognised
+        // **replaced** (§2, D9a): the Tier 0 dictionary, applied in BOTH modes. raw skips the
+        // filter and nothing else (D3), so this stage is above the mode check rather than inside
+        // it. Read per attempt, so a rule edited a moment ago is the rule that fires.
+        let book = dictionary()
+        let replacement = Replacements.apply(book, to: recognised)
+        let replaced = replacement.text
+        // §9's `rules`, stored whether or not anything fired: comparing `recognised` with `final`
+        // is only a diagnosis when the list of rules that ran is beside them.
+        updateDraft(id) { $0.rules = replacement.applied }
+        if let degraded = book.degradedReason {
+            // §7: skip only the offending rules, apply the rest, never block a dictation over a
+            // config file. The text still arrives, so this is a superseding outcome and not a
+            // failure -- the same shape as the filter's fallback below.
+            updateDraft(id) {
+                $0.notes.append(degraded)
+                $0.degraded = .dictionaryDegraded
+            }
+        }
 
         var text = replaced
         var filterFailure: String?
@@ -482,7 +514,9 @@ public final class Daemon: @unchecked Sendable {
         }
         if let filterFailure {
             // The text still arrives, so the entry is not a failure -- but `filter-fell-back` is
-            // the fact worth keeping about it, and it supersedes `injected` (§7, §9).
+            // the fact worth keeping about it, and it supersedes `injected` (§7, §9). It also
+            // supersedes a dictionary degradation, because §9's `outcome` is one field and a whole
+            // stage not running is the larger fact; both reasons survive in `notes` either way.
             updateDraft(id) {
                 $0.notes.append(filterFailure)
                 $0.degraded = .filterFellBack
@@ -493,8 +527,12 @@ public final class Daemon: @unchecked Sendable {
         // `agtermctl session type` turns a newline into a Return that SUBMITS the input line (D8).
         switch Sanitizer.sanitize(text) {
         case .empty:
-            // An empty insertion is worse than none (§7).
-            apply(.recognised(id, .empty))
+            // An empty insertion is worse than none (§7) -- but never a silent one. A dictation the
+            // recogniser HEARD and the dictionary then deleted is reported as exactly that, so the
+            // user looks at the rule they wrote rather than at their microphone.
+            apply(.recognised(id, .empty(reason: Self.emptiedBy(recognised: recognised,
+                                                                replaced: replaced,
+                                                                rules: replacement.applied))))
         case let .line(final):
             updateDraft(id) { $0.final = final }
             stateLock.withLock { pendingFinal = (id, final) }
@@ -506,8 +544,10 @@ public final class Daemon: @unchecked Sendable {
                 forget(id)
                 return
             }
-            // §7's filter row, told after the fallback has been delivered rather than before: an
-            // attempt the user has already cancelled does not need a report about its filter.
+            // §7's filter and dictionary rows, told after the delivery has been arranged rather
+            // than before: an attempt the user has already cancelled does not need a report about
+            // its config files. Once each per attempt, whatever the number of broken rules.
+            if let degraded = book.degradedReason { notifier.notify(degraded, for: knownTarget) }
             if let filterFailure { notifier.notify(filterFailure, for: knownTarget) }
         }
     }
@@ -810,6 +850,27 @@ public final class Daemon: @unchecked Sendable {
         let (state, attempt) = stateLock.withLock { (machine.state, machine.currentAttempt?.id) }
         return Response(kind: kind, state: state, attempt: attempt, target: knownTarget,
                         message: message)
+    }
+
+    /// Why an attempt whose recogniser produced text is nevertheless empty (§7's "a replacement
+    /// produces empty text" row).
+    ///
+    /// `nil` when the recogniser itself heard nothing: the machine's own "nothing was recognised"
+    /// is right for a quiet room, and dressing it up would be noise. Anything else names the stage
+    /// that did it, because the difference decides whether the user looks at their microphone or at
+    /// the file they last edited.
+    static func emptiedBy(recognised: String, replaced: String, rules: RulesApplied) -> String? {
+        guard Sanitizer.sanitize(recognised) != .empty else { return nil }
+        guard Sanitizer.sanitize(replaced) == .empty else {
+            // The dictionary handed on real text and a later stage emptied it. v1 ships no filter
+            // (D9c), so this is unreachable until step 4 -- and it is worded now anyway, because
+            // the alternative when it becomes reachable is a silent deletion.
+            return "the text was empty after processing -- nothing was typed"
+        }
+        let fired = rules.fired.isEmpty
+            ? "no rule reported firing"
+            : "the rules that fired were " + rules.fired.joined(separator: ", ")
+        return "the replacement dictionary emptied this dictation (\(fired)) -- nothing was typed"
     }
 
     static func reason(_ error: any Error) -> String {

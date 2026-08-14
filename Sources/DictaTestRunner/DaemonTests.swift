@@ -59,6 +59,33 @@ struct DaemonTests {
         }
     }
 
+    /// The Tier 0 dictionary the daemon will read, behind a counter.
+    ///
+    /// A box rather than a value because the daemon reads it PER ATTEMPT (D9a's workflow: edit a
+    /// rule, dictate once, read the record). Both halves of that are assertions -- that the read
+    /// happens again, and that the second read is what fires -- and neither is observable through a
+    /// dictionary handed over once at construction.
+    final class DictionaryBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var book = ReplacementDictionary.none
+        private var reads = 0
+
+        var readCount: Int { lock.withLock { reads } }
+
+        func set(_ book: ReplacementDictionary) { lock.withLock { self.book = book } }
+
+        func set(_ source: String, version: String? = "test") {
+            set(Replacements.parse(source, version: version))
+        }
+
+        func read() -> ReplacementDictionary {
+            lock.withLock {
+                reads += 1
+                return book
+            }
+        }
+    }
+
     /// Everything a daemon needs, in a temporary directory, with every seam faked.
     final class Harness {
         let directory: URL
@@ -72,6 +99,8 @@ struct DaemonTests {
         /// In memory, never the user's real record: a test that appended to `Paths.current.record`
         /// would corrupt the file holding every word they have dictated.
         let history = FakeHistory()
+        /// Empty unless a test fills it, so every other test's text is the transcriber's own.
+        let dictionary: DictionaryBox
         let daemon: Daemon
 
         /// `injecting` and `processing` each last exactly as long as one synchronous seam call, so
@@ -92,6 +121,10 @@ struct DaemonTests {
             try? FileManager.default.createDirectory(at: directory,
                                                      withIntermediateDirectories: true)
             resolver.setPane(pane)
+            // A local binding, captured by the provider: `self` is not available to a closure here
+            // until every stored property is initialised, and `daemon` is one of them.
+            let book = DictionaryBox()
+            dictionary = book
             daemon = Daemon(
                 configuration: Daemon.Configuration(
                     socketPath: directory.appendingPathComponent("c.sock").path,
@@ -105,6 +138,7 @@ struct DaemonTests {
                 filter: filter ?? self.filter,
                 history: history ?? self.history,
                 clock: clock,
+                dictionary: { book.read() },
                 resolver: resolver,
                 injector: injector ?? self.injector,
                 notifier: notifier
@@ -533,6 +567,188 @@ struct DaemonTests {
         #expect(harness.notifier.announcements == [.listening, .working, .done])
         let message = try #require(harness.notifier.messages.first)
         #expect(message.contains("the filter did not run"))
+    }
+
+    // MARK: - the Tier 0 dictionary (D9a, §2, §7)
+
+    /// The transcript with one word rewritten, as the **replaced** stage would leave it: still
+    /// carrying the newline, the double space and the trailing space, because the sanitiser has not
+    /// run yet. Kept beside the rule so a test asserts against a value rather than against its own
+    /// copy of the algorithm.
+    static let replacedHostileText = " dicta hears you\nfrom the  real transcriber "
+    static let sanitizedReplacedText = "dicta hears you from the real transcriber"
+    /// One rule, over a word the canned transcript actually contains.
+    static let oneRule = "honesty | fake | real"
+
+    @Test("the dictionary runs before the filter and before the sanitiser")
+    func replacementRunsBeforeTheFilterAndTheSanitiser() {
+        let harness = Harness()
+        harness.dictionary.set(Self.oneRule)
+
+        harness.dictate(.clean)
+
+        // What the filter was handed is the proof of the ordering (§2): it is the replaced text,
+        // and it still carries every hazard, which is why the sanitiser cannot move earlier.
+        #expect(harness.filter.calls == [Self.replacedHostileText])
+        #expect(harness.injector.lastText == Self.sanitizedReplacedText)
+    }
+
+    @Test("the dictionary applies in raw mode too, which skips only the filter")
+    func replacementAppliesInRawMode() {
+        // §2's table: **replaced** is applied in raw mode; only **filtered** is not (D3). Reading
+        // raw as "unreplaced" is one of the two wrong readings the spec names.
+        let harness = Harness()
+        harness.dictionary.set(Self.oneRule)
+
+        harness.dictate(.raw)
+
+        #expect(harness.injector.lastText == Self.sanitizedReplacedText)
+        #expect(harness.filter.calls.isEmpty)
+    }
+
+    @Test("the record names the rules that fired and the dictionary they came from")
+    func recordCarriesTheRules() throws {
+        let harness = Harness()
+        harness.dictionary.set("""
+        honesty | fake | real
+        unused | nothing here | x
+        """, version: "2026-08-14T10:00:00Z")
+
+        harness.dictate()
+
+        let entry = try #require(harness.history.appended.last)
+        #expect(entry.outcome == .injected)
+        #expect(entry.rules == RulesApplied(fired: ["honesty"], version: "2026-08-14T10:00:00Z"))
+        // §9's whole point: `recognised` is verbatim and `final` is what was typed, so the pair
+        // plus `rules` names a misfiring rule without re-running anything.
+        #expect(entry.recognised == FakeTranscriber.hostileText)
+        #expect(entry.final == Self.sanitizedReplacedText)
+    }
+
+    @Test("the dictionary is read once per attempt, so an edited rule fires on the next one")
+    func dictionaryIsReadPerAttempt() {
+        // The workflow step 3 is scored on. A dictionary read once at start-up would answer a
+        // second dictation with the file as it was at login.
+        let harness = Harness()
+
+        harness.dictate()
+        #expect(harness.injector.lastText == FakeTranscriber.sanitizedHostileText)
+
+        harness.dictionary.set(Self.oneRule)
+        harness.dictate()
+
+        #expect(harness.dictionary.readCount == 2)
+        #expect(harness.injector.lastText == Self.sanitizedReplacedText)
+    }
+
+    @Test("a malformed rule is skipped, the rest apply, and the text still arrives")
+    func degradedDictionaryStillDelivers() throws {
+        let harness = Harness()
+        harness.dictionary.set("""
+        honesty | fake | real
+        this line is nonsense
+        """)
+
+        harness.dictate()
+
+        // §7: never block an injection over a config file. The surviving rule fired.
+        #expect(harness.injector.lastText == Self.sanitizedReplacedText)
+        let entry = try #require(harness.history.appended.last)
+        #expect(entry.outcome == .dictionaryDegraded)
+        #expect(entry.rules.fired == ["honesty"])
+        #expect(entry.error?.contains("line 2") == true)
+        // Told, and told once, however many rules are broken -- and never as a blocked attempt,
+        // because the attempt was not blocked.
+        #expect(harness.notifier.messages.count == 1)
+        #expect(harness.notifier.announcements == [.listening, .working, .done])
+    }
+
+    @Test("a dictionary with several broken rules is still reported exactly once")
+    func degradationIsReportedOnce() {
+        let harness = Harness()
+        harness.dictionary.set("""
+        nonsense one
+        nonsense two
+        nonsense three
+        """)
+
+        harness.dictate()
+
+        #expect(harness.notifier.messages.count == 1)
+        #expect(harness.injector.lastText == FakeTranscriber.sanitizedHostileText)
+    }
+
+    @Test("a filter fallback supersedes a dictionary degradation, and both reasons survive")
+    func filterFallbackSupersedesDegradation() throws {
+        let harness = Harness()
+        harness.dictionary.set("nonsense")
+        harness.filter.setError(CountingFilter.Failure())
+
+        harness.dictate()
+
+        let entry = try #require(harness.history.appended.last)
+        // §9's `outcome` is one field: a whole stage not running is the larger fact. Nothing is
+        // lost, because `error` joins every reason the user was shown.
+        #expect(entry.outcome == .filterFellBack)
+        #expect(entry.error?.contains("dictionary") == true)
+        #expect(entry.error?.contains("filter") == true)
+        #expect(harness.injector.lastText == FakeTranscriber.sanitizedHostileText)
+    }
+
+    @Test("a rule that empties the text injects nothing and says the dictionary did it")
+    func replacementEmptyingTheTextIsNotSilent() throws {
+        let harness = Harness()
+        harness.transcriber.setText("erm")
+        harness.dictionary.set("filler | erm |")
+
+        harness.dictate()
+
+        // §7: treat as empty -- and the dictionary must not silently delete a dictation. "Nothing
+        // was recognised" would be a lie that sends the user to their microphone.
+        #expect(harness.injector.delivered.isEmpty)
+        #expect(harness.notifier.announcements == [.listening, .working, .blocked])
+        let message = try #require(harness.notifier.messages.last)
+        #expect(message.contains("replacement dictionary"))
+        #expect(message.contains("filler"), "the message must name the rule that fired: \(message)")
+        let entry = try #require(harness.history.appended.last)
+        #expect(entry.outcome == .empty)
+        #expect(entry.recognised == "erm")
+        #expect(entry.final.isEmpty)
+        #expect(entry.rules.fired == ["filler"])
+    }
+
+    @Test("silence is still reported as silence, not blamed on the dictionary")
+    func silenceIsStillSilence() throws {
+        let harness = Harness()
+        harness.transcriber.setText("   ")
+        harness.dictionary.set(Self.oneRule)
+
+        harness.dictate()
+
+        #expect(harness.notifier.messages == ["nothing was recognised"])
+        let entry = try #require(harness.history.appended.last)
+        #expect(entry.outcome == .empty)
+    }
+
+    @Test("an aborted attempt is not told about its dictionary")
+    func cancelledAttemptSaysNothingAboutTheDictionary() {
+        // The report follows the delivery, not the recognition: an attempt the user has already
+        // cancelled does not need a lecture about a config file.
+        let hooked = HookedFilter()
+        let harness = Harness(filter: hooked)
+        harness.dictionary.set("nonsense")
+        let id = harness.startRecording()
+        harness.chord()
+        // The daemon, not the harness: `Daemon` is `Sendable` and the harness deliberately is not.
+        let daemon = harness.daemon
+        hooked.setHook {
+            _ = daemon.handle(.request(Request(cmd: .abort)))
+        }
+
+        harness.capture.reportDrained(id)
+
+        #expect(harness.injector.delivered.isEmpty)
+        #expect(!harness.notifier.messages.contains { $0.contains("dictionary") })
     }
 
     // MARK: - target resolution (D6, §5)

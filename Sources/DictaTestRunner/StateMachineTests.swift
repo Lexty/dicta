@@ -344,7 +344,7 @@ struct StateMachineTests {
                 _ = machine.captureReady(id)
                 _ = machine.stop(mode: .clean)
                 _ = machine.captureDrained(id)
-                _ = machine.recognised(id, .empty)
+                _ = machine.recognised(id, .empty(reason: nil))
             case 2:
                 _ = machine.fault(id, reason: "input device changed")
             default:
@@ -516,7 +516,7 @@ struct StateMachineTests {
 
         var empty = Self.machine(in: .processing)
         let emptyID = empty.currentAttempt!.id
-        let silence = empty.recognised(emptyID, .empty)
+        let silence = empty.recognised(emptyID, .empty(reason: nil))
         #expect(silence.notifications != result.notifications,
                 "silence and a hardware fault must not read the same")
     }
@@ -565,7 +565,9 @@ struct StateMachineTests {
 
     @Test("recognition failing or coming back empty ends the attempt without injecting")
     func recognitionOutcomes() {
-        for result in [RecognitionResult.empty, .failed(reason: "the model is unavailable")] {
+        let outcomes: [RecognitionResult] = [.empty(reason: nil),
+                                             .failed(reason: "the model is unavailable")]
+        for result in outcomes {
             var machine = Self.machine(in: .processing)
             let id = machine.currentAttempt!.id
             let transition = machine.recognised(id, result)

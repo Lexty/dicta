@@ -56,13 +56,20 @@ public enum AttemptOutcome: String, Codable, Sendable, CaseIterable {
 
 /// §9's `rules`: which replacement rules fired, and which dictionary they came from.
 ///
-/// Present from the start, empty until Task 11 fills it. A field that appears later would make
-/// every entry written before it indistinguishable from one where no rule fired.
+/// This is half of what makes a misfiring rule diagnosable from the record alone, which is what
+/// step 3 of §10 is scored on. `recognised` and `final` show that something changed; this names
+/// what changed it, and does so with an id the user chose rather than a line number that moves the
+/// next time they edit the file (`Replacements`).
+///
+/// Written on every attempt that reached the **replaced** stage, including the ones where nothing
+/// fired: an empty `fired` beside a non-empty `version` says "the dictionary ran and matched
+/// nothing", and that is a different fact from a missing field.
 public struct RulesApplied: Codable, Sendable, Equatable {
-    /// The ids of the rules that fired, in the order they were applied.
+    /// The ids of the rules that fired, in the order they were applied. A rule that replaced
+    /// several occurrences appears once -- this names rules, not substitutions.
     public var fired: [String]
     /// The dictionary's version or mtime -- the half of §9 that makes "which file said that" a
-    /// question with an answer.
+    /// question with an answer. `FileDictionary` fills it with the file's mtime.
     public var version: String?
 
     public init(fired: [String] = [], version: String? = nil) {

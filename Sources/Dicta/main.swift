@@ -109,6 +109,10 @@ let capture = AudioCapture()
 // that is not there -- which is what `dictactl` says when nothing answers the socket.
 let transcriber = ParakeetTranscriber()
 
+// The Tier 0 replacement dictionary (D9a). Constructed once, read per attempt: it is the one file a
+// user edits between dictations, and §7 forbids it from ever blocking one.
+let dictionaryFile = FileDictionary()
+
 let daemon = Daemon(
     configuration: Daemon.Configuration(socketPath: controlSocket),
     capture: capture,
@@ -119,6 +123,9 @@ let daemon = Daemon(
     // survives a delivery failure (invariant 10) -- and what `dictactl last` reads back.
     history: FileHistory(),
     clock: SystemClock(),
+    // The Tier 0 dictionary (D9a), re-read per attempt so that editing a rule and dictating once is
+    // the whole loop -- no restart, and no chance of testing a rule against the previous file.
+    dictionary: { dictionaryFile.load() },
     // One `Agterm` per attempt, addressed at the agterm the chord fired in ($AGT_SOCKET, F3). The
     // command line's `--agterm-socket` is the fallback for a keymap that does not pass it.
     terminal: { requested in

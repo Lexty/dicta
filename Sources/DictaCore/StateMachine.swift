@@ -33,7 +33,11 @@ public struct Attempt: Equatable, Sendable {
 /// insertion is worse than none -- and folding it into `failed` would lose that.
 public enum RecognitionResult: Equatable, Sendable {
     case text
-    case empty
+    /// Nothing survived to be injected. The reason is optional because the common case has none
+    /// worth saying -- the room was quiet -- but the dictionary emptying a dictation that WAS
+    /// recognised must not be reported as silence (§7, D9a): "nothing was recognised" would send
+    /// the user to their microphone over a rule they wrote.
+    case empty(reason: String?)
     case failed(reason: String)
 }
 
@@ -336,10 +340,10 @@ public struct StateMachine: Equatable, Sendable {
         case .text:
             phase = .injecting(attempt, mode)
             return accepted(attempt: id, effects: [.inject(id, attempt.target)])
-        case .empty:
+        case let .empty(reason):
             phase = .idle
-            return accepted(attempt: id, message: "nothing was recognised",
-                            effects: blocked("nothing was recognised"))
+            let message = reason ?? "nothing was recognised"
+            return accepted(attempt: id, message: message, effects: blocked(message))
         case let .failed(reason):
             phase = .idle
             return accepted(attempt: id, message: reason, effects: blocked(reason))
