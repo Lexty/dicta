@@ -24,26 +24,38 @@ Conversation about this project is in Russian. The repository is not.
 
 ## Where it stands
 
-**Task 8 of 13 (plan `docs/plans/20260814-dicta-steps-1-3.md`) is done — step 1 of SPEC.md §10 is
-complete, the record it is scored through exists, and the signed bundle the microphone grant will
-attach to exists before any audio code does.** `DictaCore` holds the wire types, `Paths`,
-the sanitiser, the lifecycle state machine and the §9 record schema;
-`DictaIPC` holds both halves of the control socket; `dictactl` speaks all six verbs and
-`docs/keymap.snippet.conf` is checked by a test against the parser the binary uses. `DictaRuntime`
-holds the six seams with their fakes, the `agterm` adapter — target resolution off `agtermctl tree
---json`, injection, §6's indicators, notifications, all behind a `CommandRunner` seam — and now
-`Daemon`, which wires the socket, the state machine and the seams into whole attempts.
+**Task 10 of 13 (plan `docs/plans/20260814-dicta-steps-1-3.md`) is done — step 1 of SPEC.md §10 is
+complete, and step 2's automatable half with it: the microphone, the signed bundle the grant attaches
+to, and a recogniser warm before the first chord all exist. What is left of step 2 is the four
+criteria a person scores (§10 (a)–(d)), with `Scripts/measure.sh` and the record.** `DictaCore` holds
+the wire types, `Paths`, the sanitiser, the lifecycle state machine, the §9 record schema and
+`RecognisedText`; `DictaIPC` holds both halves of the control socket; `dictactl` speaks all six verbs
+and `docs/keymap.snippet.conf` is checked by a test against the parser the binary uses.
+`DictaRuntime` holds the six seams with their fakes, the `agterm` adapter — target resolution off
+`agtermctl tree --json`, injection, §6's indicators, notifications, all behind a `CommandRunner`
+seam — `AudioCapture`, `ParakeetTranscriber`, and `Daemon`, which wires the socket, the state machine
+and the seams into whole attempts.
 
-`Dicta` is a real daemon: it serves the socket, refuses a second instance, resolves the pane from the
-live tree, and delivers the canned hostile transcript as one sanitised line. Every attempt now leaves
-one entry in `record.jsonl` (`History`, `FileHistory`), written **before** the keystrokes, and
-`dictactl last` reads it back — `final` by default, `recognised` verbatim behind `--recognised`.
-Capture and recognition are still fakes (`ImmediateCapture`, `FakeTranscriber`) — Tasks 9 and 10
-replace exactly those two lines of `Sources/Dicta/main.swift`.
+`Dicta` is a real daemon with **no fakes left on its path**: it serves the socket, refuses a second
+instance, resolves the pane from the live tree, records at 16 kHz mono through `AudioCapture`,
+recognises through `ParakeetTranscriber` (Parakeet TDT 0.6B v3 on the ANE, via FluidAudio pinned at
+`exact: "0.15.5"`), and delivers the result as one sanitised line. Every attempt leaves one entry in
+`record.jsonl` (`History`, `FileHistory`), written **before** the keystrokes, and `dictactl last`
+reads it back — `final` by default, `recognised` verbatim behind `--recognised`.
 
-`Scripts/bundle.sh` now produces a signed `Dicta.app` and `Scripts/install.sh` installs it as a user
+The models are loaded and given one dummy inference at daemon start, on a thread of their own, and a
+missing bundle is reported at startup with the command that fixes it. The remaining fake behind a
+seam is `NoFilter`, which is what D9c says v1 ships.
+
+`Scripts/bundle.sh` produces a signed `Dicta.app` and `Scripts/install.sh` installs it as a user
 LaunchAgent. That is deliberately ahead of the microphone: if the bundle identity were wrong, every
 measurement taken afterwards would be taken against a grant that evaporates on the next rebuild.
+
+Task 11 adds the Tier 0 replacement dictionary — and the probe below turned D9a from a guess into a
+measurement: Parakeet **transliterates English technical terms spoken inside Russian into Cyrillic**,
+so "FluidAudio" and "Package Swift" come back spelled phonetically in the Cyrillic alphabet. That is
+exactly the class of mistake the dictionary exists to undo, and it is now observed rather than
+assumed.
 
 The plan covers steps 1–3 of SPEC.md §10. Steps 4 (the filter) and 5 (the §7 audit) are out of it.
 
@@ -57,7 +69,15 @@ The plan covers steps 1–3 of SPEC.md §10. Steps 4 (the filter) and 5 (the §7
   Each check was probed with a file that should trip it; two of them were silently passing until
   that probe, which is the same lesson as D18 in a different costume.
 - Run the daemon in the foreground: `bash Scripts/run.sh` — the development path, with no bundle and
-  therefore no stable TCC anchor. Fine until Task 9; not how the installed daemon runs.
+  therefore no stable TCC anchor. Useful for everything except the microphone; not how the installed
+  daemon runs.
+- Fetch the recognition models, once: `Dicta --fetch-models` (or
+  `./Dicta.app/Contents/MacOS/Dicta --fetch-models`). It downloads into FluidAudio's own cache,
+  re-runs the self-check over the result, and exits. The daemon deliberately never does this at
+  start-up — see the rule about it below.
+- Score the criteria: `bash Scripts/measure.sh` for step 2 (a) — types nothing into a pane — and
+  `bash Scripts/measure.sh --stop` for step 2 (c), which **delivers** text into the session's input
+  line, once per attempt, because the interval being measured ends at the last keystroke.
 - Build and sign the bundle: `bash Scripts/bundle.sh` → `./Dicta.app`; `bash Scripts/bundle.sh
   --print-requirement` prints the designated requirement of an existing one.
 - Install everything: `bash Scripts/install.sh` — `dictactl` to `~/.local/bin`, the signed bundle to
@@ -110,6 +130,30 @@ testing.linker` to the `DictaTests` target — otherwise the failing test cannot
   re-measured properly by `Scripts/measure.sh` in Task 9. The budget is 150 ms.
 - **F2 — `claude -p` costs 8.6–10.5 s of fixed startup** per invocation. It cannot be the filter,
   which is why v1 ships the seam empty (D9c).
+- **Recognition, measured on this machine (M3 Pro) with a throwaway probe in Task 10, since no unit
+  test can establish any of it.** The probe fed real audio through `AudioCapture.convert` into
+  `ParakeetTranscriber`, i.e. dicta's own path with only the daemon left out.
+  - **Model load: ~17 s the first time a given binary runs, ~0.2 s every time after.** The 17 s is
+    CoreML compiling the int8 encoder for the ANE, and its cache is keyed per binary — so *every
+    rebuild pays it once*, including a rebuilt `Dicta.app`. Observed twice: the signed bundle's first
+    start reported 17.1 s and its second 0.2 s. This is why the warm-up runs on its own thread after
+    the socket is bound rather than before it.
+  - **Dummy inference: 0.07–0.13 s.** One second of silence, which is what buys the first real
+    dictation out of paying ANE compilation (§12).
+  - **Recognition: 5.6 s of speech in 0.11 s; 66.8 s in 0.42 s.** Step 2's criterion (c) allows 2 s
+    for stop-to-injection, so recognition is not what will spend it.
+  - **Quality: Russian is recognised correctly with punctuation, and English technical terms spoken
+    inside it come back transliterated into Cyrillic** — the measurement that makes D9a's Tier 0
+    dictionary a fix for something observed rather than something imagined.
+- **The models are FluidAudio's own cache, and the folder is not named after the repository.** The
+  HuggingFace repo is `parakeet-tdt-0.6b-v3-coreml`; the cache folder strips the suffix, giving
+  `~/Library/Application Support/FluidAudio/Models/parakeet-tdt-0.6b-v3`. `ParakeetModels.directory`
+  asks the library rather than spelling it out, and the required file names come from
+  `ModelNames.ASR.requiredModelsV3` for the same reason: a hand-typed list one directory off reports
+  "the models are missing" against a directory that is complete.
+- **FluidAudio's README is ahead of the released API.** v0.15.5's `AsrManager.transcribe` takes an
+  `inout TdtDecoderState` the docs do not mention, and there is no `configure(models:)` — it is
+  `loadModels(_:)`. Hence `exact: "0.15.5"` in `Package.swift`.
 - **`agtermctl session type` injects real keystrokes with no bracketed paste** — every `\n` is a
   Return that SUBMITS the input line. This is the single most dangerous fact in the project and the
   entire reason `Sanitizer` exists (D8, invariants 1–2).
@@ -133,9 +177,13 @@ testing.linker` to the `DictaTests` target — otherwise the failing test cannot
   framing cannot drift. Split from `DictaRuntime` for one concrete reason: `dictactl` needs the
   client half, and `DictaRuntime` is where AVFoundation and CoreML land — without the split every
   keypress would drag the capture stack through dyld.
-- `Sources/DictaRuntime/` — everything that touches the world: `Agterm` (subprocesses), the daemon,
-  the record writer, and the seams (`Capture`, `Transcriber`, `Filter`, `Injector`, `Notifier`,
-  `Clock`) with their fakes.
+- `Sources/DictaRuntime/` — everything that touches the world: `Agterm` (subprocesses),
+  `AudioCapture` (AVAudioEngine), `ParakeetTranscriber` (FluidAudio/CoreML), the daemon, the record
+  writer, and the seams (`Capture`, `Transcriber`, `Filter`, `Injector`, `Notifier`, `Clock`) with
+  their fakes. **The only module that links FluidAudio**, which is the whole of D12's budget:
+  `dictactl` cannot reach it even by accident, because it does not depend on this target.
+  `ParakeetTranscriber.swift` is in turn the only file that knows FluidAudio exists — everything else
+  sees `RecognitionEngine`, which is what makes "the models load exactly once" a countable assertion.
 - `Sources/Dicta/` — the daemon executable. Wiring only.
 - `Sources/dictactl/` — the client the keymap invokes. **DictaCore + DictaIPC and nothing else**,
   and it never opens the microphone: the TCC grant belongs to the daemon's signed bundle, and a
@@ -190,6 +238,27 @@ Distilled from SPEC.md §3. Each one is a mistake already made, or one the spec 
   text; the notification says the insertion *may be partial* and stops there.
 - **A config file never blocks a dictation** (§7). A missing or malformed dictionary skips the
   offending rules, applies the rest, and notifies once.
+- **No model load on the attempt path, ever** (D10, normative). The models are loaded once at daemon
+  start and the transcriber refuses rather than loading if nobody prepared it — loading on demand
+  "to be helpful" would satisfy the chord and break D10 in the same motion, invisibly. The one
+  exception is not an exception: a chord arriving while the *single* start-up load is still running
+  **waits** for it, because the audio is already recorded and losing it to a race with the daemon's
+  own start-up is the worst outcome available.
+- **The daemon never downloads models at start-up.** It is a LaunchAgent: it starts at login, on
+  whatever network the laptop woke up on, and six hundred megabytes of unannounced traffic is not
+  something to do quietly. A missing bundle is a loud startup message naming `Dicta --fetch-models`,
+  which is the asking.
+- **Anything that blocks on `Blocking.run` must be on a real `Thread`.** FluidAudio is actor-based
+  and the `Transcriber` seam is synchronous, so a semaphore bridges them; blocking a Swift-concurrency
+  cooperative thread while waiting on a `Task` that needs the same non-overcommit pool is the
+  deadlock recorded at the bottom of this list about the control socket. dicta's callers — the
+  per-connection socket thread, the audio thread, the warm-up thread in `main.swift` — are all real
+  threads, and that is a property to preserve, not a coincidence.
+- **Recognised text is judged before it becomes `recognised`** (§7). Output over the frame limit, or
+  bytes that are not valid UTF-8, is a processing failure recorded with the **byte length** and no
+  text. The limit is the wire's own (`Wire.maxFrameBytes`) on purpose: text accepted into the record
+  but too large to travel back through the socket would be text `dictactl last` promises and cannot
+  deliver.
 - **Do not copy acta's crash-safety machinery** (D14). Losing an utterance costs one keypress, not a
   meeting: no segmentation, no disk journal, no recovery pass. Audio stays in RAM.
 - **The installed daemon runs from the signed bundle, never from a bare executable** (D11). That is
@@ -213,5 +282,6 @@ Distilled from SPEC.md §3. Each one is a mistake already made, or one the spec 
 Collected in `docs/manual-checklist.md` as the plan progresses. In short: that the chords fire and
 land in the pane they were pressed in; that injection lands in **Claude Code's** input line
 specifically (F5 verified a fish prompt, which is not the same thing); microphone TCC; recognition
-quality on this user's speech; sleep/wake and AirPods route changes mid-attempt; daemon lifecycle
-across logout/login.
+quality on this user's own speech through their own microphone — the Task 10 probe used synthesised
+speech and a meeting recording, which establishes that the pipeline works and not that it works for
+them; sleep/wake and AirPods route changes mid-attempt; daemon lifecycle across logout/login.

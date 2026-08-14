@@ -281,13 +281,19 @@ struct AudioCaptureTests {
         }
     }
 
-    @Test("measure.sh ends every attempt with abort, so measuring types nothing into a pane")
+    @Test("measure.sh ends every criterion-(a) attempt with abort, typing nothing into a pane")
     func measureScriptNeverDelivers() throws {
-        // A second toggle would deliver a transcript per attempt: ten measurements would leave ten
-        // lines of canned text in the user's input line, and step 2a would cost step 1's invariant.
+        // Delivering per attempt would leave ten lines of transcript in the user's input line, and
+        // step 2a would have cost step 1's invariant to score.
         let verbs = try Self.measureLines().compactMap(\.first)
         #expect(verbs.contains("abort"))
-        #expect(verbs.filter { $0 == "toggle" }.count == 1)
+        // Criterion (c) has a `stop` of its own -- it cannot be measured without delivering, since
+        // the interval ends at the last keystroke. What is asserted here is that it is not what a
+        // bare `measure.sh` does.
+        #expect(verbs.contains("stop"))
+        let text = try String(contentsOf: Self.measureScript, encoding: .utf8)
+        #expect(text.contains("STOP_LATENCY=0"), "criterion (c) must be off by default")
+        #expect(text.contains("--stop)"), "criterion (c) must be reachable, and only on request")
     }
 
     // MARK: - a collector the audio thread could safely use

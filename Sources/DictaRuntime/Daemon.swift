@@ -434,13 +434,27 @@ public final class Daemon: @unchecked Sendable {
             apply(.recognised(id, .failed(reason: "the audio was lost before it could be read")))
             return
         }
-        let recognised: String
+        let spoken: String
         do {
-            recognised = try transcriber.transcribe(audio)
+            spoken = try transcriber.transcribe(audio)
         } catch {
             // §7: no injection, notify, and the attempt is recorded with its error and no text --
             // `recordEnd` writes that row from the transition this produces.
             apply(.recognised(id, .failed(reason: "the recogniser failed: \(Self.reason(error))")))
+            return
+        }
+        // §7's third recogniser row: output that is not valid UTF-8, or longer than the frame
+        // limit, is a processing failure carrying the BYTE LENGTH rather than the text. Judged
+        // before the draft is touched, deliberately -- an entry whose `recognised` held 200 KB
+        // nobody can read back through the socket would be a record that lies about being
+        // recoverable.
+        let recognised: String
+        switch RecognisedText.validate(spoken) {
+        case let .text(text):
+            recognised = text
+        case let unusable:
+            let reason = unusable.failureReason ?? "the recogniser returned unusable text"
+            apply(.recognised(id, .failed(reason: reason)))
             return
         }
         // §9's `recognised`, verbatim: no cleaning, no trimming, and stored BEFORE any later stage
@@ -801,6 +815,7 @@ public final class Daemon: @unchecked Sendable {
     static func reason(_ error: any Error) -> String {
         if let agterm = error as? AgtermError { return agterm.description }
         if let delivery = error as? DeliveryFailure { return delivery.description }
+        if let recognition = error as? RecognitionError { return recognition.description }
         return "\(error)"
     }
 }

@@ -93,12 +93,31 @@ let testing = swiftTestingSettings()
 let package = Package(
     name: "dicta",
     platforms: [.macOS(.v14)],
+    dependencies: [
+        // D10 and §12: linked as a library rather than shelled out to. `fluidaudiocli` pays model
+        // load per invocation, and "no model load on the hot path" is the normative half of D10 --
+        // a CLI would spend seconds of ANE compilation inside every dictation.
+        //
+        // Pinned EXACTLY, not `from:`. The API this rests on is not the documented one: v0.15.5's
+        // `AsrManager.transcribe` takes an `inout TdtDecoderState` the README does not mention, and
+        // `AsrModels.load` wants the staged HuggingFace repo folder rather than its parent. A minor
+        // bump that rearranged either would be a compile error at best and a silently different
+        // model at worst, so the version moves when somebody reads the diff.
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.15.5"),
+    ],
     targets: [
         .target(name: "DictaCore", path: "Sources/DictaCore"),
         .target(name: "DictaIPC", dependencies: ["DictaCore"], path: "Sources/DictaIPC"),
+        // FluidAudio lands HERE and nowhere else. It is the whole of the CoreML weight D12 keeps
+        // off the keypress path: `dictactl` depends on DictaCore + DictaIPC, so it cannot reach
+        // this even by accident.
         .target(
             name: "DictaRuntime",
-            dependencies: ["DictaCore", "DictaIPC"],
+            dependencies: [
+                "DictaCore",
+                "DictaIPC",
+                .product(name: "FluidAudio", package: "FluidAudio"),
+            ],
             path: "Sources/DictaRuntime"
         ),
         .executableTarget(

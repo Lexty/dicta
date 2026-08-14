@@ -450,6 +450,74 @@ struct DaemonTests {
         #expect(harness.notifier.announcements == [.listening, .working, .blocked])
         let message = try #require(harness.notifier.messages.first)
         #expect(message.contains("the recogniser failed"))
+        // §7 wants the attempt recorded with its error and no text. The entry is the only reason to
+        // care: an attempt that produced nothing and left nothing behind is indistinguishable from
+        // one that never happened, which is property 2 failing quietly.
+        let entry = try #require(harness.history.appended.last)
+        #expect(entry.outcome == .recognitionFailed)
+        #expect(entry.recognised.isEmpty)
+        #expect(entry.final.isEmpty)
+        #expect(entry.error?.contains("the recogniser failed") == true)
+    }
+
+    @Test("recognised text over the frame limit is refused, and the record keeps the byte length")
+    func oversizedRecognitionDoesNotInject() throws {
+        let harness = Harness()
+        // Two bytes per character, so this is twice the frame limit in bytes and well under it
+        // in characters -- the shape a `count`-based check would wave through.
+        let huge = String(repeating: "\u{044F}", count: Wire.maxFrameBytes)
+        harness.transcriber.setText(huge)
+
+        harness.dictate()
+
+        // §7's third recogniser row. Injecting would be 128 KB of keystrokes into an input line;
+        // and the text could not be read back out through the socket either, so storing it would
+        // put a promise in the record that `dictactl last` cannot keep.
+        #expect(harness.injector.delivered.isEmpty)
+        #expect(harness.notifier.announcements == [.listening, .working, .blocked])
+        let entry = try #require(harness.history.appended.last)
+        #expect(entry.outcome == .recognitionFailed)
+        #expect(entry.recognised.isEmpty)
+        // The byte length is what §7 asks to be recorded, and it is the number that separates a
+        // runaway decode from a broken model.
+        #expect(entry.error?.contains("\(huge.utf8.count) bytes") == true)
+    }
+
+    @Test("an attempt that recognised nothing but whitespace is recorded as empty, with no text")
+    func emptyRecognitionIsRecordedAsEmpty() throws {
+        let harness = Harness()
+        harness.transcriber.setText("   \n \t ")
+
+        harness.dictate()
+
+        let entry = try #require(harness.history.appended.last)
+        // `empty` rather than `recognition-failed`: the recogniser worked and the room was quiet,
+        // and a record that confused the two would send the user to look at their model.
+        #expect(entry.outcome == .empty)
+        #expect(entry.final.isEmpty)
+        // `recognised` still holds what came back, whitespace and all. It is the only evidence that
+        // distinguishes "nothing was said" from "the model emitted junk that sanitised to nothing".
+        #expect(entry.recognised == "   \n \t ")
+    }
+
+    @Test("the daemon drives a real ParakeetTranscriber without loading a model per attempt")
+    func theAttemptPathNeverLoadsAModel() throws {
+        // The composition, rather than the transcriber in isolation (which `TranscriberTests`
+        // covers): this is the wiring `Sources/Dicta/main.swift` performs, with only FluidAudio
+        // replaced.
+        let engine = TranscriberTests.CountingEngine(text: "spoken  text\n")
+        let transcriber = ParakeetTranscriber(engine: engine)
+        try transcriber.prepare()
+        let harness = Harness(transcriber: transcriber)
+
+        harness.dictate()
+        harness.dictate()
+
+        // Two dictations, one load -- D10's normative half, asserted through the daemon.
+        #expect(engine.loadCount == 1)
+        // And the sanitiser still runs on the real transcriber's path (invariant 1): the seam being
+        // swapped is not a seam that gets to skip it.
+        #expect(harness.injector.delivered.map(\.text) == ["spoken text", "spoken text"])
     }
 
     @Test("a failing filter falls back to replaced rather than costing the user their words")

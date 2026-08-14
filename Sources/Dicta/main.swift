@@ -6,15 +6,16 @@ import Foundation
 // The resident daemon. Wiring only -- every decision it performs is a pure value in DictaCore and
 // every effect leaves through a seam in DictaRuntime.
 //
-// What is wired here today is step 1 of §10 with a real microphone in front of it: a chord reaches
-// `dictactl`, the daemon resolves the pane from the live tree, AVAudioEngine records at 16 kHz
-// mono, and `agtermctl session type` puts the transcript into the input line as ONE line with
-// single spaces. Recognition is still `FakeTranscriber`, so what arrives is the canned transcript
-// -- deliberately, until Task 10: if the sanitiser were ever bypassed, that transcript's newline
-// would submit the prompt on the spot (D8).
+// What is wired here is steps 1 and 2 of §10, whole: a chord reaches `dictactl`, the daemon
+// resolves the pane from the live tree, AVAudioEngine records at 16 kHz mono, Parakeet TDT 0.6B v3
+// recognises it on the ANE, and `agtermctl session type` puts the text into the input line as ONE
+// line with single spaces. Both fakes are gone from this file, which is the whole point of the
+// seams: the change from Task 6's wiring is two constructor arguments and a warm-up.
 //
-// Task 10 replaces exactly one line of this file: `FakeTranscriber` becomes `ParakeetTranscriber`.
-// Nothing else about the wiring changes, which is the whole point of the seams.
+// The warm-up is not decoration. D10's normative half is that no model loads on the hot path, so
+// the four `.mlmodelc` bundles are loaded and one dummy inference is run BEFORE the first chord --
+// and when they cannot be, that is said here, loudly, rather than discovered by a chord that has
+// already thrown away an utterance.
 
 let usage = """
 usage: Dicta [options]
@@ -23,11 +24,13 @@ options:
   --control <path>         dicta's own control socket (defaults to the one under
                            ~/Library/Application Support/dev.personal.dicta)
   --agterm-socket <path>   agterm's control socket, when it is not the default one
+  --fetch-models           download the recognition models, then exit
   --help                   print this
 """
 
 var controlSocket = Paths.current.socket.path
 var agtermSocket: String?
+var fetchModels = false
 
 var arguments = Array(CommandLine.arguments.dropFirst())
 while let argument = arguments.first {
@@ -48,6 +51,8 @@ while let argument = arguments.first {
         controlSocket = value("--control")
     case "--agterm-socket":
         agtermSocket = value("--agterm-socket")
+    case "--fetch-models":
+        fetchModels = true
     default:
         FileHandle.standardError.write(Data("dicta: unknown option \(argument)\n".utf8))
         exit(2)
@@ -56,6 +61,32 @@ while let argument = arguments.first {
 
 func log(_ message: String) {
     FileHandle.standardError.write(Data("dicta: \(message)\n".utf8))
+}
+
+// The one-shot fetch, before anything else is built: it downloads and exits, and a daemon that also
+// bound the socket would be a second instance for the duration (§7).
+//
+// It is a separate invocation rather than something the daemon does at start-up on its own, and
+// that is a deliberate refusal: the LaunchAgent starts at login, on whatever network the laptop
+// woke up on, and pulling six hundred megabytes there without being asked is not a thing to do
+// quietly.
+if fetchModels {
+    log("fetching the recognition models into \(ParakeetModels.directory.path) "
+        + "-- this is large and slow, and it is done once")
+    do {
+        try ParakeetModels.fetch { log($0) }
+    } catch {
+        log("\(error)")
+        exit(EXIT_FAILURE)
+    }
+    if let trouble = ParakeetModels.selfCheck() {
+        // A download that reported success while leaving the directory incomplete is worse than one
+        // that failed, so the check runs again over the result rather than trusting the exit code.
+        log("\(trouble)")
+        exit(EXIT_FAILURE)
+    }
+    log("the recognition models are staged; start the daemon normally")
+    exit(0)
 }
 
 // Diagnosed here rather than on the first chord (§7): every chord is dead until it is fixed, and
@@ -73,14 +104,19 @@ let defaultAgtermSocket = agtermSocket
 // `dictactl` links none of this, and a second binary opening the device would fracture the grant.
 let capture = AudioCapture()
 
+// Recognition (D10). Constructed cold and warmed below, after the socket is up: the load takes
+// seconds, and spending them before binding would make every chord in that window report a daemon
+// that is not there -- which is what `dictactl` says when nothing answers the socket.
+let transcriber = ParakeetTranscriber()
+
 let daemon = Daemon(
     configuration: Daemon.Configuration(socketPath: controlSocket),
     capture: capture,
-    transcriber: FakeTranscriber(),
+    transcriber: transcriber,
     filter: NoFilter(),
-    // The real record (§9), created on demand under the support directory. Even with capture and
-    // recognition faked, every attempt lands here -- which is what makes `dictactl last` work
-    // today, and what makes invariant 10 observable before the microphone exists.
+    // The real record (§9), created on demand under the support directory. Every attempt lands here
+    // before its keystrokes are attempted, which is the only route by which recognised text
+    // survives a delivery failure (invariant 10) -- and what `dictactl last` reads back.
     history: FileHistory(),
     clock: SystemClock(),
     // One `Agterm` per attempt, addressed at the agterm the chord fired in ($AGT_SOCKET, F3). The
@@ -101,8 +137,36 @@ do {
 }
 
 log("listening on \(controlSocket)")
-log("step 2: capture is REAL; recognition is a FAKE -- every dictation delivers the canned "
-    + "transcript")
+
+// The startup self-check, and then the warm-up, on a thread of their own.
+//
+// A thread rather than a `Task`: the load blocks (see `Blocking` in DictaRuntime), and blocking a
+// cooperative thread on Darwin's non-overcommit pool is the deadlock CLAUDE.md records about the
+// control socket. It is also why this does not hold up the socket -- a chord arriving mid-load
+// waits for it inside `ParakeetTranscriber` and then recognises, rather than losing the utterance.
+let warmUp = Thread {
+    if let trouble = ParakeetModels.selfCheck() {
+        // Loud, before the first chord, and naming the remedy: a chord that discovers this has
+        // already recorded and thrown away an utterance (§7).
+        log("recognition is UNAVAILABLE -- \(trouble)")
+        return
+    }
+    do {
+        let summary = try transcriber.prepare()
+        log(String(format: "recognition is warm: models loaded in %.1f s, dummy inference %.2f s",
+                   summary.loadSeconds, summary.warmUpSeconds))
+        if let warmUpError = summary.warmUpError {
+            // The models are loaded, so dictation is not refused -- but the first real utterance
+            // may now pay the ANE compilation the dummy inference exists to absorb, and that is
+            // worth knowing before it is blamed on the recogniser being slow.
+            log("the warm-up inference failed (\(warmUpError)) -- the first dictation may be slow")
+        }
+    } catch {
+        log("recognition is UNAVAILABLE -- \(error)")
+    }
+}
+warmUp.name = "dev.personal.dicta.warmup"
+warmUp.start()
 
 // Asked for at startup, not on the first chord (§7's spirit and D11's): the TCC dialog is a modal
 // the user reads at their own pace, and a chord that waits for it spends its 150 ms budget on a

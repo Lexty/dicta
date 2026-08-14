@@ -1,18 +1,23 @@
 #!/usr/bin/env bash
-# Scores step 2's criterion (a) with numbers rather than impressions: keypress to "recording",
-# warm, over N consecutive attempts, against a 150 ms budget (F4).
+# Scores step 2's criteria (a) and (c) with numbers rather than impressions.
+#
+#   (a) keypress to "recording", warm, over N consecutive attempts, against a 150 ms budget (F4).
+#       This is what a bare `measure.sh` does, and it types nothing into a pane.
+#   (c) stop to injection for a 60-second utterance, against a 2 s budget. Behind `--stop`, because
+#       measuring it means DELIVERING the text: the interval being measured ends at the last
+#       keystroke, so an abort would measure the wrong thing (see the section at the bottom).
 #
 # WHAT IS MEASURED, exactly: the wall time of one `dictactl toggle` invocation — process start to
 # process exit — for a chord that begins an attempt. The daemon performs every effect of the start
 # BEFORE it answers, so that interval contains the whole cost the user waits through: dictactl's own
 # cold start, the socket round trip, `agtermctl tree --json` (38 ms of it, F3/F4), opening the input
-# device, and §6's "listening" indicator. It ends a hair after the daemon reached `recording`, so the
-# number is an upper bound on keypress-to-recording rather than an optimistic slice of it.
+# device, and §6's "listening" indicator. It ends a hair after the daemon reached `recording`, so
+# the number is an upper bound on keypress-to-recording rather than an optimistic slice of it.
 #
 # Note what the toggle PRINTS is `warming`: the response carries the state as of the transition that
-# started the attempt, and capture confirms afterwards. That is why every attempt is confirmed with a
-# separate `dictactl status`, and an attempt whose status is not `recording` is reported as a failure
-# rather than quietly averaged in.
+# started the attempt, and capture confirms afterwards. That is why every attempt is confirmed with
+# a separate `dictactl status`, and an attempt whose status is not `recording` is reported as a
+# failure rather than quietly averaged in.
 #
 # Each attempt is ended with `abort`, never with a second toggle: aborting delivers nothing, so
 # running this does not type ten transcripts into the user's input line.
@@ -25,6 +30,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ATTEMPTS=10
 BUDGET_MS=150
 SPEAK=0.4
+# Criterion (c), off by default: it delivers text into the session's input line, and a measurement
+# that types into whatever the user was doing is not something to run by accident.
+STOP_LATENCY=0
+STOP_ATTEMPTS=3
+STOP_BUDGET_MS=2000
+UTTERANCE=60
 SESSION="${AGT_SESSION_ID:-}"
 AGTERM_SOCKET="${AGT_SOCKET:-}"
 CONTROL=""
@@ -38,6 +49,12 @@ options:
   -n <count>        attempts to measure, after one discarded warm-up (default 10)
   --budget <ms>     the budget each attempt is scored against (default 150, F4)
   --speak <secs>    how long each attempt records before aborting (default 0.4)
+  --stop            ALSO measure stop -> injection for criterion (c). This DELIVERS text
+                    into the session's input line, once per attempt
+  --stop-n <count>  attempts for criterion (c) (default 3)
+  --utterance <s>   how long each criterion (c) attempt records (default 60, per §10)
+  --stop-budget <ms>
+                    the budget stop -> injection is scored against (default 2000)
   --session <id>    the agterm session to dictate into (default "$AGT_SESSION_ID")
   --socket <path>   agterm's control socket (default "$AGT_SOCKET")
   --control <path>  dicta's own control socket
@@ -51,6 +68,10 @@ while [ $# -gt 0 ]; do
         -n) ATTEMPTS="$2"; shift 2 ;;
         --budget) BUDGET_MS="$2"; shift 2 ;;
         --speak) SPEAK="$2"; shift 2 ;;
+        --stop) STOP_LATENCY=1; shift ;;
+        --stop-n) STOP_ATTEMPTS="$2"; shift 2 ;;
+        --utterance) UTTERANCE="$2"; shift 2 ;;
+        --stop-budget) STOP_BUDGET_MS="$2"; shift 2 ;;
         --session) SESSION="$2"; shift 2 ;;
         --socket) AGTERM_SOCKET="$2"; shift 2 ;;
         --control) CONTROL="$2"; shift 2 ;;
@@ -129,6 +150,58 @@ attempt() {
     printf '%s\n' "$elapsed"
 }
 
+# One criterion-(c) attempt: record for $UTTERANCE seconds, then time the `stop`.
+#
+# WHAT IS MEASURED: the wall time of one `dictactl stop` invocation. The daemon performs the whole
+# remainder of the attempt before it answers — drain, recognition, the replacement stage, the filter
+# seam, the sanitiser, and `agtermctl session type` — so that interval is stop-to-injection with the
+# keystrokes inside it, which is exactly what §10's criterion (c) names.
+#
+# This DELIVERS. There is no version of it that does not: the interval ends at the last keystroke,
+# so an attempt aborted to keep the pane clean would measure recognition alone and score the
+# criterion against a number that leaves out the delivery.
+stop_attempt() {
+    local start finish elapsed reached
+    "$DICTACTL" toggle --mode clean --session "$SESSION" "${ARGS[@]}" >/dev/null 2>&1 || true
+    reached="$(state)"
+    if [ "$reached" != "recording" ]; then
+        printf 'measure: attempt reached "%s", not "recording" — not counted\n' "$reached" >&2
+        "$DICTACTL" abort "${ARGS[@]}" >/dev/null 2>&1 || true
+        wait_for_idle || true
+        return 1
+    fi
+    sleep "$UTTERANCE"
+    start="$(now_ms)"
+    "$DICTACTL" stop "${ARGS[@]}" >/dev/null 2>&1 || true
+    finish="$(now_ms)"
+    elapsed="$(perl -e 'printf "%.1f", $ARGV[1] - $ARGV[0]' "$start" "$finish")"
+    wait_for_idle || printf 'measure: attempt did not return to idle\n' >&2
+    printf '%s\n' "$elapsed"
+}
+
+# The distribution, and the verdict. Shared by both criteria: every attempt must be under the
+# budget, not the mean — one slow chord in ten is the experience a budget exists to forbid.
+report() {
+    local budget="$1" failed="$2" label="$3"
+    shift 3
+    printf '%s\n' "$@" | sort -n | awk -v budget="$budget" -v failed="$failed" -v label="$label" '
+        { v[NR] = $1; sum += $1 }
+        END {
+            median = (NR % 2) ? v[int(NR / 2) + 1] : (v[NR / 2] + v[NR / 2 + 1]) / 2
+            p90 = v[int((NR * 0.9) + 0.999999)]
+            over = 0
+            for (i = 1; i <= NR; i++) if (v[i] > budget) over++
+            printf "measure: n=%d  min=%.1f  median=%.1f  p90=%.1f  max=%.1f  mean=%.1f (ms)\n", \
+                NR, v[1], median, p90, v[NR], sum / NR
+            if (over == 0 && failed == 0)
+                printf "measure: PASS — all %d attempts under %d ms (%s)\n", NR, budget, label
+            else
+                printf "measure: FAIL — %d over %d ms, %d attempt(s) never counted (%s)\n", \
+                    over, budget, failed, label
+        }
+    '
+}
+
 if [ "$(state)" = "unreachable" ]; then
     printf 'measure: the daemon is not answering — start it (Scripts/run.sh) first\n' >&2
     exit 3
@@ -157,25 +230,43 @@ if [ "${#SAMPLES[@]}" -eq 0 ]; then
 fi
 
 printf '\n'
-printf '%s\n' "${SAMPLES[@]}" | sort -n | awk -v budget="$BUDGET_MS" -v failed="$FAILED" '
-    { v[NR] = $1; sum += $1 }
-    END {
-        median = (NR % 2) ? v[int(NR / 2) + 1] : (v[NR / 2] + v[NR / 2 + 1]) / 2
-        p90 = v[int((NR * 0.9) + 0.999999)]
-        over = 0
-        for (i = 1; i <= NR; i++) if (v[i] > budget) over++
-        printf "measure: n=%d  min=%.1f  median=%.1f  p90=%.1f  max=%.1f  mean=%.1f (ms)\n", \
-            NR, v[1], median, p90, v[NR], sum / NR
-        # The criterion is every attempt under the budget, not the average under it: one 400 ms
-        # chord in ten is exactly the experience the budget exists to forbid.
-        if (over == 0 && failed == 0)
-            printf "measure: PASS — all %d attempts under %d ms (§10 step 2a)\n", NR, budget
-        else
-            printf "measure: FAIL — %d over %d ms, %d attempt(s) never reached recording\n", \
-                over, budget, failed
-    }
-'
+report "$BUDGET_MS" "$FAILED" "§10 step 2a" "${SAMPLES[@]}"
 
-# Task 10 extends this script with stop → injection, for criterion (c). It is deliberately absent
-# rather than stubbed: with `FakeTranscriber` behind the seam that number would measure nothing but
-# a string literal being handed back.
+if [ "$STOP_LATENCY" -eq 0 ]; then
+    printf '\nmeasure: criterion (c) not measured — pass --stop, which DELIVERS text into %s\n' \
+        "$SESSION"
+    exit 0
+fi
+
+# Criterion (c). Announced before it runs, because the next thing that happens is text appearing in
+# the user's input line — unsubmitted, but there.
+printf '\n'
+printf 'measure: criterion (c): %s attempts of %s s each, budget %s ms\n' \
+    "$STOP_ATTEMPTS" "$UTTERANCE" "$STOP_BUDGET_MS"
+printf 'measure: each attempt TYPES its transcript into session %s (unsubmitted). Speak, or the\n' \
+    "$SESSION"
+printf 'measure: numbers will describe recognising silence, which is not what (c) asks about.\n'
+
+STOP_SAMPLES=()
+STOP_FAILED=0
+for i in $(seq 1 "$STOP_ATTEMPTS"); do
+    printf '  attempt %2s: speak for %s s...\n' "$i" "$UTTERANCE"
+    if ms="$(stop_attempt)"; then
+        STOP_SAMPLES+=("$ms")
+        printf '  attempt %2s: %8s ms\n' "$i" "$ms"
+    else
+        STOP_FAILED=$((STOP_FAILED + 1))
+        printf '  attempt %2s: FAILED\n' "$i"
+    fi
+done
+
+if [ "${#STOP_SAMPLES[@]}" -eq 0 ]; then
+    printf 'measure: no attempt delivered — nothing to report for criterion (c)\n' >&2
+    exit 1
+fi
+
+printf '\n'
+report "$STOP_BUDGET_MS" "$STOP_FAILED" "§10 step 2c" "${STOP_SAMPLES[@]}"
+# The transcripts are in the record too, so `dictactl last --recognised` scores criterion (b) off
+# the same run rather than needing its own dictation.
+printf 'measure: the text of each attempt is in the record — `dictactl last --recognised`\n'
