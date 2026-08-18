@@ -81,7 +81,47 @@ echo "==> reloading the agent"
 # bootout first: bootstrap onto a live label fails, and an agent left loaded would keep the previous
 # build resident. `|| true` because "not loaded" is the normal case on a first install.
 launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
-launchctl bootstrap "gui/$UID" "$AGENT"
+
+# `bootout` RETURNS BEFORE THE SERVICE IS GONE. It asks launchd to unload and comes back; the label
+# can still be registered for a moment afterwards, and `bootstrap` landing in that window fails with
+# `Bootstrap failed: 5: Input/output error`. Under `set -e` that killed the script three lines from
+# the end -- after the agent had been booted out and before anything replaced it. The result is the
+# worst outcome this script can produce: no daemon, no LaunchAgent, no summary printed, and the user
+# finds out by pressing a chord and getting silence. Observed on 2026-08-16.
+#
+# So: wait for the label to actually disappear, then bootstrap, and retry the one error that means
+# "you were too early". The waits are bounded -- a launchd that never lets go is a real failure and
+# must be reported as one, not spun on for ever.
+for _ in $(seq 1 50); do
+    launchctl print "gui/$UID/$LABEL" >/dev/null 2>&1 || break
+    sleep 0.1
+done
+
+bootstrapped=0
+for attempt in 1 2 3 4 5; do
+    if launchctl bootstrap "gui/$UID" "$AGENT" 2>/tmp/dicta-bootstrap.$$; then
+        bootstrapped=1
+        break
+    fi
+    # Anything that is not the race is fatal on the spot: a malformed plist or a path that does not
+    # exist will not fix itself by being retried, and retrying it five times only buries the reason.
+    if ! grep -q "Input/output error" /tmp/dicta-bootstrap.$$; then
+        cat /tmp/dicta-bootstrap.$$ >&2
+        rm -f /tmp/dicta-bootstrap.$$
+        echo "install: launchctl bootstrap failed for a reason that is not the unload race" >&2
+        exit 1
+    fi
+    echo "    bootstrap raced the unload (attempt $attempt), retrying"
+    sleep 0.3
+done
+rm -f /tmp/dicta-bootstrap.$$
+if [ "$bootstrapped" -ne 1 ]; then
+    echo "install: launchctl bootstrap kept losing the race with bootout -- the agent is NOT loaded" >&2
+    echo "install: rerun this script, or load it by hand:" >&2
+    echo "         launchctl bootstrap gui/$UID $AGENT" >&2
+    exit 1
+fi
+
 launchctl kickstart -k "gui/$UID/$LABEL"
 
 echo

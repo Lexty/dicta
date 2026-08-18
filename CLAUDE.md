@@ -143,19 +143,36 @@ testing.linker` to the `DictaTests` target — otherwise the failing test cannot
   `AGT_SESSION_ID`, `AGT_SESSION_NAME`, `AGT_SESSION_PWD`, `AGT_WORKSPACE_ID`, `AGT_WORKSPACE_NAME`,
   `AGT_WINDOW_ID`, `AGT_WINDOW_NAME`, `AGT_SELECTION`, `AGT_SOCKET`. The pane therefore comes from
   the live tree, not from the keypress (D6, §5).
-- **F4 — warm keypress cost, client invocation → "recording": 20–70 ms** (client alone 9 ms,
-  `agtermctl tree --json` 38 ms; cold start ~390 ms). Measured on the deleted skeleton `3dda6cb`;
-  re-measured properly by `Scripts/measure.sh` in Task 9. The budget is 150 ms.
+- **F4 — warm keypress cost, client invocation → "recording": 155–252 ms** (min 155.8, median
+  180.0, p90 229.1, max 252.5 over 10 consecutive warm attempts, `Scripts/measure.sh` against the
+  installed release build, 2026-08-18). The budget in SPEC §10 is 150 ms and **every one of the ten
+  attempts missed it**.
+  The number this file used to carry — 20–70 ms — was measured on the deleted skeleton `3dda6cb`,
+  **whose capture was a fake**: that build never opened the microphone, so the figure described the
+  path with its expensive part removed, and the 150 ms budget was calibrated against it. The lesson
+  is D18's in another costume — a measurement is only about the path it actually ran through.
+  Where the time goes, measured the same day: socket round trip 0–20 ms, `agtermctl tree --json`
+  ~10 ms (the old note said 38 ms), `window list --json` ~10 ms. The rest is `capture.begin`
+  building `AVAudioEngine`, touching `inputNode`, installing the tap and calling `engine.start()` —
+  all synchronous, all before the daemon answers, because the daemon does the work before it
+  replies. Holding a warm engine open between attempts would buy it back and is refused: a
+  permanently lit microphone indicator is not a trade this project makes.
 - **F2 — `claude -p` costs 8.6–10.5 s of fixed startup** per invocation. It cannot be the filter,
   which is why v1 ships the seam empty (D9c).
 - **Recognition, measured on this machine (M3 Pro) with a throwaway probe in Task 10, since no unit
   test can establish any of it.** The probe fed real audio through `AudioCapture.convert` into
   `ParakeetTranscriber`, i.e. dicta's own path with only the daemon left out.
-  - **Model load: ~17 s the first time a given binary runs, ~0.2 s every time after.** The 17 s is
-    CoreML compiling the int8 encoder for the ANE, and its cache is keyed per binary — so *every
-    rebuild pays it once*, including a rebuilt `Dicta.app`. Observed twice: the signed bundle's first
-    start reported 17.1 s and its second 0.2 s. This is why the warm-up runs on its own thread after
-    the socket is bound rather than before it.
+  - **Model load: 17.1 s once, on this machine, and 0.2–0.5 s on every start since.** The 17 s is
+    CoreML compiling the int8 encoder for the ANE. This file used to add that the cache is *keyed
+    per binary*, so **every rebuild pays it once** — that part did **not** reproduce: four daemon
+    starts across three distinct signed binaries (14, 16 and 18 August, each a different cdhash)
+    reported 0.4, 0.5, 0.2 and 0.3 s, and none paid the compile. So the compiled-model cache appears
+    to be keyed by the model rather than by the calling binary, and the 17.1 s was a one-time cost
+    on this machine. Not asserted as a new fact — four starts do not establish that it never returns
+    after a reboot or a cache eviction — but the old claim is withdrawn.
+    The warm-up still runs on its own thread after the socket is bound, and that is still right: it
+    costs nothing when the load is fast and is the difference between a slow start and a deaf daemon
+    when it is not.
   - **Dummy inference: 0.07–0.13 s.** One second of silence, which is what buys the first real
     dictation out of paying ANE compilation (§12).
   - **Recognition: 5.6 s of speech in 0.11 s; 66.8 s in 0.42 s.** Step 2's criterion (c) allows 2 s

@@ -144,8 +144,11 @@ counts as a pass, so two people scoring it agree.
   10 consecutive attempts reports client-invocation → "recording" under **150 ms**, with the daemon
   already running and its models already loaded. Fail: any attempt over the budget, or a run whose
   first attempt is an outlier because the daemon was cold — that is a measurement of the wrong
-  thing, so restart it rather than averaging it away. The reference numbers are F4: 20–70 ms warm,
-  ~390 ms cold. The script's own exit status carries the verdict — non-zero when either criterion
+  thing, so restart it rather than averaging it away. **Scored once and FAILED**, 2026-08-18: min
+  155.8, median 180.0, p90 229.1, max 252.5 ms — ten attempts out of ten over budget. F4 now carries
+  those numbers and explains why the earlier 20–70 ms described a build with a fake microphone in
+  it. Re-scoring this item is only meaningful after the budget or the cost has moved; until one of
+  them does, the honest state of criterion (a) is failed. The script's own exit status carries the verdict — non-zero when either criterion
   misses — so the PASS/FAIL line is not the only place a missed budget is visible.
 - **H6 — step 2 (b): a real Russian dictation with English terms in it is understood.** Dictate
   roughly 20 seconds of Russian containing **at least two** English technical terms, on this user's

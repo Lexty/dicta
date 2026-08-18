@@ -240,8 +240,20 @@ quality was fine.
 `AGT_SESSION_PWD`, `AGT_WORKSPACE_ID`, `AGT_WORKSPACE_NAME`, `AGT_WINDOW_ID`, `AGT_WINDOW_NAME`,
 `AGT_SELECTION`, `AGT_SOCKET`. The skill documentation describes a newer build.
 
-**F4 — Warm keypress cost, client invocation to "recording": 20–70 ms.** Measured on the deleted
-step-1 skeleton: client alone 9 ms, `agtermctl tree --json` 38 ms; cold start ~390 ms.
+**F4 — Warm keypress cost, client invocation to "recording": 155–252 ms on the real path.**
+Measured 2026-08-18 by `Scripts/measure.sh` against the installed release build, 10 consecutive warm
+attempts: min 155.8, median 180.0, p90 229.1, max 252.5 ms. Components measured separately the same
+day: the socket round trip 0–20 ms, `agtermctl tree --json` ~10 ms, `agtermctl window list --json`
+~10 ms — so the great majority of the interval is inside `capture.begin`, which constructs
+`AVAudioEngine`, touches `inputNode` (initialising the HAL), installs the tap and calls
+`engine.start()` synchronously before the daemon answers.
+
+The earlier figure recorded here — 20–70 ms, client alone 9 ms, `agtermctl tree --json` 38 ms, cold
+start ~390 ms — was measured on the deleted step-1 skeleton, **whose capture was a fake**. That build
+never opened the microphone, so the number described a path with the expensive part missing. It is
+kept above because §10's 150 ms budget was calibrated against it, and the budget is therefore
+currently **not met**: all 10 attempts exceeded it. Whether to move the budget or to move the cost is
+open.
 
 **F5 — Injection into a terminal input line works and does not submit.** Verified live on the
 skeleton against a fish prompt, using a deliberately hostile canned transcript containing a newline
@@ -257,8 +269,9 @@ failure mode.
 - **Session id** is keypress-accurate. agterm expands `$AGT_SESSION_ID` when the chord fires, so it
   names the session the user was in at that instant.
 - **Pane** is resolved by the daemon from `agtermctl tree --json` when it handles the start command
-  — measured at ~40 ms after the keypress (F4). It is therefore *focus shortly after the keypress*,
-  not focus at the keypress.
+  — the `tree` call itself measures ~10 ms (F4), and the whole start command 155–252 ms, of which
+  the tree read happens near the beginning. It is therefore *focus shortly after the keypress*, not
+  focus at the keypress.
 
 The residual risk is a focus change inside that window landing the text in the sibling pane of the
 right session. It is accepted rather than solved: it needs a deliberate pane switch within ~40 ms of
