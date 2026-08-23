@@ -168,6 +168,24 @@ public final class FakeTargetResolver: TargetResolver, @unchecked Sendable {
         if let error { throw error }
         return Target(sessionID: sessionID, pane: pane)
     }
+
+    /// What live focus answers. `focused` rather than a session id in `requested`, so a test can
+    /// tell "the daemon resolved from focus" from "the daemon was handed a session" -- which is the
+    /// difference between the hold trigger's path and a chord's.
+    public var focusedSession = "focused-session"
+
+    /// What the last focus resolution was told about D24's exception (D29).
+    public private(set) var lastAllowedPicker: Bool?
+
+    public func resolveFocusedTarget(allowingPicker: Bool) throws -> Target {
+        lock.withLock { lastAllowedPicker = allowingPicker }
+        let (session, pane, error) = lock.withLock { () -> (String, Pane, (any Error)?) in
+            seen.append("<focus>")
+            return (focusedSession, self.pane, self.error)
+        }
+        if let error { throw error }
+        return Target(sessionID: session, pane: pane)
+    }
 }
 
 /// A recogniser whose output is deliberately hostile.
@@ -422,6 +440,80 @@ public final class FakeClock: Clock, @unchecked Sendable {
             }
             guard let next else { return }
             next.take()?()
+        }
+    }
+}
+
+// MARK: - push-to-talk (D5)
+
+/// The modifier word, set by hand. The whole point of the `ModifierSource` seam: a gesture is a
+/// physical act, and every rule about one would otherwise be scoreable only by a person with a
+/// keyboard.
+public final class FakeModifiers: ModifierSource, @unchecked Sendable {
+    private let lock = NSLock()
+    private var word: UInt64 = 0
+
+    public init(flags: UInt64 = 0) { word = flags }
+
+    public func flags() -> UInt64 { lock.withLock { word } }
+
+    public func set(_ flags: UInt64) { lock.withLock { word = flags } }
+
+    /// Holds one key down, leaving every other bit alone -- so a test can press `⌃C` with the left
+    /// hand while the right Control key is up, which is the case F6 exists to make safe.
+    public func press(_ key: HoldKey) { lock.withLock { word |= key.bit } }
+
+    public func release(_ key: HoldKey) { lock.withLock { word &= ~key.bit } }
+}
+
+/// Which application the user is looking at (D22).
+public final class FakeFrontmost: FrontmostApplication, @unchecked Sendable {
+    private let lock = NSLock()
+    private var identifier: String?
+
+    public init(bundleIdentifier: String? = HoldTrigger.agtermBundleIdentifier) {
+        identifier = bundleIdentifier
+    }
+
+    public var bundleIdentifier: String? { lock.withLock { identifier } }
+
+    public func set(_ bundleIdentifier: String?) { lock.withLock { identifier = bundleIdentifier } }
+}
+
+/// The daemon, as far as the hold trigger can tell: every request it sent, and the answers it was
+/// given. Answers are a queue rather than one canned value, because the interesting sequences are
+/// exactly the ones where `start` and the command that ends it disagree.
+public final class FakeDaemonDoor: @unchecked Sendable {
+    private let lock = NSLock()
+    private var sent: [Request] = []
+    private var answers: [Response] = []
+    private var error: (any Error)?
+    private var nextAttempt: AttemptID = 1
+
+    public init() {}
+
+    public var requests: [Request] { lock.withLock { sent } }
+
+    public var verbs: [Command] { requests.map(\.cmd) }
+
+    public func setError(_ error: (any Error)?) { lock.withLock { self.error = error } }
+
+    /// The next answer, ahead of the default. Consumed once.
+    public func queue(_ response: Response) { lock.withLock { answers.append(response) } }
+
+    public func send(_ request: Request) throws -> Response {
+        try lock.withLock {
+            sent.append(request)
+            if let error { throw error }
+            if !answers.isEmpty { return answers.removeFirst() }
+            switch request.cmd {
+            case .start:
+                let id = nextAttempt
+                nextAttempt += 1
+                return Response(kind: .accepted, state: .warming, attempt: id)
+            default:
+                return Response(kind: .accepted, state: .idle, attempt: request.attempt)
+            }
         }
     }
 }

@@ -118,7 +118,9 @@ struct ClientCommandTests {
 
     @Test("an unknown verb is named in the error")
     func unknownVerb() throws {
-        #expect(try Self.usageError(["dictate"]) == .unknownCommand("dictate"))
+        // Deliberately a verb this build does not have and is unlikely to grow. "dictate" used to
+        // stand here and then became real (D29), which is exactly how a test like this rots.
+        #expect(try Self.usageError(["transcribe"]) == .unknownCommand("transcribe"))
     }
 
     @Test("an unknown option is refused rather than ignored")

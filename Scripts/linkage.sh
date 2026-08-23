@@ -23,9 +23,19 @@
 #   3. `nm` names no DictaRuntime symbol at all. This is the dependency edge itself, read back off
 #      the binary: statically linked Swift code carries its module name in every mangled symbol.
 #
+# A fourth assertion, about the OTHER binary and a different invariant. §8.11 says the hold trigger
+# reads modifier state and never a key stream (D5) — that is what lets push-to-talk work with no
+# permission, and it is a property of WHICH API is called, so no swift-testing assertion can reach
+# it either. `CGEventSource.flagsState` returns a word of flags. `CGEvent.tapCreate`,
+# `NSEvent.addGlobalMonitorForEvents` and IOKit's HID manager return keystrokes, and every one of
+# them would make macOS demand Input Monitoring or Accessibility. So the daemon is read back for
+# their symbols: if one ever appears, D5's claim has quietly stopped being true and the user is
+# about to be asked for a permission this project promised not to need.
+#
 # Usage:
-#   bash Scripts/linkage.sh                     # build dictactl and check it
-#   bash Scripts/linkage.sh --binary <path>     # check an existing binary, building nothing
+#   bash Scripts/linkage.sh                     # build both binaries and check them
+#   bash Scripts/linkage.sh --binary <path>     # check an existing client binary, building nothing
+#   bash Scripts/linkage.sh --daemon <path>     # score §8.11 against a binary, and nothing else
 #
 # The second form is how the check was probed: run against `DictaTestRunner`, which legitimately
 # links all three frameworks, every assertion fires. A check nobody has watched fail is a check
@@ -35,11 +45,19 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 BINARY=""
+DAEMON=""
+DAEMON_ONLY=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --binary)
             [ "$#" -ge 2 ] || { echo "linkage: --binary needs a path" >&2; exit 2; }
             BINARY="$2"
+            shift 2
+            ;;
+        --daemon)
+            [ "$#" -ge 2 ] || { echo "linkage: --daemon needs a path" >&2; exit 2; }
+            DAEMON="$2"
+            DAEMON_ONLY=1
             shift 2
             ;;
         *)
@@ -49,11 +67,25 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-if [ -z "$BINARY" ]; then
+if [ "$DAEMON_ONLY" -eq 1 ]; then
+    # Probing mode: score §8.11 against the binary handed in and skip the client's three checks.
+    # This is how check 4 was watched failing, which is the only way a check becomes evidence.
+    [ -f "$DAEMON" ] || { echo "linkage: no such binary: $DAEMON" >&2; exit 2; }
+elif [ -z "$BINARY" ]; then
     swift build --product dictactl >/dev/null
     BINARY="$(swift build --show-bin-path)/dictactl"
+    # Only on the default path: `--binary` means "check exactly this one and build nothing".
+    swift build --product Dicta >/dev/null
+    DAEMON="$(swift build --show-bin-path)/Dicta"
 fi
 
+status=0
+fail() {
+    printf 'linkage: %s\n' "$1" >&2
+    status=1
+}
+
+if [ -n "$BINARY" ]; then
 [ -f "$BINARY" ] || { echo "linkage: no such binary: $BINARY" >&2; exit 2; }
 
 # The tools must have UNDERSTOOD the binary before their silence means anything, and that is not a
@@ -68,12 +100,6 @@ if ! file "$BINARY" | grep -q 'Mach-O'; then
     echo "linkage: $BINARY is not a Mach-O binary — otool and nm cannot read it" >&2
     exit 2
 fi
-
-status=0
-fail() {
-    printf 'linkage: %s\n' "$1" >&2
-    status=1
-}
 
 # The frameworks D12 keeps off the keypress path. FluidAudio is named too: it is the CoreML weight
 # in person, and it reaches a binary only through DictaRuntime.
@@ -131,4 +157,36 @@ fi
 if [ "$status" -eq 0 ]; then
     echo "linkage: clean — $(basename "$BINARY") binds no AVFoundation, CoreML or AppKit"
 fi
+fi
+
+# 4. The daemon, against §8.11. A different question and a different binary: `Dicta` links
+# AVFoundation and CoreML by design, and what it must not contain is any way of reading a keystroke.
+#
+# Note what is deliberately NOT checked: whether the daemon links AppKit at all. It does, twice over
+# and legitimately — `AudioCapture` has observed `NSWorkspace.willSleepNotification` since long
+# before push-to-talk existed (§7's sleep row), and D22 reads `NSWorkspace.frontmostApplication`.
+# Widening this into "the daemon binds no AppKit" would therefore fail on the capture stack and say
+# nothing about invariant 11. The invariant is about reading a KEYSTROKE, and the four symbols below
+# are the four ways to do it; `_OBJC_CLASS_$_NSEvent` is among them because an `NSEvent` global
+# monitor is the AppKit-shaped way to break it, and dicta has no other reason to name that class.
+if [ -n "$DAEMON" ]; then
+    if ! file "$DAEMON" | grep -q 'Mach-O'; then
+        echo "linkage: $DAEMON is not a Mach-O binary — the §8.11 check did not run" >&2
+        exit 2
+    fi
+    if ! daemon_symbols="$(nm "$DAEMON" 2>&1)"; then
+        printf '%s\n' "$daemon_symbols" >&2
+        fail "nm could not read $DAEMON — the §8.11 check did not run"
+        daemon_symbols=""
+    fi
+    KEYSTROKES='CGEventTapCreate|CGEventTapEnable|IOHIDManager|_OBJC_CLASS_[$]_NSEvent'
+    hits="$(printf '%s\n' "$daemon_symbols" | grep -E "$KEYSTROKES" || true)"
+    if [ -n "$hits" ]; then
+        head -20 <<< "$hits" >&2
+        fail "$DAEMON can read keystrokes — the hold trigger must read modifier STATE (§8.11, D5)"
+    elif [ "$status" -eq 0 ]; then
+        echo "linkage: clean — $(basename "$DAEMON") reads modifier state, never a key stream"
+    fi
+fi
+
 exit "$status"

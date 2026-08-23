@@ -1,8 +1,8 @@
 # dicta
 
-Voice dictation into **agterm** — press a chord, speak, press again, and the text appears in the
-input line you were typing in. It is meant for dictating prompts to Claude Code and instructions to
-agents running inside agterm.
+Voice dictation into **agterm** — hold the right Control key, speak, let go, and the text appears in
+the input line you were typing in. It is meant for dictating prompts to Claude Code and instructions
+to agents running inside agterm.
 
 Everything is local. The audio is recognised on this machine by Parakeet TDT 0.6B v3 on the Apple
 Neural Engine, is never written to disk, and never leaves the computer.
@@ -68,16 +68,43 @@ asking.
 The models land in FluidAudio's own cache at
 `~/Library/Application Support/FluidAudio/Models/parakeet-tdt-0.6b-v3`.
 
-Finally, add the chords — the installer deliberately does not edit your keymap:
+Finally, add the chords, if you want them. Push-to-talk works without this step; the chords are how
+**raw** mode is reached, and the installer deliberately does not edit your keymap:
 
 ```sh
 cat docs/keymap.snippet.conf >> ~/.config/agterm/keymap.conf
 agtermctl keymap reload
 ```
 
+## Holding the key
+
+**Hold right Control, speak, let go.** That is the whole interface, and it needs no keymap line and
+no setup: the daemon arms it at startup and says so in its log. Nothing is configured because
+nothing has to be — right Control is a key you already have and, on macOS, one that does nothing by
+itself.
+
+It asks for **no permission**, and that is worth being precise about, because every other
+push-to-talk tool on this platform asks for Input Monitoring or Accessibility. dicta does not read
+your keyboard. It reads the *state of the modifier keys* — a word of flags that says which of Shift,
+Control, Option, Command and Fn are down right now, and carries no key code and no character. There
+is nothing in that source for dicta to learn what you type, which is why macOS never asks. The
+built daemon is checked for this by `Scripts/linkage.sh`: if it ever gained the ability to read a
+keystroke, the check fails by name (invariant 11).
+
+Two rules follow from holding a key rather than pressing a chord:
+
+- **A tap is not a dictation.** Hold it under 300 ms and the attempt is thrown away — no text, no
+  injection, no sound. Right Control is a real modifier, so `⌃C` typed with your right hand looks
+  exactly like a very short dictation; the only thing that tells them apart is that an ordinary
+  press lasts 90–150 ms and speaking does not (D21).
+- **It does nothing unless agterm is in front.** A chord carries the session it fired in; a held key
+  carries nothing, so the session comes from live focus — and live focus is only meaningful while
+  you are looking at agterm. Hold it in a browser and nothing at all happens, silently (D22).
+
 ## The chords
 
-The snippet in `docs/keymap.snippet.conf` binds three, and the file explains each choice in place:
+They still work, and one of them is not reachable any other way. The snippet in
+`docs/keymap.snippet.conf` binds three, and the file explains each choice in place:
 
 | chord | what it does |
 |---|---|
@@ -85,11 +112,34 @@ The snippet in `docs/keymap.snippet.conf` binds three, and the file explains eac
 | `⌃⌥⇧D` | start dictating; press again to stop and deliver in **raw** mode |
 | `⌃⌥X` | abort — end the attempt and deliver nothing |
 
-Both start chords are the same command. The mode is chosen by *which chord stops* the recording, so
-nothing has to be decided before you start speaking (D3, D5). Each is one `toggle`, because
-start-or-stop is resolved inside the daemon atomically — writing it in the shell as
-`status | grep idle && start || stop` leaves a window in which one keypress can both start and stop
-(D7).
+The mode is chosen by *whatever stops* the recording, so nothing has to be decided before you start
+speaking (D3). The held key always stops in **clean** — one key cannot carry two meanings — which
+is why `⌃⌥⇧D` is where **raw** lives. The two mix: begin by holding the key, then press `⌃⌥⇧D` to
+end it, and the text comes back unfiltered. Letting go afterwards is silent (D23).
+
+## Dictating into something dicta cannot type into
+
+agterm's native picker — the dialog `agtermctl pick` opens, and the one your own custom commands use
+to collect a line — is a text field, not a terminal surface. `agtermctl session type` cannot reach
+it, and there is no way to set the query of a picker that is already open. So a dictation aimed at a
+dialog has to arrive **before** the dialog does:
+
+```sh
+PROMPT=$(dictactl dictate) && agtermctl pick --query "$PROMPT" --allow-custom
+```
+
+`dictactl dictate` blocks, you dictate exactly as always — hold the key, speak, let go — and the
+text is printed on stdout instead of being typed anywhere. Nothing reaches an input line. Its stdout
+is data, so a timeout or a refusal goes to stderr and shows up as an exit code (4 = nobody spoke,
+1 = refused, 3 = no daemon), never as a line of prose that would otherwise become your prompt.
+
+While a caller is waiting like this, holding the key **does** work in front of an open picker —
+which it otherwise refuses to do, because the text would land in the terminal behind the dialog
+(D24). With somewhere for the words to go, that refusal has nothing to protect.
+
+Each chord is one `toggle`, because start-or-stop is resolved inside the daemon atomically —
+writing it in the shell as `status | grep idle && start || stop` leaves a window in which one
+keypress can both start and stop (D7).
 
 While an attempt runs, the session's own indicator says where it is: blinking red while listening,
 amber while the text is being produced, a brief green on delivery, and blocked plus a notification
@@ -111,6 +161,7 @@ verbs:
   abort    end an attempt and deliver nothing
   status   print the daemon's current state
   last     print the text of the most recent attempt
+  dictate  wait for the next dictation and print its text — nothing is typed anywhere (D29)
 
 options:
   --mode <clean|raw>   clean runs the filter, raw skips it and nothing else (§2)
@@ -120,6 +171,12 @@ options:
                        ~/Library/Application Support/dev.personal.dicta)
   --recognised         on last: print the recogniser's verbatim output instead of what was
                        injected — the two together are how a replacement misfire is diagnosed
+  --timeout <seconds>  on dictate: how long to wait for the user to speak before giving up
+
+examples:
+  # dictate into a native dialog that dicta cannot type into: collect the text first,
+  # then open the dialog already carrying it.
+  PROMPT=$(dictactl dictate) && agtermctl pick --query "$PROMPT" --allow-custom
 ```
 
 `dictactl last` reads the record rather than the daemon's memory, so it survives a restart. Reading
@@ -212,7 +269,7 @@ are attempted, which is the only route by which recognised text survives a deliv
 |---|---|
 | `id` | the attempt's monotonic id, never reused |
 | `at` | when the attempt ended |
-| `outcome` | one of `injected`, `empty`, `capture-fault`, `recognition-failed`, `filter-fell-back`, `dictionary-degraded`, `target-gone`, `injection-failed`, `injection-partial`, `capped`, `aborted` |
+| `outcome` | one of `injected`, `empty`, `capture-fault`, `recognition-failed`, `filter-fell-back`, `dictionary-degraded`, `target-gone`, `injection-failed`, `injection-partial`, `capped`, `aborted`, `returned` |
 | `mode` | `clean` or `raw`, as the stopping chord chose |
 | `recognised` | verbatim recogniser output, hazards and all |
 | `final` | what was injected, or would have been: replaced, filtered, sanitised |

@@ -1,7 +1,7 @@
 # CLAUDE.md — dicta
 
-Voice dictation into **agterm**'s input line: press a chord, speak, press again, the text appears
-where you were typing. Primarily for dictating prompts to Claude Code and instructions to agents
+Voice dictation into **agterm**'s input line: hold the right Control key, speak, let go, the text
+appears where you were typing. Primarily for dictating prompts to Claude Code and instructions to agents
 running inside agterm. Everything is local; the audio never leaves the machine.
 
 `SPEC.md` is normative — decisions are cited as D*, measurements as F*, invariants as §8. This file
@@ -80,6 +80,8 @@ work, and neither is begun: the `Filter` seam is `NoFilter`, and nothing invokes
   mechanical checks (Cyrillic, tabs, line length, trailing whitespace, script permissions) always.
   Each check was probed with a file that should trip it; two of them were silently passing until
   that probe, which is the same lesson as D18 in a different costume.
+- Disable push-to-talk for a run: `Dicta --no-hold` (or `bash Scripts/run.sh --no-hold`). The
+  keymap chords are unaffected. Useful when two daemons would otherwise both watch the same key.
 - Run the daemon in the foreground: `bash Scripts/run.sh` — the development path, with no bundle and
   therefore no stable TCC anchor. Useful for everything except the microphone; not how the installed
   daemon runs.
@@ -104,7 +106,11 @@ work, and neither is begun: the `Filter` seam is `NoFilter`, and nothing invokes
   runs (D18 again). Exits non-zero under an 80% floor; `--floor <n>` moves it.
 - The linkage budget: `bash Scripts/linkage.sh` — asserts `dictactl` binds no AVFoundation, CoreML
   or AppKit, by load command, undefined symbol and DictaRuntime's own mangled names. `test.sh` runs
-  it first, since no swift-testing assertion can reach a linked binary (invariant 8, D12).
+  it first, since no swift-testing assertion can reach a linked binary (invariant 8, D12). It also
+  reads `Dicta` for the four shapes of "read a keystroke" — `CGEventTapCreate`, `CGEventTapEnable`,
+  `IOHIDManager`, `_OBJC_CLASS_$_NSEvent` — which is invariant 11, the one thing standing between
+  push-to-talk and a permission prompt. `--daemon <path>` scores that check alone; it was probed by
+  adding a `CGEvent.tapCreate` call and watching it fail on `U _CGEventTapCreate`.
 
 ## Why the test runner exists (D18) — measured, not assumed
 
@@ -454,7 +460,94 @@ Distilled from SPEC.md §3. Each one is a mistake already made, or one the spec 
   tests failed changed from run to run. Test writers that fill a socket buffer need the same
   treatment, for the same reason.
 
+## Push-to-talk, and why it needs no permission
+
+**Hold right Control, speak, let go.** It is a loop inside the daemon, not a keymap line: agterm's
+custom commands fire on key *press* and reject a chord with no modifier, so neither half of "one
+key, held" is expressible there (D5). The chords remain, and `⌃⌥⇧D` is the only way to reach **raw**
+— a held key stops in `clean` because the gesture that ends the dictation is letting go of the key
+that began it. The two mix, and `HoldTrigger` carries the attempt id from its own `start` so the
+release lands as §6's silent no-op rather than an audible "nothing to stop" (D23).
+
+The part that is easy to get wrong on a later edit: **this is not a keyboard monitor, and everything
+depends on it staying that way.** `CGEventSource.flagsState` returns a word of modifier flags with
+no key code and no character in it, which is why macOS asks for nothing — every other push-to-talk
+tool on this platform wants Input Monitoring or Accessibility. Reach for `CGEvent.tapCreate` or
+`NSEvent.addGlobalMonitorForEvents` "just to know which key" and the user gets a permission dialog
+for a promise this project made. `Scripts/linkage.sh` fails by name if that happens.
+
+Three more rules that are not obvious from the code:
+
+- **The key is a *side*, and that is load-bearing.** Right Control is `0x2000`, left Control is
+  `0x1` — the device-dependent bits, measured on this user's external keyboard (F6). Matching the
+  ordinary `.maskControl` instead would open the microphone on every `⌃C` and `⌃R` typed in a
+  terminal, which is all day long.
+- **A hold under 300 ms aborts and does not deliver** (D21). Right Control is a real modifier, so a
+  combination typed with it is indistinguishable from a very short dictation to a source that sees
+  only state. Duration is the whole separation, and it is a wide one: an ordinary press measured
+  90-150 ms, speaking does not. The floor is NOT a delay before recording starts — waiting would
+  spend it out of F4's budget on every real dictation.
+- **`SystemFrontmost` holds an observer that looks unused and is the only reason any of this
+  works.** `NSWorkspace.frontmostApplication` reads a per-process cache that is only refreshed if
+  something in the process has subscribed to the workspace notification centre. With no observer it
+  is filled by the first read and never changes again — measured, 17 samples across three app
+  switches, in a process with a live main-thread run loop (F8a). A main run loop is necessary and
+  NOT sufficient. Delete the observer in `SystemFrontmost` and D22 stops holding silently, in the
+  worst direction: the value freezes at whatever was frontmost when the daemon started, which is
+  agterm whenever it was started from an agterm session, so the key arms in every application for
+  ever. `CGWindowList` is not the substitute — it tracks without an observer but answers "who owns
+  the topmost layer-0 window", and with Finder frontmost and no Finder window open it names
+  somebody else.
+- **Frontmost is read at the press, not in the sender.** `NSWorkspace.frontmostApplication` matched
+  against `com.umputun.agterm` (D22), captured in the poll loop, because the sender thread can be
+  seconds behind the keypress and D4 forbids re-deciding a target mid-attempt. Not frontmost is
+  **silent** — a notification there would fire on every right-Control combination typed in a
+  browser. A session that cannot be resolved is loud, because the key did mean something and
+  produced nothing.
+
+- **`dictate` blocks, and must be served concurrently or it deadlocks** (D29). `dictactl dictate`
+  waits for the user to speak and hands the text back on stdout instead of typing it. The `start`
+  and `stop` that produce what it is waiting for run through the SAME handler, so holding
+  `handlerLock` across the wait would make it wait for an event it was itself preventing. It is the
+  second entry in `Command.isServedConcurrently` and the reasoning is not the same as `abort`'s:
+  `abort` overtakes work in flight, `dictate` starts none.
+  Two more that look like polish and are not. Its **stdout is data** — the output is spliced into a
+  shell variable and from there into another program's argument, so a friendly "nobody dictated
+  anything" printed there becomes the user's prompt; reasons go to stderr and emptiness becomes an
+  exit code (`ClientCommand.writesDataToStdout`). And the outcome is `returned`, never `injected`:
+  no keystroke was sent, and a record claiming one would be lying about the thing it exists to be
+  trusted on.
+  The claim is also what lifts D24's picker refusal — that rule protects the pane behind the dialog,
+  and with a caller waiting the words are not going there anyway.
+- **agterm's own picker is in front of the terminal, and D22 cannot see that.** The picker is
+  agterm's window, so `frontmostApplication` says agterm and the dictation would land in the pane
+  BEHIND the dialog — silently, since nothing on screen says otherwise. The tree's top-level
+  `pickPending` names it, so `focusedTarget` refuses first and refuses **before** capture (D24). The
+  user's own `claude-ask.sh` opens exactly such a picker on ⌃⌥C, so this is their daily path and not
+  a corner. Typing INTO the picker needs an agterm verb that does not exist: `pick --query` sets the
+  query only at open, and nothing sets it on an open one.
+- **The trigger resolves nothing itself.** It sends `start` with `focus: true` and no session, and
+  the daemon reads BOTH halves of the target out of one `agtermctl tree --json`. An earlier draft
+  had the trigger look up the session and let the daemon resolve the pane afterwards: two
+  subprocesses on the hot path, and a target assembled from two moments that can disagree. The flag
+  is explicit and a missing session never implies it — `$AGT_SESSION_ID` expands to an empty string
+  when unset, so "no session means use focus" would turn a stale keymap line into a chord that
+  dictates wherever focus happens to be.
+
+`HoldTrigger` reaches the daemon through the daemon's own control socket, exactly as `dictactl`
+does, rather than calling into `Daemon` in-process. That is deliberate: `ControlServer` is where
+commands are serialised, and a second door into the lifecycle would be a code path no chord has.
+Two real `Thread`s — one polling at 16 ms, one sending — for the reason at the bottom of the list
+below about the control socket: the sender blocks for the length of a whole dictation, and Darwin's
+non-overcommit pool does not grow when its threads block.
+
 ## Not verified automatically (needs a human)
+
+Push-to-talk adds two items and they are the ones most likely to be skipped: **H11** scores step 6's
+four criteria in a real pane, and **H12** exists because F8 measured `NSWorkspace` from a child of
+the user's terminal and *not* from a LaunchAgent. If that call returns nil under launchd, D22 stops
+holding and the key dictates from inside Safari — the same shape of gap that made F4's old number
+describe a build with a fake microphone in it.
 
 **`docs/manual-checklist.md` is the list, and it is complete** — every item states the observation
 that counts as a pass, so two people scoring it agree. In short: that the chords fire and

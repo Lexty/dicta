@@ -52,6 +52,10 @@ public enum AttemptOutcome: String, Codable, Sendable, CaseIterable {
     case capped
     /// The user ended the attempt without delivering, or it was cancelled before audio existed.
     case aborted
+    /// The text was handed back to a waiting caller instead of being typed (D29). Not `injected`:
+    /// no keystroke was sent and no input line was touched, and a record that said otherwise would
+    /// be lying about the one thing this file exists to be trusted on.
+    case returned
 }
 
 /// §9's `rules`: which replacement rules fired, and which dictionary they came from.

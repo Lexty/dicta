@@ -48,16 +48,20 @@ struct RecordTests {
         #expect(decoded.error == "the pane went away")
     }
 
-    @Test("the eleven outcomes are exactly §9's, spelled as §9 spells them")
+    @Test("the twelve outcomes are exactly §9's, spelled as §9 spells them")
     func outcomeVocabularyIsTheSpecs() {
         // Not a tautology: the table in §9 is what a human greps the file with, so the raw values
         // are part of the interface and a rename would silently break every note about the record.
+        //
+        // `returned` is the twelfth and arrived with D29. It is deliberately NOT `injected`: no
+        // keystroke was sent and no input line was touched, so a record saying otherwise would be
+        // lying about the one thing it exists to be trusted on.
         #expect(Set(AttemptOutcome.allCases.map(\.rawValue)) == [
             "injected", "empty", "capture-fault", "recognition-failed", "filter-fell-back",
             "dictionary-degraded", "target-gone", "injection-failed", "injection-partial",
-            "capped", "aborted",
+            "capped", "aborted", "returned",
         ])
-        #expect(AttemptOutcome.allCases.count == 11)
+        #expect(AttemptOutcome.allCases.count == 12)
     }
 
     @Test("an entry whose recognised text carries line breaks still occupies one line")

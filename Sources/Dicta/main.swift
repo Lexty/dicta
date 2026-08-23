@@ -25,12 +25,14 @@ options:
                            ~/Library/Application Support/dev.personal.dicta)
   --agterm-socket <path>   agterm's control socket, when it is not the default one
   --fetch-models           download the recognition models, then exit
+  --no-hold                do not arm push-to-talk; the keymap chords still work
   --help                   print this
 """
 
 var controlSocket = Paths.current.socket.path
 var agtermSocket: String?
 var fetchModels = false
+var armHoldTrigger = true
 
 var arguments = Array(CommandLine.arguments.dropFirst())
 while let argument = arguments.first {
@@ -60,6 +62,8 @@ while let argument = arguments.first {
         controlSocket = value("--control")
     case "--agterm-socket":
         agtermSocket = value("--agterm-socket")
+    case "--no-hold":
+        armHoldTrigger = false
     case "--fetch-models":
         fetchModels = true
     default:
@@ -175,6 +179,30 @@ do {
 
 log("listening on \(controlSocket)")
 
+// Push-to-talk (D5), armed after the socket is bound because the trigger reaches the daemon through
+// that socket exactly as `dictactl` does -- it is a keypress source, not a second door into the
+// lifecycle.
+//
+// Nothing here asks for a permission and nothing here can observe a keystroke: the loop reads the
+// state of the modifier keys and no key code ever reaches this process (F6, invariant 11).
+var holdTrigger: HoldTrigger?
+if armHoldTrigger {
+    let configuration = HoldTrigger.Configuration(socketPath: controlSocket)
+    // Only as a notifier. The target is resolved inside the daemon, from one tree read, because the
+    // trigger asks for it with `focus: true` rather than looking it up itself (§5).
+    let agterm = Agterm(executable: agtermctl, agtermSocket: defaultAgtermSocket)
+    let trigger = HoldTrigger(
+        configuration: configuration,
+        notifier: agterm,
+        send: { try ControlClient.send($0, to: configuration.socketPath) }
+    )
+    trigger.start()
+    holdTrigger = trigger
+    log("push-to-talk is armed on \(configuration.key.describedName)")
+} else {
+    log("push-to-talk is disabled (--no-hold); the keymap chords are unaffected")
+}
+
 // The startup self-check, and then the warm-up, on a thread of their own.
 //
 // A thread rather than a `Task`: the load blocks (see `Blocking` in DictaRuntime), and blocking a
@@ -233,6 +261,7 @@ for signalNumber in [SIGINT, SIGTERM] {
     let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .main)
     source.setEventHandler {
         log("stopping")
+        holdTrigger?.stop()
         daemon.stop()
         exit(0)
     }

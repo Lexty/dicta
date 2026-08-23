@@ -40,6 +40,7 @@ public enum ClientCommand {
         case missingSession(Command)
         case unknownMode(String)
         case unexpectedArgument(String)
+        case unknownTimeout(String)
 
         public var description: String {
             switch self {
@@ -58,6 +59,8 @@ public enum ClientCommand {
                 "\(command.rawValue) needs --session — pass \"$AGT_SESSION_ID\" from the keymap"
             case let .unknownMode(mode):
                 "unknown mode \"\(mode)\" — expected clean or raw"
+            case let .unknownTimeout(raw):
+                "\"\(raw)\" is not a number of seconds"
             case let .unexpectedArgument(argument):
                 "unexpected argument \"\(argument)\""
             }
@@ -75,6 +78,11 @@ public enum ClientCommand {
         public static let usage: Int32 = 2
         /// The daemon could not be reached at all. §7 calls for a loud local failure here.
         public static let unreachable: Int32 = 3
+        /// `dictate` came back with no text: nobody spoke in time, or another caller held the
+        /// claim. Its own code because a script must be able to tell "no dictation" from "the
+        /// daemon refused" and from "the daemon is not there" — `PROMPT=$(dictactl dictate) || …`
+        /// is the whole point of the verb (D29).
+        public static let nothingDictated: Int32 = 4
     }
 
     public static let verbs = Command.allCases.map(\.rawValue)
@@ -89,6 +97,7 @@ public enum ClientCommand {
       abort    end an attempt and deliver nothing
       status   print the daemon's current state
       last     print the text of the most recent attempt
+      dictate  wait for the next dictation and print its text — nothing is typed anywhere (D29)
 
     options:
       --mode <clean|raw>   clean runs the filter, raw skips it and nothing else (§2)
@@ -98,6 +107,12 @@ public enum ClientCommand {
                            ~/Library/Application Support/dev.personal.dicta)
       --recognised         on last: print the recogniser's verbatim output instead of what was
                            injected — the two together are how a replacement misfire is diagnosed
+      --timeout <seconds>  on dictate: how long to wait for the user to speak before giving up
+
+    examples:
+      # dictate into a native dialog that dicta cannot type into: collect the text first,
+      # then open the dialog already carrying it.
+      PROMPT=$(dictactl dictate) && agtermctl pick --query "$PROMPT" --allow-custom
     """
 
     private static let modeFlag = "--mode"
@@ -105,9 +120,10 @@ public enum ClientCommand {
     private static let agtermSocketFlag = "--socket"
     private static let controlFlag = "--control"
     private static let recognisedFlag = "--recognised"
+    private static let timeoutFlag = "--timeout"
 
     private static let allFlags = [modeFlag, sessionFlag, agtermSocketFlag, controlFlag,
-                                   recognisedFlag]
+                                   recognisedFlag, timeoutFlag]
 
     /// Flags that are their own value. The only one, and it stays a list because a parser with a
     /// special case for exactly one flag grows a second special case the next time.
@@ -122,6 +138,7 @@ public enum ClientCommand {
         case .start: [sessionFlag, agtermSocketFlag, controlFlag]
         case .stop: [modeFlag, agtermSocketFlag, controlFlag]
         case .last: [recognisedFlag, agtermSocketFlag, controlFlag]
+        case .dictate: [timeoutFlag, modeFlag, agtermSocketFlag, controlFlag]
         case .abort, .status: [agtermSocketFlag, controlFlag]
         }
     }
@@ -133,7 +150,17 @@ public enum ClientCommand {
 
     /// Verbs where the mode selects what gets delivered, and so defaults rather than staying unset.
     private static func carriesMode(_ command: Command) -> Bool {
-        command == .toggle || command == .stop
+        command == .toggle || command == .stop || command == .dictate
+    }
+
+    /// Verbs whose STDOUT is data rather than a report, so nothing else may be written to it.
+    ///
+    /// `dictate` is the only one, and it is the reason this exists: its output is spliced straight
+    /// into a shell variable and from there into another program's argument. A friendly line like
+    /// "nobody dictated anything" printed there does not read as an error — it reads as the thing
+    /// the user said.
+    public static func writesDataToStdout(_ command: Command) -> Bool {
+        command == .dictate
     }
 
     public static func parse(_ arguments: [String]) -> Result<Invocation, UsageError> {
@@ -182,6 +209,16 @@ public enum ClientCommand {
             mode = .clean
         }
 
+        var timeout: Double?
+        if let raw = given(timeoutFlag) {
+            // Refused rather than defaulted: a caller who wrote `--timeout 3O` (letter O) meant
+            // three seconds and would otherwise wait the default minute with no sign of the typo.
+            guard let parsed = Double(raw), parsed > 0, parsed.isFinite else {
+                return .failure(.unknownTimeout(raw))
+            }
+            timeout = parsed
+        }
+
         var session: String?
         if needsSession(command) {
             guard let value = given(sessionFlag) else { return .failure(.missingSession(command)) }
@@ -194,6 +231,7 @@ public enum ClientCommand {
                 sessionID: session,
                 agtermSocket: given(agtermSocketFlag),
                 mode: mode,
+                timeout: timeout,
                 // `nil` rather than `false` when it was not asked for, so the frame a chord sends
                 // carries only what the chord actually said.
                 verbatim: switches.contains(recognisedFlag) ? true : nil

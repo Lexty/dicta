@@ -22,9 +22,46 @@ import Foundation
 /// terminal cannot produce them.
 public protocol TargetResolver: Sendable {
     func resolveTarget(sessionID: String) throws -> Target
+
+    /// Both halves of the target, from live focus and from ONE tree read (§5, D5).
+    ///
+    /// `allowingPicker` is D24's exception and exists for exactly one caller: a dictation whose
+    /// text a script is waiting for (D29) has somewhere to go even when a dialog is in front, so
+    /// the refusal that protects the pane behind it does not apply.
+    ///
+    /// The hold trigger carries no session, so both halves have to be resolved here rather than
+    /// one being handed in. Reading them together is not only a subprocess cheaper than asking
+    /// twice -- it is the only way the two describe the same instant. Two reads thirty
+    /// milliseconds apart can disagree, and a target assembled out of two moments is a target
+    /// nobody chose.
+    func resolveFocusedTarget(allowingPicker: Bool) throws -> Target
 }
 
 extension Agterm: TargetResolver {}
+
+/// One caller waiting for the next dictation's text (D29).
+///
+/// A semaphore rather than a callback, because the waiting happens on the socket thread serving
+/// `dictate` and that thread has nothing else to do — and because a callback would have to be
+/// invoked from `deliver`, which runs on whatever thread finished the attempt, with the daemon's
+/// locks in unknown states. The text crosses between them as a value and nothing else does.
+final class Claim: @unchecked Sendable {
+    private let gate = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var text: String?
+
+    /// Called from the attempt's own thread.
+    func deliver(_ final: String) {
+        lock.withLock { if text == nil { text = final } }
+        gate.signal()
+    }
+
+    /// Called from the socket thread. Returns the text, or `nil` if nobody spoke in time.
+    func wait(_ seconds: TimeInterval) -> String? {
+        _ = gate.wait(timeout: .now() + seconds)
+        return lock.withLock { text }
+    }
+}
 
 public final class Daemon: @unchecked Sendable {
     /// The three agterm-facing seams, together, because all three address the same agterm instance.
@@ -146,6 +183,10 @@ public final class Daemon: @unchecked Sendable {
     /// and one of them writes a file; see `sync`.
     private let effectLock = NSLock()
     private var machine = StateMachine()
+    /// **Guarded by `stateLock`.** The caller waiting for the next dictation's text (D29). One at
+    /// a time: two scripts each expecting "the next thing the user says" cannot both be right, and
+    /// the second is refused rather than silently handed somebody else's sentence.
+    private var claim: Claim?
     /// The audio of the attempt being processed, held in RAM and nowhere else (D14).
     private var drained: (attempt: AttemptID, audio: Audio)?
     /// **final** for the attempt about to be injected -- already replaced, already filtered or
@@ -359,8 +400,54 @@ public final class Daemon: @unchecked Sendable {
             return respond(to: apply(.stop(mode: request.mode ?? .clean, attempt: request.attempt)))
         case .abort:
             return respond(to: apply(.abort(attempt: request.attempt)))
+        case .dictate:
+            return awaitDictation(request)
         case .start, .toggle:
             return begin(request)
+        }
+    }
+
+    /// D29: block until the user dictates, then hand the text back instead of typing it.
+    ///
+    /// Served concurrently (`Command.isServedConcurrently`), and it must be: this waits for a
+    /// person to speak, and the `start` and `stop` that produce what it is waiting for run through
+    /// the same handler. Held under that lock it would wait for an event it was itself preventing.
+    private func awaitDictation(_ request: Request) -> Response {
+        let seconds = request.timeout ?? ControlTimeouts.dictateWait
+        let mine = Claim()
+        let taken: Bool = stateLock.withLock {
+            guard claim == nil else { return false }
+            claim = mine
+            return true
+        }
+        guard taken else {
+            return reject("another caller is already waiting for the next dictation")
+        }
+        let final = mine.wait(seconds)
+        // Cleared whichever way it ended, and only if it is still OURS: a claim that timed out and
+        // was replaced by a later caller's must not be torn down by the loser.
+        stateLock.withLock { if claim === mine { claim = nil } }
+        guard let final else {
+            return response(.noop, message: "nobody dictated anything within \(Int(seconds)) s")
+        }
+        let state = stateLock.withLock { machine.state }
+        return Response(kind: .accepted, state: state, text: final)
+    }
+
+    /// Whether a caller is waiting, read where the answer decides what a target is FOR (D29).
+    private var hasClaim: Bool { stateLock.withLock { claim != nil } }
+
+    /// The same fact, for a caller outside. Public because a test cannot otherwise know when the
+    /// claim has been registered, and starting a dictation before it is registered would be a race
+    /// the suite loses at random rather than a rule it asserts.
+    public var isAwaitingDictation: Bool { hasClaim }
+
+    /// Takes the claim, if one is outstanding. Exactly once: the attempt that takes it owns it.
+    private func takeClaim() -> Claim? {
+        stateLock.withLock {
+            let held = claim
+            claim = nil
+            return held
         }
     }
 
@@ -390,12 +477,25 @@ public final class Daemon: @unchecked Sendable {
         // the user is looking at is the whole of its value. Safe here for the same reason it was
         // safe below: `adoptTerminal` refuses to rebind while an attempt is live.
         adoptTerminal(agtermSocket: request.agtermSocket)
-        guard let sessionID = request.sessionID, !sessionID.isEmpty else {
-            return reject("\(request.cmd.rawValue) needs the session the chord fired in")
-        }
         let target: Target
         do {
-            target = try currentTerminal.resolver.resolveTarget(sessionID: sessionID)
+            if request.focus == true {
+                // The hold trigger (D5). Both halves at once, from one tree read -- and note that
+                // this branch is reached only because the caller ASKED for it, never because a
+                // session was missing. A start with no session is still a refusal below.
+                // `allowingPicker` is D24 answered rather than overridden. That rule refuses
+                // because a dictation started in front of a dialog has nowhere to go but the pane
+                // behind it. With a caller waiting, it has somewhere: the caller (D29). The target
+                // is still resolved, because §6's indicator belongs in the session the user is
+                // looking at either way.
+                target = try currentTerminal.resolver
+                    .resolveFocusedTarget(allowingPicker: hasClaim)
+            } else {
+                guard let sessionID = request.sessionID, !sessionID.isEmpty else {
+                    return reject("\(request.cmd.rawValue) needs the session the chord fired in")
+                }
+                target = try currentTerminal.resolver.resolveTarget(sessionID: sessionID)
+            }
         } catch {
             // Fail closed (D6). A pane this build cannot name exactly is not one it guesses at:
             // the alternative is somebody else's agent receiving the user's prompt.
@@ -712,6 +812,18 @@ public final class Daemon: @unchecked Sendable {
             let reason = "the text is not a single line"
             record(id, outcome: .injectionFailed, error: reason)
             apply(.injectionFinished(id, .failed(reason: reason)))
+            return
+        }
+        // D29, and this is the only place text leaves the daemon, which is what makes the claim
+        // safe to express here rather than as a branch in five places. Nothing is typed: no
+        // `injector` call is made, no target is touched, and the outcome says `returned` rather
+        // than `injected` because a record claiming a keystroke that never happened would be lying
+        // about the one thing this file exists to be trusted on.
+        if let claimed = takeClaim() {
+            record(id, outcome: stateLock.withLock { draft?.id == id ? draft?.degraded : nil }
+                ?? .returned)
+            claimed.deliver(final)
+            apply(.injectionFinished(id, .delivered))
             return
         }
         // Invariant 10, and the reason this line sits above the injection rather than below it:

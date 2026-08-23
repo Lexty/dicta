@@ -127,8 +127,26 @@ case let .failure(error):
 let controlSocket = invocation.controlSocket ?? Paths.current.socket.path
 
 do {
-    let response = try ControlClient.send(invocation.request, to: controlSocket)
-    if let text = response.text {
+    // A caller that named its own `--timeout` is telling the daemon how long to wait, so the client
+    // must be willing to wait at least that long plus whatever the attempt itself costs. Reading
+    // for less would report a daemon that is doing exactly what it was asked to.
+    let readTimeout = invocation.request.timeout.map { $0 + ControlTimeouts.pipelineRead }
+    let response = try ControlClient.send(invocation.request, to: controlSocket,
+                                          readTimeout: readTimeout)
+    if ClientCommand.writesDataToStdout(invocation.request.cmd) {
+        // stdout is data here and nothing else may touch it (D29). No text is not a failure to
+        // report on stdout -- it is an empty result, and it exits with a code of its own so
+        // `PROMPT=$(dictactl dictate) || exit 0` does the obvious thing.
+        if let text = response.text {
+            print(text)
+        } else {
+            FileHandle.standardError.write(
+                Data("dictactl: \(response.message ?? "no text")\n".utf8))
+            exit(response.kind == .rejected
+                ? ClientCommand.ExitCode.rejected
+                : ClientCommand.ExitCode.nothingDictated)
+        }
+    } else if let text = response.text {
         print(text)
     } else if let message = response.message {
         print(message)

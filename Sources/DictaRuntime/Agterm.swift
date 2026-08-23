@@ -61,6 +61,16 @@ public enum AgtermError: Error, Equatable, CustomStringConvertible {
     /// Exactly one, of a kind this build does not know. Accepting it would be D4's forbidden
     /// substitution wearing a different hat.
     case unrecognisedPane(session: String, kind: String)
+    /// The hold trigger asked which session is active and the tree named none. Fail closed, exactly
+    /// as `noActivePane` does: a keypress carrying no session (D5) has nothing to fall back on,
+    /// and "whichever session was active last" is D4's forbidden substitution.
+    /// agterm's own native picker is open in this window and is what the user is looking at. Not
+    /// a failure of the lookup: the tree answered, and what it said is that the front of the screen
+    /// is not a place dicta can put text (D24).
+    case pickerOpen(String)
+    case noActiveSession
+    /// More than one session claims to be active. The tree is not a thing to guess about.
+    case ambiguousActiveSession(sessions: [String])
 
     public var description: String {
         switch self {
@@ -89,6 +99,13 @@ public enum AgtermError: Error, Equatable, CustomStringConvertible {
         case let .ambiguousPane(session, panes):
             "session \(session) has \(panes.count) active panes (\(panes.joined(separator: ", ")))"
                 + " -- refusing to guess where the text goes"
+        case .pickerOpen:
+            "agterm's picker is open — dicta cannot type into it yet, only into a session"
+        case .noActiveSession:
+            "agterm's tree names no active session, so there is nowhere to dictate into"
+        case let .ambiguousActiveSession(sessions):
+            "agterm's tree names \(sessions.count) active sessions at once: "
+                + sessions.joined(separator: ", ")
         case let .unrecognisedPane(session, kind):
             "session \(session)'s active pane is a \(kind), which this build does not know"
         }
@@ -167,6 +184,30 @@ public struct Agterm: Injector, Notifier, Sendable {
             throw AgtermError.unrecognisedPane(session: sessionID, kind: active[0].kind)
         }
         return Target(sessionID: sessionID, pane: pane)
+    }
+
+    /// The whole target, from live focus, out of ONE `agtermctl tree --json` (D5, §5).
+    ///
+    /// A chord is expanded by agterm and names the session at the instant of the keypress. A held
+    /// key is expanded by nobody, so both halves come from the same live tree — and from the same
+    /// READ of it, which is the part worth insisting on. An earlier draft asked for the session
+    /// here and let the daemon resolve the pane afterwards through `resolveTarget`. That spent a
+    /// second subprocess on the hot path, and each one costs tens of milliseconds from inside the
+    /// daemon rather than the ~10 ms a bare `agtermctl tree --json` costs from a shell. Worse than
+    /// the cost: the two halves then described two different moments.
+    ///
+    /// Frontmost-window scope is correct here and is not the trap `surfaces(ofSession:)` documents.
+    /// That one sweeps every window because it is looking for a session it was *given*; this one is
+    /// asking which session the user is looking at, and the user is looking at the frontmost
+    /// window. D22 is what makes that true, by refusing to run at all unless agterm is frontmost.
+    public func resolveFocusedTarget(allowingPicker: Bool) throws -> Target {
+        let output = try invoke("tree", ["tree", "--json"])
+        guard output.succeeded else {
+            throw AgtermError.commandFailed(verb: "tree", status: output.status,
+                                            message: Self.message(in: output))
+        }
+        return try Self.focusedTarget(inTree: output.standardOutput,
+                                      allowingPicker: allowingPicker)
     }
 
     /// Re-validation immediately before injection (§5, D4).
@@ -441,11 +482,24 @@ public struct Agterm: Injector, Notifier, Sendable {
     /// the next agterm release for no gain.
     private struct TreeEnvelope: Decodable {
         struct Envelope: Decodable { let tree: Tree }
-        struct Tree: Decodable { let workspaces: [Workspace] }
-        struct Workspace: Decodable { let sessions: [Session]? }
+        struct Tree: Decodable {
+            let workspaces: [Workspace]
+            /// The id of the native picker awaiting an answer **in this window**, absent when there
+            /// is none. Window-scoped, like the tree itself, which is exactly the scope D24 wants:
+            /// the hold key is aimed at the frontmost window and so is this field.
+            let pickPending: String?
+        }
+        struct Workspace: Decodable {
+            let sessions: [Session]?
+            /// Read only by the hold trigger's lookup: a session is active *within* a workspace,
+            /// so every workspace names one and only the active one's answer is live.
+            let active: Bool?
+        }
+
         struct Session: Decodable {
             let id: String
             let surfaces: [Surface]?
+            let active: Bool?
         }
 
         struct Surface: Decodable {
@@ -496,8 +550,72 @@ public struct Agterm: Injector, Notifier, Sendable {
             .map(\.id)
     }
 
+    /// Pure, for the same reason `surfaces(inTree:session:)` is: a workspace arrangement is a
+    /// value here rather than something that has to be clicked into place.
+    ///
+    /// Two filters, in this order: the **active workspace** first, then the active session inside
+    /// it. Anything other than exactly one survivor at either step throws (D6's fail-closed rule).
+    ///
+    /// On the installed build the first filter is, measured, redundant: a live tree with 9
+    /// workspaces marked exactly one session active, and it was in the active workspace (checked
+    /// 2026-08-23). It is kept because that is an observation and not a guarantee — agterm does not
+    /// document which sessions carry `active`, and a build that started marking the last-used
+    /// session of every workspace would, without this filter, hand back one at random from a
+    /// workspace the user is not looking at. The failure would be silent and would look exactly
+    /// like D4's forbidden substitution.
+    public static func focusedTarget(inTree json: String,
+                                     allowingPicker: Bool = false) throws -> Target {
+        // Before anything else (D24). agterm's picker is agterm's own window, so a dictation begun
+        // while one is open passes D22's frontmost check and then delivers into the terminal
+        // BEHIND the dialog -- not where the user is looking, and silently. The tree names the
+        // picker, so this is knowable from the read that was happening anyway.
+        //
+        // `allowingPicker` is the one exception and it is not a loophole: it is set only when a
+        // caller is waiting for the text (D29), which is precisely the case where the dialog is
+        // not somewhere the text was going to go anyway.
+        if !allowingPicker, let picker = try decodeTree(json).pickPending, !picker.isEmpty {
+            throw AgtermError.pickerOpen(picker)
+        }
+        let session = try activeSession(inTree: json)
+        // Deliberately the SAME pane rule the chord path uses, read out of the same JSON: exactly
+        // one recognisable active surface, or nothing (D6). A held key must not be able to reach a
+        // pane a chord could not.
+        let active = try surfaces(inTree: json, session: session).filter(\.active)
+        guard active.count == 1 else {
+            throw active.isEmpty
+                ? AgtermError.noActivePane(session: session)
+                : AgtermError.ambiguousPane(session: session, panes: active.map(\.kind))
+        }
+        guard let pane = Pane(rawValue: active[0].kind) else {
+            throw AgtermError.unrecognisedPane(session: session, kind: active[0].kind)
+        }
+        return Target(sessionID: session, pane: pane)
+    }
+
+    public static func activeSession(inTree json: String) throws -> String {
+        let workspaces = try decodeTree(json).workspaces.filter { $0.active == true }
+        guard workspaces.count == 1 else {
+            // Zero is a tree with nothing focused; more than one cannot happen and is therefore
+            // exactly the sort of thing to refuse rather than to pick from.
+            let sessions = workspaces.flatMap { ($0.sessions ?? []).map(\.id) }
+            throw workspaces.isEmpty
+                ? AgtermError.noActiveSession
+                : AgtermError.ambiguousActiveSession(sessions: sessions)
+        }
+        let active = (workspaces[0].sessions ?? []).filter { $0.active == true }
+        guard active.count == 1 else {
+            throw active.isEmpty
+                ? AgtermError.noActiveSession
+                : AgtermError.ambiguousActiveSession(sessions: active.map(\.id))
+        }
+        return active[0].id
+    }
+
     /// Pure, so every shape of tree in `AgtermTests` is a value rather than a running terminal.
-    static func surfaces(inTree json: String, session: String) throws -> [TreeSurface] {
+    /// The envelope, unwrapped and its refusal turned into an error. Shared by the two readers of
+    /// the tree so that a change in how agterm reports a refusal cannot be fixed in one of them and
+    /// forgotten in the other.
+    private static func decodeTree(_ json: String) throws -> TreeEnvelope.Tree {
         guard let data = json.data(using: .utf8), !data.isEmpty else {
             throw AgtermError.malformedTree("agtermctl tree printed nothing")
         }
@@ -514,7 +632,12 @@ public struct Agterm: Injector, Notifier, Sendable {
         guard let result = envelope.result else {
             throw AgtermError.malformedTree("the answer carries no tree")
         }
-        let sessions = result.tree.workspaces.flatMap { $0.sessions ?? [] }
+        return result.tree
+    }
+
+    static func surfaces(inTree json: String, session: String) throws -> [TreeSurface] {
+        let tree = try decodeTree(json)
+        let sessions = tree.workspaces.flatMap { $0.sessions ?? [] }
         guard let found = sessions.first(where: { $0.id == session }) else {
             throw AgtermError.sessionNotFound(session)
         }

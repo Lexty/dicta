@@ -198,10 +198,10 @@ struct ChecklistTests {
         }
     }
 
-    @Test("SPEC.md still has the ten invariants the checklist audits")
+    @Test("SPEC.md still has the thirteen invariants the checklist audits")
     func theInvariantsAreStillTen() {
         let numbers = Self.invariants.map(\.number)
-        #expect(numbers == Array(1...10), "§8's numbering moved: \(numbers)")
+        #expect(numbers == Array(1...13), "§8's numbering moved: \(numbers)")
     }
 
     @Test("every invariant in §8 has a row naming what checks it")

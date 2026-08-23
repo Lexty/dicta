@@ -37,7 +37,7 @@ struct WireTests {
     @Test("the commands are exactly the verbs dictactl offers")
     func commandsMatchTheClient() {
         #expect(Set(Command.allCases.map(\.rawValue)) ==
-            ["status", "toggle", "start", "stop", "abort", "last"])
+            ["status", "toggle", "start", "stop", "abort", "last", "dictate"])
     }
 
     // MARK: - attempt id and target

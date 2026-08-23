@@ -66,6 +66,14 @@ public enum ControlTimeouts {
     /// How long the server waits for a connected client to say something. Bounds a client that
     /// connects and then wanders off.
     public static let serverRead: TimeInterval = 2.0
+    /// How long the daemon waits for the user to actually speak, when `dictate` names no timeout
+    /// of its own (D29).
+    ///
+    /// A minute, because this is a person deciding what to say, not a machine working. It is
+    /// bounded at all for one reason: a script that called `dictate` and was then ignored must not
+    /// wait for ever, or the user's `⌃⌥C` appears to have hung and the only way out is to find the
+    /// process.
+    public static let dictateWait: TimeInterval = 60.0
 
     /// The read timeout a verb deserves. Every verb a CHORD can send gets the pipeline's ceiling.
     ///
@@ -89,6 +97,11 @@ public enum ControlTimeouts {
     public static func read(for command: Command) -> TimeInterval {
         switch command {
         case .stop, .toggle, .start, .abort: pipelineRead
+        // The daemon's wait, plus the ceiling on everything it does AFTER the user stops speaking.
+        // A caller that names its own `--timeout` overrides this from `dictactl`, because a read
+        // timeout shorter than the wait it asked for would report a daemon that is doing exactly
+        // what it was told to.
+        case .dictate: dictateWait + pipelineRead
         case .status, .last: clientRead
         }
     }

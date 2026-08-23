@@ -35,6 +35,9 @@ Each invariant must hold on **every** path. "Checked by" names the assertion tha
 | 7 | A capture failure is never reported as silence. | `test: no capture fault can be read as silence`, `test: a fault is never reported as silence`, `test: a fault while stopping is a fault, not silence`, `test: a fault while stopping wins over the samples already in hand`, `test: an engine that stopped by itself is a fault, even with a full buffer`, `test: a capture fault is recorded as a fault and never as empty` |
 | 8 | The keypress client never opens the microphone | **`Scripts/linkage.sh`**, run first by `Scripts/test.sh`. No swift-testing assertion can reach this one: it is a property of the linked `dictactl` binary, and the test runner deliberately links everything the client must not. Three assertions — load commands, undefined symbols, and DictaRuntime's own mangled names — probed by running the script against `DictaTestRunner`, where all three fire. |
 | 9 | Recording state is released only after capture has actually been drained | `test: draining + start: rejected, not queued behind the attempt that is still stopping`, `test: a start chord while the first attempt is still draining is refused, not queued`, `test: a second start chord while recording is refused, and opens no second device` |
+| 11 | The hold trigger reads modifier state and nothing else | **`Scripts/linkage.sh`**, run first by `Scripts/test.sh`. The second invariant no assertion can reach, and for the same reason as 8: it is a property of WHICH API the built binary calls, not of what it does. `nm` on `Dicta` must name no `CGEventTapCreate`, no `CGEventTapEnable`, no `IOHIDManager` and no `_OBJC_CLASS_$_NSEvent` — the four shapes of "read a keystroke", every one of which would make macOS demand Input Monitoring or Accessibility (D5, F6). Probed by adding a `CGEvent.tapCreate` call to `SystemModifiers.flags()` and watching the check fail on `U _CGEventTapCreate`, then reverting. |
+| 12 | A hold under D21's floor never injects | `test: a hold under the floor discards rather than delivering`, `test: a hold under the floor aborts and never stops`, `test: the floor separates the two populations it was measured against, and only those`, `test: a gesture that never received an attempt id can never end one` |
+| 13 | The hold trigger never starts an attempt while another application is frontmost | `test: the hold key does nothing at all while another application is frontmost`, `test: focus moving to another application mid-hold does not stop the delivery` |
 | 10 | Recognised text, once produced, always reaches the record | `test: the entry is on disk before the first keystroke is attempted`, `test: a delivery failure supersedes the saved line rather than adding an attempt`, `test: a failing append still delivers the text, then says recovery is unavailable`, `test: every attempt leaves exactly one entry, whatever ended it`, `test: a cap firing while the recogniser is still running does not lose the text it returns`, `test: an abort while the recogniser is running still drops the text, as the user asked` |
 
 **No invariant is unaccounted for.** Invariant 8 was the only one with no automated check before
@@ -68,6 +71,14 @@ external filter, which this plan deliberately does not build (D9c): the `Filter`
 | daemon crashed leaving a stale indicator | `test: a daemon starting after a crash puts the abandoned indicator out`, `test: a live attempt parks its target, and finishing removes it`, `test: a daemon starting with no parked target touches no indicator` |
 | second daemon instance attempted | `test: a second daemon on a live socket refuses to start`, `test: a second daemon is refused while the first one's socket is live`, `test: a socket left by a crashed daemon is replaced rather than refused` |
 | abort during injection | `test: injecting + abort: refused (D20)`, `test: abort during injection is refused, because keystrokes cannot be recalled` |
+| a caller waits for a dictation and nobody speaks | `test: a dictate nobody answers gives up with no text rather than waiting for ever`. That the empty result reaches the caller as an exit code rather than as a line of prose on stdout — which would become the user's prompt — is `ClientCommand.writesDataToStdout` and human item **H13** end to end |
+| a second caller asks for the next dictation while one is already waiting | `test: a second caller is refused rather than handed somebody else's sentence`, which asserts both halves: the second is refused, and the first still gets the words |
+| hold key pressed while agterm is not frontmost | `test: the hold key does nothing at all while another application is frontmost`. The assertion is **silence**, not merely "no dictation": the trigger sends nothing and the notifier logs nothing, because a notification here would fire on every right-Control combination typed in a browser. Its opposite number, so that the two are not confused, is `test: a session that cannot be resolved starts nothing and is said out loud` |
+| hold shorter than the floor | `test: a hold under the floor aborts and never stops`, `test: a hold under the floor discards rather than delivering`, `test: the floor separates the two populations it was measured against, and only those`. That the ordinary press this defends against does not even reach the gesture, when it is a combination on the other Control key: `test: a left-Control combination never reaches the daemon` |
+| hold key pressed while agterm's own picker is open | `test: a picker open in the window refuses the dictation rather than typing behind it`, `test: a dictation refused because the picker is open never opens the microphone`. The second is the one that matters: refusing after capture had begun would leave a lit microphone recording for a pane nobody can see. End to end, in the user's own `claude-ask.sh` picker, is **H11** criterion (e) |
+| hold key released after a chord already ended the attempt | `test: the command that ends a hold names the attempt the start returned` is the mechanism (D23); `test: a stop naming a spent attempt is a silent no-op` is the daemon honouring it, and it predates this trigger — which is the point, since the rule was already there and only needed the id carried to it. The mixed gesture end to end is human item **H11** |
+| the active session cannot be read from the tree when the hold key goes down | `test: a session that cannot be resolved starts nothing and is said out loud`; that the lookup happens once, in the daemon, and only when asked for: `test: a start asking for focus resolves both halves itself, out of one lookup`, `test: only an explicit focus flag resolves from focus, never a missing session`, `test: the focused target carries the active session's own active pane, from one read`, `test: a focused target whose pane cannot be named is refused, exactly as a chord's would be`. The readings that produce the refusal: `test: a tree with no active workspace refuses rather than picking one`, `test: a workspace whose sessions are all inactive refuses rather than picking one`, `test: two sessions claiming to be active is a refusal, never a choice`, `test: the active session is read from the active workspace and not from every workspace`, `test: a refusal from agterm is a refusal here, not an empty tree` |
+| the hold trigger is not armed, or its source reads nothing | Nothing automatic, and the row itself says why: `CGEventSource.flagsState` has no error channel, so "no modifier is down" and "this is not working" are one answer. Human item **H12** scores that the trigger is armed at all on the installed daemon; `test: a daemon that cannot be reached is reported rather than swallowed` covers the half that does have an error channel |
 
 Two rows are the honest gaps, and both are named above rather than papered over: the OS wiring of the
 capture faults (**H3**) and the client's own desktop notification (**H1**).
@@ -178,6 +189,55 @@ counts as a pass, so two people scoring it agree.
   and **nothing else, with nothing re-run** — the user can name `misfire` as the rule that did it.
   Fail: needing to re-dictate, to bisect the file, or to guess, which means the record is not
   carrying enough to diagnose with.
+- **H11 — step 6: push-to-talk, all four criteria, in a real pane.** With the daemon installed and
+  running, in a session running **Claude Code**: (a) hold right Control, speak a sentence with a
+  pause in the middle, let go. Pass: the text arrives in that session's input line, unsubmitted, and
+  no chord was pressed. (b) Type `⌃C` and a few other right-Control combinations at ordinary speed.
+  Pass: `dictactl last` still shows the dictation from (a) — nothing was recorded, nothing was
+  typed, and no sound played. Fail: an entry with text, which means D21's floor is in the wrong
+  place; re-measure the press durations rather than raising the floor by feel. (c) Click into Safari
+  and hold right Control for two seconds. Pass: nothing whatsoever — no indicator, no sound, no new
+  record entry. (d) Hold right Control, speak, and while still holding it press `⌃⌥⇧D`; then let go.
+  Pass: raw text arrives, and the release is silent — no "nothing to stop" and no `Basso` (D23).
+  (e) Press `⌃⌥C` to open the `claude-ask.sh` picker, and while it is open hold right Control and
+  speak. Pass: **nothing** is typed into the session behind the dialog, and a notification says the
+  picker is open (D24). Fail, and this is the failure the item exists for: the picker stays empty
+  and the words appear in the terminal underneath it, where they were not aimed and where nobody
+  was looking.
+  **While you are here, if Acta is convenient.** This item is the only place real dictations get
+  made deliberately, and the sibling project's correlation stage (D25) has never once seen a true
+  positive: across every meeting processed 16-23 August, no dictation and no recording overlapped in
+  time, so its text matching is proven on synthetic data only. Starting a short Acta recording and
+  dictating one sentence into it during (a) produces the artefact that closes that gap. Not a pass
+  condition here and not dicta's problem if skipped — it costs one minute and is worth taking while
+  the microphone is already in your hand.
+- **H13 — dictation into the picker, which is the whole reason `dictate` exists.** Change
+  `~/.config/agterm/claude-ask.sh` to collect its prompt by dictation:
+  `PROMPT=$(dictactl dictate) && agtermctl pick --query "$PROMPT" --allow-custom`. Then press ⌃⌥C,
+  hold right Control, speak a sentence, let go. Pass: the picker opens with your words already in
+  the query field, editable, and **nothing was typed into the terminal** at any point. Then run it
+  again and say nothing.
+  **The second half is already scored and PASSED**, 2026-08-23, against the built binaries rather
+  than a fake: `dictactl dictate --timeout 2` with nobody speaking exits **4**, prints **nothing**
+  on stdout, puts "nobody dictated anything within 2 s" on stderr, and the `&&` in the idiom above
+  correctly skips opening the picker. So the words "nobody dictated anything" cannot become the
+  user's prompt, which is what would happen if the client wrote its reasons to stdout (D29).
+  What is left for a person is the half that needs a voice: that real speech reaches the query field
+  and that **nothing is typed into the terminal** at any point.
+- **H12 — the frontmost reading TRACKS, rather than merely answering.** Scored 2026-08-23 and it
+  **FAILED**, which is the whole reason this item was written the way it was; F8a records the
+  measurement and the fix is the activation observer in `SystemFrontmost`. It stays as a regression
+  check, because nothing automatic can reach it.
+  After `bash Scripts/install.sh`, read the daemon's log for `push-to-talk is armed on the right
+  Control key`. Then switch applications — agterm, a browser, Finder, agterm — and, at each stop,
+  hold right Control for two seconds. Pass: it dictates in agterm and does nothing at all in the
+  other two, **every time round**, including after the daemon has been running for hours.
+  **The method is the item.** Do not score this by holding the key only in agterm, and do not score
+  it from a log written on each chord: a chord is only ever pressed inside agterm, so that
+  instrument returns "agterm" whatever is true and reads as a pass. What failed here was never `nil`
+  and never obviously wrong — it was a plausible identifier frozen at whatever was frontmost when
+  the daemon started, so the only thing that can catch it is sampling while a **different**
+  application is in front.
 - **H10 — the daemon's own lifecycle.** Log out and back in. Pass: the daemon is running without
   anyone starting it, and a chord works immediately. Then kill it mid-recording (`kill -9` while
   the indicator is red) and restart it. Pass: the indicator that was claiming a recording is put

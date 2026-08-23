@@ -20,6 +20,14 @@ public enum Command: String, Codable, Sendable, CaseIterable {
     case stop
     case abort
     case last
+    /// Claim the next dictation's text for the CALLER instead of a pane (D29).
+    ///
+    /// The one verb that is not about an attempt the caller can see: a script asks for the next
+    /// thing the user says, blocks while they say it, and gets the text on stdout. Nothing is
+    /// typed anywhere. It exists because agterm's native picker is a text field and not a terminal
+    /// surface, so `session type` cannot reach it and there is no way to set the query of a picker
+    /// that is already open — a dictation aimed at a dialog has to arrive before the dialog does.
+    case dictate
 
     /// Whether the daemon serves this command **without waiting for the one already in flight**.
     ///
@@ -43,6 +51,12 @@ public enum Command: String, Codable, Sendable, CaseIterable {
     public var isServedConcurrently: Bool {
         switch self {
         case .abort: true
+        // `dictate` joins it, and not lightly: it BLOCKS, for as long as the user takes to speak.
+        // Held under the handler lock it would deadlock outright — the `start` and `stop` that
+        // produce the dictation it is waiting for could never run. It qualifies on the same grounds
+        // `abort` does and on one more: it neither begins an attempt nor ends one. It parks a claim
+        // and waits.
+        case .dictate: true
         case .status, .toggle, .start, .stop, .last: false
         }
     }
@@ -65,6 +79,10 @@ public enum Command: String, Codable, Sendable, CaseIterable {
     public var isTypedByHand: Bool {
         switch self {
         case .status, .last: true
+        // Typed by a script rather than by hand, but the distinction this property draws is whether
+        // anybody is watching stderr — and a script IS watching, because it reads the answer. A
+        // desktop notification would be shouting at somebody already looking.
+        case .dictate: true
         case .toggle, .start, .stop, .abort: false
         }
     }
@@ -151,6 +169,17 @@ public struct Request: Codable, Sendable, Equatable {
     /// The attempt this command is about, when the caller knows it. A chord does not: the daemon
     /// owns the id, so `toggle` names none.
     public var attempt: AttemptID?
+    /// Resolve BOTH halves of the target from live focus, because the caller has no session to
+    /// pin one with -- the hold trigger, and nothing else (D5, §5).
+    ///
+    /// An explicit field rather than "a `start` with no session means focus". That reading would
+    /// be indistinguishable from a keymap line whose `$AGT_SESSION_ID` failed to expand, which is
+    /// not hypothetical: an unset environment variable expands to an EMPTY STRING, not to an
+    /// absent argument. A chord that quietly dictated into whatever has focus, instead of being
+    /// refused, is D4's forbidden substitution arriving through a typo.
+    public var focus: Bool?
+    /// How long `dictate` will wait for the user to say something, in seconds (D29).
+    public var timeout: Double?
     /// `last --recognised`: print the recogniser's verbatim output rather than what was injected.
     /// Reading text back is not injection, so the sanitiser does not apply to it (§9), and the two
     /// fields differing is the whole way a replacement misfire is diagnosed.
@@ -162,9 +191,13 @@ public struct Request: Codable, Sendable, Equatable {
         agtermSocket: String? = nil,
         mode: Mode? = nil,
         attempt: AttemptID? = nil,
+        focus: Bool? = nil,
+        timeout: Double? = nil,
         verbatim: Bool? = nil
     ) {
         self.cmd = cmd
+        self.focus = focus
+        self.timeout = timeout
         self.sessionID = sessionID
         self.agtermSocket = agtermSocket
         self.mode = mode

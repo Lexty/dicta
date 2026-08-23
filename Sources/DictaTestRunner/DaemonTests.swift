@@ -1085,6 +1085,152 @@ struct DaemonTests {
         #expect(harness.injector.delivered.map(\.target) == [Self.target])
     }
 
+    @Test("a dictation refused because the picker is open never opens the microphone")
+    func pickerOpenNeverRecords() {
+        // The half of D24 that matters most: refusing has to happen BEFORE capture, or the user
+        // gets a lit microphone and a recording aimed at a pane they cannot see.
+        let harness = Harness()
+        harness.resolver.setError(AgtermError.pickerOpen("pick-7"))
+
+        let response = harness.send(Request(cmd: .start, focus: true))
+
+        #expect(response.kind == .rejected)
+        #expect(response.message?.contains("picker") == true)
+        #expect(harness.capture.callLog.isEmpty)
+    }
+
+    @Test("a start asking for focus resolves both halves itself, out of one lookup")
+    func focusedStartResolvesBothHalves() {
+        // The hold trigger's path (D5, §5). It carries no session because nothing expanded one for
+        // it, and it must not therefore cost a lookup of its own: `requested` records exactly one
+        // resolution, and it is the focus one.
+        let harness = Harness(pane: .right)
+        harness.resolver.focusedSession = "S-focus"
+
+        let response = harness.send(Request(cmd: .start, focus: true))
+
+        #expect(response.kind == .accepted)
+        #expect(response.target == Target(sessionID: "S-focus", pane: .right))
+        #expect(harness.resolver.requested == ["<focus>"])
+    }
+
+    @Test("only an explicit focus flag resolves from focus, never a missing session")
+    func focusIsNeverImplied() {
+        // The distinction this protects is not academic. An unset `$AGT_SESSION_ID` expands to an
+        // EMPTY STRING, so a keymap line that has stopped matching the build sends a start with no
+        // session -- and if that meant "use whatever has focus", a broken chord would quietly
+        // dictate into whichever session happened to be active. Refusal is the only safe reading.
+        let harness = Harness()
+
+        #expect(harness.send(Request(cmd: .start, sessionID: "")).kind == .rejected)
+        #expect(harness.send(Request(cmd: .start, focus: false)).kind == .rejected)
+        #expect(harness.resolver.requested.isEmpty)
+        #expect(harness.capture.callLog.isEmpty)
+    }
+
+    // MARK: - dictate: text to a caller, never to a pane (D29)
+
+    /// Runs `dictate` on a thread of its own, since it blocks by design, and waits until the daemon
+    /// has actually registered the claim before returning.
+    private func awaitingDictation(_ harness: Harness, timeout: Double = 5,
+                                   _ answer: Locked<Response?>) -> DispatchSemaphore {
+        let done = DispatchSemaphore(value: 0)
+        let waiting = Thread {
+            answer.set(harness.send(Request(cmd: .dictate, timeout: timeout)))
+            done.signal()
+        }
+        waiting.name = "dicta.test.dictate"
+        waiting.start()
+        waitUntil("the claim was registered") { harness.daemon.isAwaitingDictation }
+        return done
+    }
+
+    @Test("dictate hands the text back to its caller and types nothing anywhere")
+    func dictateReturnsTheText() throws {
+        // D29's whole point. The picker is a native text field, so `session type` cannot reach it
+        // and no verb sets the query of one already open — the text has to arrive before the dialog
+        // does, which means it has to come back to the script rather than go into a pane.
+        let harness = Harness()
+        let answer = Locked<Response?>(nil)
+        let done = awaitingDictation(harness, answer)
+
+        let id = harness.dictate()
+        #expect(done.wait(timeout: .now() + 5) == .success)
+
+        let response = try #require(answer.value)
+        #expect(response.kind == .accepted)
+        // The canned transcript carries a newline, a double space and a trailing space on purpose,
+        // and what comes back is the sanitised single line — the caller gets what would have been
+        // typed, not the recogniser's raw output (invariant 1 applies here too: the text is about
+        // to become another program's argument).
+        #expect(response.text == "dicta hears you from the fake transcriber")
+        // The two assertions that make it safe rather than merely useful.
+        #expect(harness.injector.delivered.isEmpty, "the text was typed as well as handed back")
+        let entry = try #require(harness.history.appended.last)
+        #expect(entry.id == id)
+        #expect(entry.outcome == .returned, "the record claimed a keystroke that never happened")
+        // `final` is FULL, unlike a cancelled attempt's. The text was produced and delivered — to a
+        // caller rather than to a pane — so anything downstream reading `final` to decide what is
+        // actionable will treat this exactly like `injected`, and should. A reader that expects
+        // `returned` to behave like `aborted` is reading the outcome, not the field.
+        #expect(entry.final == "dicta hears you from the fake transcriber")
+        #expect(harness.daemon.isAwaitingDictation == false)
+    }
+
+    @Test("a dictate nobody answers gives up with no text rather than waiting for ever")
+    func dictateTimesOut() throws {
+        // A script that called `dictate` and was then ignored must not hang: the user's chord would
+        // appear to have wedged, and the only way out would be to find the process.
+        let harness = Harness()
+        let answer = Locked<Response?>(nil)
+        let done = awaitingDictation(harness, timeout: 0.2, answer)
+
+        #expect(done.wait(timeout: .now() + 5) == .success)
+        let response = try #require(answer.value)
+        #expect(response.text == nil, "a timeout produced text")
+        #expect(response.kind == .noop)
+        #expect(harness.daemon.isAwaitingDictation == false)
+    }
+
+    @Test("a second caller is refused rather than handed somebody else's sentence")
+    func onlyOneClaimAtATime() throws {
+        // Two scripts each expecting "the next thing the user says" cannot both be right, and
+        // silently giving one of them the other's words is the worst available answer.
+        let harness = Harness()
+        let answer = Locked<Response?>(nil)
+        let done = awaitingDictation(harness, answer)
+
+        let second = harness.send(Request(cmd: .dictate, timeout: 5))
+        #expect(second.kind == .rejected)
+        #expect(second.text == nil)
+        #expect(second.message?.contains("already waiting") == true)
+
+        _ = harness.dictate()
+        #expect(done.wait(timeout: .now() + 5) == .success)
+        #expect(answer.value?.text != nil, "the first caller lost its claim to the refused one")
+    }
+
+    @Test("a waiting caller is what lets a dictation start in front of an open picker")
+    func aClaimLiftsThePickerRefusal() throws {
+        // D24 answered rather than overridden: it refuses because the words would land in the pane
+        // BEHIND the dialog. With a caller waiting they have somewhere else to go.
+        let harness = Harness()
+        #expect(harness.send(Request(cmd: .start, focus: true)).kind == .accepted)
+        #expect(harness.resolver.lastAllowedPicker == false)
+        harness.send(Request(cmd: .abort))
+
+        let answer = Locked<Response?>(nil)
+        // A short wait deliberately: this claim is never satisfied, so the thread serving it lives
+        // until it expires. Five seconds here would put five seconds on every run of the only gate
+        // this project has, and a slow gate is one that gets run less often.
+        let done = awaitingDictation(harness, timeout: 0.2, answer)
+        #expect(harness.send(Request(cmd: .start, focus: true)).kind == .accepted)
+        #expect(harness.resolver.lastAllowedPicker == true)
+
+        harness.send(Request(cmd: .abort))
+        #expect(done.wait(timeout: .now() + 5) == .success)
+    }
+
     @Test("a start with no session id is refused rather than guessed at")
     func startWithoutSessionIsRefused() {
         // `dictactl` will not send this, but a hand-typed frame can, and inventing a session would

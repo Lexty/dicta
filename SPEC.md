@@ -1,8 +1,8 @@
 # SPEC — dicta
 
-Voice dictation into **agterm**'s input line: press a chord, speak, press again, the text appears
-where you were typing. Its first purpose is dictating prompts to Claude Code and instructions to
-agents running inside agterm.
+Voice dictation into **agterm**'s input line: hold a key, speak, let go, the text appears where you
+were typing. Its first purpose is dictating prompts to Claude Code and instructions to agents
+running inside agterm.
 
 **English only, across the whole project, with no exceptions** — code, comments, documentation,
 commit messages, notifications, client output, test names, and `NSMicrophoneUsageDescription`, which
@@ -12,7 +12,7 @@ into a judgement call about which side of the line it falls on, and it disarms t
 check available — `grep -rP '[\x{0400}-\x{04FF}]'` is only a gate when there is nothing legitimate
 for it to find. Conversation about this project is in Russian; the repository is not.
 
-Status: **steps 1–3 of §10 are implemented; steps 4 and 5 are not.** The delivery path, the
+Status: **steps 1–3 of §10 are implemented; steps 4, 5 and 6 are not.** The delivery path, the
 microphone, the signed bundle the TCC grant attaches to, the warm Parakeet recogniser, the
 append-only record and the Tier 0 replacement dictionary all exist and are tested; the `Filter` seam
 ships as a pass-through and nothing invokes a subprocess (D9c). What steps 1–3 still owe is the part
@@ -27,7 +27,7 @@ survives in git as commit `3dda6cb` and is cited below only where it produced a 
 
 ## 1. What it is, and what it is not
 
-dicta is a reflex, not an application. Press, speak, press, the words are there.
+dicta is a reflex, not an application. Hold, speak, let go, the words are there.
 
 **Not** a meeting transcriber (that is `acta`). **Not** voice control of the computer — no "open
 Safari". **Not** a speech-to-shell-command translator. **Not** a cloud service, an account, or a
@@ -54,8 +54,9 @@ two sentences would fire off half-written.
 Every term below has exactly one meaning in this document. Most of the contradictions in the first
 draft of this spec existed because these words carried several.
 
-**Attempt** — one press-to-press cycle, identified by a monotonic id that is never reused. An
-attempt exists from the moment recording starts, whether or not it ever produces text.
+**Attempt** — one dictation, identified by a monotonic id that is never reused: hold-to-release
+under D5's hold trigger, press-to-press under its toggle one. An attempt exists from the moment
+recording starts, whether or not it ever produces text.
 
 **Target** — the destination of an attempt's text: an agterm **session id** plus a **pane**. See §5
 for how each half is determined and how they differ in accuracy.
@@ -110,25 +111,44 @@ first. Measured throughput (F1) is what makes that preference affordable rather 
 three-minute utterance decodes in ~0.7–1.6 s. This does **not** claim streaming has no benefit; its
 benefit is earlier feedback, and D13 declines that trade for v1 explicitly.
 
-**D2 — Recording stops only on an explicit chord. No silence detection.**
+**D2 — Recording stops only on an explicit act by the user. No silence detection.**
 The user deliberately pauses for several seconds to formulate, and may speak for three minutes
 without a break. Any VAD or end-of-utterance heuristic would cut mid-thought. This was the user's
-own call and is not open for re-litigation.
+own call and is not open for re-litigation. The explicit act is a key **release** under D5's hold
+trigger and a second **press** under its toggle one; what D2 forbids is the machine deciding that
+the user has finished, not any particular gesture for saying so.
 
-**D3 — Raw versus cleaned text is chosen by which chord STOPS the recording.**
+**D3 — Raw versus cleaned text is chosen by whatever STOPS the recording.**
 The mode does not affect capture, so it need not be decided in advance. It selects exactly one thing
-— whether the **filtered** stage runs (§2). This is also the mechanism for comparing the two: same
-dictation, two outcomes, one Shift apart.
+— whether the **filtered** stage runs (§2).
+
+The hold key always stops in **clean**, because the gesture that ends the recording is releasing the
+key that began it and one key cannot carry two meanings. raw therefore stays on `⌃⌥⇧D`. It stays
+*reachable* from a hold, which is what keeps §2's comparison alive: the mode belongs to the command
+that stops, not to the one that started, so a dictation begun by holding the key and ended by
+pressing that chord comes back unfiltered. The release that follows is silent by D23.
 
 **D4 — The target is captured at start, re-validated before injection, and never substituted.**
 Wandering to another session mid-sentence must not redirect the text. If the target is gone when
 text is ready, that is a delivery failure: notify, preserve the text, and do **not** aim at whatever
 has focus now, because that is somebody else's agent.
 
-**D5 — The trigger is an agterm keymap custom command, not a system hotkey.**
-`keymap.conf` supports `command "<name>" <chord> <shell...>`. This needs **no Accessibility grant
-and no global event monitor**. Consequence to accept: it fires on key *press*, so press-and-hold
-push-to-talk is impossible — which is what forces D2's toggle.
+**D5 — Two triggers: keymap chords that toggle, and one held key that dictates while it is down.**
+The chords are `keymap.conf`'s `command "<name>" <chord> <shell...>`, which needs **no Accessibility
+grant and no global event monitor**. What that mechanism cannot express is press-and-hold: it fires
+on key *press* only, and it rejects a chord without a modifier. Both halves of "one key, held" are
+outside it.
+
+The hold trigger is therefore not a keymap line but a loop inside the daemon, which reads the
+**state of the modifier keys** — `CGEventSource.flagsState`, 62 times a second — and treats one
+modifier going down and coming back up as start and stop. This is not a keystroke monitor and the
+distinction is the whole reason it is allowed: that source carries modifier state and nothing else,
+so macOS asks for no permission and no character the user types is observable by dicta even in
+principle (F6, F7). An earlier revision of this spec recorded press-and-hold as impossible and made
+it D2's reason for a toggle. That was never measured, and when it was, it was wrong.
+
+The key is **right Control**, told from left Control by the device-dependent bit the keyboard
+reports (F6). A modifier on purpose: a letter key repeats while it is held, a modifier does not.
 
 **D6 — Session identity comes from the keypress; the pane is resolved from live focus.**
 The installed agterm build does not export `$AGT_PANE` (F3), so the pane cannot come from the
@@ -220,6 +240,92 @@ Keystrokes already in the terminal cannot be recalled. Reporting a cancellation 
 watches being contradicted on screen would break property 2 more thoroughly than the failure it was
 trying to describe.
 
+**D21 — A hold shorter than the floor delivers nothing.**
+The hold key is a real modifier, so any combination the user types with it — right Control plus
+anything — is indistinguishable from a very short dictation to a source that sees modifier state and
+nothing else (D5). Duration is the only thing that separates them, and the two populations do not
+overlap: an ordinary press measures 90–150 ms (F6), a dictation is a person speaking. A hold under
+the floor therefore ends in `abort` rather than `stop` — the microphone opens for a moment and the
+attempt dies with no text, no injection and no sound. The floor is **not** a delay before recording
+begins: waiting it out would spend 300 ms of F4's budget on every real dictation in order to defend
+against a case that produces no text anyway.
+
+**D22 — The hold key does nothing unless agterm is the frontmost application.**
+A chord carries `$AGT_SESSION_ID` because agterm expanded it at the keypress; a global key carries
+nothing, so the session has to come from live focus — and live focus only means something while the
+user is looking at agterm. Holding the key in a browser would otherwise aim a dictation at whichever
+session agterm last had active, which is D4's forbidden substitution arriving through a new door.
+The frontmost application is read from `NSWorkspace.frontmostApplication` and matched on its
+**bundle identifier**, `com.umputun.agterm` — and the daemon must hold an observer on
+`NSWorkspace.didActivateApplicationNotification` for that reading to be live at all (F8a). Without
+one the value freezes at start-up, which is not a degraded answer but a confidently wrong one. `CGWindowListCopyWindowInfo` answers the same question
+without AppKit and was measured to agree (F8), but it answers it by proxy — the owner of the topmost
+layer-0 window — and it can only be matched on a display name. D22 asks which application is
+active, and `NSWorkspace` is the API that answers exactly that. Not frontmost is a **silent** no-op
+and not a rejection: the key means nothing there, and §6's rule is that a no-op is silent.
+
+**D29 — A caller can claim the next dictation's text instead of a pane getting it.**
+`dictactl dictate` blocks, the user dictates exactly as always, and the text is printed on **stdout**
+rather than typed anywhere. `PROMPT=$(dictactl dictate)` is the whole interface.
+
+It exists because of a gap that is not dicta's to close from the inside. agterm's native picker —
+the dialog the user's own custom commands open to collect a line — is a text field and not a
+terminal surface, so `session type` cannot reach it, and `pick --query` sets the query only at the
+moment the picker opens. There is no verb for "put this text into the picker that is already open".
+Asking agterm for one was considered and declined; the gap is closed here instead. A dictation aimed
+at a dialog therefore has to arrive **before** the dialog does, which means coming back to the
+script rather than going into a pane.
+
+**`returned`, never `injected`** (§9). No keystroke is sent and no input line is touched, and a
+record saying otherwise would be lying about the one thing it exists to be trusted on. Everything
+else about the attempt is unchanged: the dictionary runs, the filter runs in `clean`, and the
+sanitiser still runs last — the text is about to become another program's argument, and a newline
+there is a hazard in a different shape rather than no hazard.
+
+**stdout is data.** A timeout or a refusal goes to stderr and shows up as an exit code, never as a
+line of prose on stdout. Not tidiness: the output is spliced straight into a shell variable and from
+there into another program's argument, where a friendly "nobody dictated anything" does not read as
+an error — it reads as the thing the user said.
+
+**One claim at a time.** Two scripts each expecting "the next thing the user says" cannot both be
+right, and the second is refused rather than silently handed the other's sentence.
+
+**Bounded.** A script that asked and was then ignored must not wait for ever, or the user's chord
+appears to have wedged and the only way out is to find the process.
+
+**Served concurrently, and it must be** (§6). It waits for a person to speak, and the `start` and
+`stop` that produce what it is waiting for run through the same handler. Held under that lock it
+would be waiting for an event it was itself preventing — a deadlock, not a slowdown. It qualifies on
+the same grounds `abort` does, and on one more: it neither begins an attempt nor ends one.
+
+**It is what lifts D24's refusal.** That rule refuses to start in front of an open picker because
+the words would land in the pane behind it. With a caller waiting they have somewhere else to go, so
+the refusal has nothing left to protect — the exception is D24 answered rather than overridden.
+
+**D24 — A dictation does not begin while agterm's own picker is open.**
+D22 asks whether agterm is in front. It does not ask whether the thing in front is somewhere text
+can go, and the native picker is the case where those differ: it is agterm's own window, so a held
+key passes D22 and then delivers into the terminal **behind** the dialog — not where the user is
+looking, and with nothing on screen to say it went elsewhere. The tree names the pending picker
+(`pickPending`, window-scoped exactly as the tree is), so this costs nothing beyond the read that
+was happening anyway.
+
+A rejection, not a silent no-op, and the difference is intent: holding the key in front of a dialog
+means the user meant to dictate **into** it. §6's silence is for a key that meant nothing (D22).
+Refusing **before capture** is the part that matters most — refusing after would leave a lit
+microphone recording for a pane nobody can see.
+
+Typing into the picker is not something dicta can do today, and not for want of trying: `agtermctl
+pick` sets a query only when it *opens* the picker, and nothing sets the query of one already open.
+That is an agterm capability rather than a dicta one. Until it exists this is a refusal; when it
+exists, this decision becomes the place the delivery is described instead.
+
+**D23 — The hold key names the attempt it started, on the command that ends it.**
+The two triggers can be mixed inside one dictation — begin by holding, stop with `⌃⌥⇧D` to get raw
+(D3) — and the key is then released into a daemon that is already idle. A bare `stop` there is
+"nothing to stop": audible, and false. Carrying the attempt id from the `start` response turns it
+into §6's no-op naming a spent attempt instead — silent, which is what actually happened.
+
 ---
 
 ## 4. Measured facts
@@ -259,6 +365,80 @@ open.
 skeleton against a fish prompt, using a deliberately hostile canned transcript containing a newline
 and a double space: a single line with single spaces arrived, unsubmitted.
 
+**F6 — Modifier-key state is readable globally by an unprivileged process, and left is told from
+right.** Measured 2026-08-23 on this machine with a throwaway probe, against the user's external
+keyboard. `CGEventSource.flagsState(.combinedSessionState)` reported every press and every release
+with **no TCC prompt of any kind**, from a process with no window and no keyboard focus — the
+keystrokes went to agterm throughout. The device-dependent bits separate the sides: right Control
+`0x2000` against left Control `0x1`, right Command `0x10` against left Command `0x8`. That is what
+makes D5's key usable in a terminal where `⌃C` and `⌃R` are pressed all day with the other hand.
+`NSEvent.modifierFlags` reported **nothing** on the same events in the same process: AppKit's event
+state is empty without an `NSApplication`, which is why D5's loop is CoreGraphics and why the daemon
+needs no AppKit for it.
+
+The same run measured the other half of D21's floor by accident, which makes it better evidence than
+a designed test would have been — the user was pressing keys normally rather than performing a hold.
+Every press lasted **90–150 ms** (140, 110, 90, 150, 120, …). A 300 ms floor is twice the longest of
+them.
+
+Not established by that run: the reading was never exercised with a *different* application
+frontmost, and neither Caps Lock nor Fn appeared at all, so neither is a candidate key yet.
+
+**F7 — The hold loop costs about 0.03% of one core.** Measured 2026-08-23 as CPU time consumed over
+a fixed wall-clock window: 1.3 ms per 5 s at a 16 ms poll interval, 2.7 ms per 5 s at 8 ms — roughly
+0.9 CPU-seconds per hour at the interval D5 uses. This is process time and **not** energy: the timer
+wakeup count that Apple's "Energy Impact" is computed from was not measured.
+
+**F8 — The frontmost application is readable with no permission.** Measured 2026-08-23:
+`NSWorkspace.frontmostApplication` named the app, its bundle identifier and its pid, and
+`CGWindowListCopyWindowInfo` independently named the same owner and pid as the topmost layer-0
+window — from the same unprivileged process, while a *third* application was frontmost, which is
+what makes it a global read rather than a self-report. Only `kCGWindowName`, the window's title, is
+withheld without a Screen Recording grant, and D22 does not read titles.
+
+Unlike `NSEvent.modifierFlags` (F6), `NSWorkspace` **does** work in a process with no
+`NSApplication`. What that run did **not** establish, and what its wording implied, is corrected by
+F8a: a single read is always right, and it was tracking over time that had to be measured.
+
+**F8a — `NSWorkspace.frontmostApplication`, read from a background thread, is FROZEN unless the
+process has registered an observer on the workspace notification centre.** Measured 2026-08-23,
+twice: first inside the installed daemon, then in a purpose-built process shaped exactly like it —
+a background thread polling every 0.5 s while the main thread runs `RunLoop.main.run()` — with focus
+driven through three applications by `osascript` so the sequence is repeatable rather than clicked.
+
+| the process (every variant polls from a BACKGROUND thread) | result |
+|---|---|
+| no observer registered | **frozen**: one identifier for all 17 samples, across three switches |
+| one read on the main thread before the run loop starts, then no observer | **frozen**, identically |
+| an observer on `didActivateApplicationNotification` | **tracks every switch** |
+
+So a main-thread run loop is **necessary and not sufficient**, and priming it with a single
+main-thread read changes nothing. Without an observer the process never subscribes to the window
+server's activation notifications, and the value it hands back is whatever was frontmost when it
+first looked.
+
+**Not established, and the boundary of the claim above.** Every variant measured reads from a
+background thread, which is the shape dicta has and will keep — the poll loop is a real `Thread` by
+construction (62 wakeups a second do not belong on the main thread, and the sender blocks for the
+length of a whole dictation). A second session reports that a process whose **main** thread reads
+`frontmostApplication` repeatedly *while* pumping its own run loop tracks with no observer at all.
+That was not isolated and is not folded into the table. It would change the mechanism's name; it
+would not change the fix, because the observer is what makes the reading correct regardless of which
+thread performs it, and a fix that depended on somebody continuing to read from the right thread
+would be one keystroke from silently reverting.
+
+The failure has the worst available shape for D22: never `nil`, never obviously wrong, a plausible
+bundle identifier frozen at start-up. Had that been agterm — which it is, whenever the daemon is
+started from an agterm session — the hold key would have armed in **every** application, for ever,
+dictating into a terminal nobody was looking at. It was found by H12 and only because H12 insisted
+on sampling while a *different* application was frontmost; the obvious instrument, logging on each
+chord, cannot see it, because a chord is only ever pressed inside agterm.
+
+`CGWindowListCopyWindowInfo` tracks with no observer and is still not the answer. The same run
+measured the two disagreeing: with Finder frontmost and no Finder window open, it named a different
+application as the owner of the topmost layer-0 window. It answers a question next to D22's, not
+D22's.
+
 ---
 
 ## 5. Target identity
@@ -281,6 +461,18 @@ becomes the authority and this section is revised.**
 
 Requirements that follow:
 
+- **Under the hold trigger (D5), the session id is not keypress-accurate either.** Nothing expands
+  it for the daemon, so it comes from the tree: the session marked `active` inside the workspace
+  marked `active`, in the frontmost window. Both halves are then live focus shortly after the key
+  went down, and D22's frontmost check is what makes that reading mean anything at all.
+- **Both halves come from one READ of the tree, not two lookups.** The trigger sends a start asking
+  for focus and resolves nothing itself. Asking for the session and then letting the daemon resolve
+  the pane would spend a second `agtermctl` subprocess on the hot path — and, worse than the cost,
+  would assemble the target out of two moments that can disagree. One read is the only way the two
+  halves describe the same instant. The flag is explicit and a missing session never implies it:
+  `$AGT_SESSION_ID` expands to an empty string when unset, so "no session means use focus" would
+  turn a keymap line that has stopped matching the build into a chord that silently dictates
+  wherever focus happens to be.
 - If the tree does not name exactly one recognisable active pane for the session, the attempt does
   not start (D6).
 - Both halves are re-validated before injection. A target that no longer resolves is a delivery
@@ -290,14 +482,17 @@ Requirements that follow:
 
 ## 6. Interaction model
 
-| chord | idle | during an attempt |
+| trigger | idle | during an attempt |
 |---|---|---|
+| **right Control, held** | start, and record while it is down | release → clean → inject |
 | `⌃⌥D` | start | stop → clean → inject |
 | `⌃⌥⇧D` | start | stop → raw → inject |
 | `⌃⌥X` | — | abort |
 
-Both start chords are identical (D3). The keymap passes `$AGT_SESSION_ID` and `$AGT_SOCKET` and
-calls a single toggle verb (D7).
+The three chords are keymap lines passing `$AGT_SESSION_ID` and `$AGT_SOCKET` to a single toggle
+verb (D7). The held key is a loop inside the daemon (D5): it resolves its own target from live focus
+(§5), refuses to start unless agterm is frontmost (D22), and names its own attempt on the way out
+(D23). Every start path is otherwise identical, and the mode belongs to whatever stops (D3).
 
 ### States and what each command does in each
 
@@ -323,6 +518,9 @@ Rules that fall out of the table and must hold regardless of how it is read:
 - A command naming a spent attempt id is a no-op. Late callbacks from an abandoned attempt — capture
   confirming readiness after an abort, recognition returning after a cancel — never resurrect it.
 - A rejection is audible (`Basso`); a no-op is silent.
+- A release under D21's floor ends the attempt with **abort**, not stop. Nothing is delivered and
+  nothing is heard: a right-Control combination the user typed is not a dictation they are owed
+  feedback about.
 
 ### Feedback
 
@@ -359,6 +557,14 @@ Every row states: no injection unless said otherwise, a visible reason, and what
 | daemon crashed leaving a stale indicator | — | reset the known target's status when the daemon next starts |
 | second daemon instance attempted | — | refuse to start; a live socket means a live daemon |
 | abort during injection | — | refused (D20) |
+| hold key pressed while agterm is not frontmost | — | silent no-op; no attempt starts, no indicator, no sound (D22) |
+| hold shorter than the floor | — | the attempt is aborted rather than stopped: no text, no injection, no sound (D21) |
+| a caller waits for a dictation and nobody speaks | — | no text on stdout, the reason on stderr, and an exit code of its own; nothing is typed and no attempt is invented (D29) |
+| a second caller asks for the next dictation while one is already waiting | — | refused; the first keeps its claim and the second is told why, rather than being handed somebody else's sentence (D29) |
+| hold key pressed while agterm's own picker is open | — | refused **before** capture, so the microphone never opens; the reason names the picker (D24) |
+| hold key released after a chord already ended the attempt | — | no-op naming a spent attempt (D23); silent |
+| the active session cannot be read from the tree when the hold key goes down | — | nothing starts; notify, because the key did mean something and produced nothing |
+| the hold trigger is not armed, or its source reads nothing | — | the chords are unaffected and remain the whole interface. **This failure is silent by construction and that is stated rather than hidden**: `CGEventSource.flagsState` returns a word of flags and has no error channel, so "no modifier is down" and "this is not working" are the same answer. What exists instead is a startup line naming the armed key, and `--no-hold` to turn it off deliberately |
 
 A failing filter must never cost the user their words; that is why **replaced** is its fallback
 rather than an error.
@@ -384,6 +590,11 @@ Each must hold on **every** path, and each is worth a test that fails if it stop
    is two starts racing over one input device.
 10. **Recognised text, once produced, always reaches the record** before any injection is attempted,
     so a delivery failure cannot lose it.
+11. **The hold trigger reads modifier state and nothing else** — no key codes, no characters, no
+    event tap. This is what lets D5 hold without a permission, and it is a property of which API is
+    called, so no behavioural assertion can reach it.
+12. **A hold under D21's floor never injects.**
+13. **The hold trigger never starts an attempt while another application is frontmost** (D22).
 
 ---
 
@@ -395,7 +606,7 @@ One append-only local file, one entry per attempt, written before injection is a
 | field | notes |
 |---|---|
 | `id`, `at` | monotonic attempt id, timestamp |
-| `outcome` | one of: `injected`, `empty`, `capture-fault`, `recognition-failed`, `filter-fell-back`, `dictionary-degraded`, `target-gone`, `injection-failed`, `injection-partial`, `capped`, `aborted` |
+| `outcome` | one of: `injected`, `empty`, `capture-fault`, `recognition-failed`, `filter-fell-back`, `dictionary-degraded`, `target-gone`, `injection-failed`, `injection-partial`, `capped`, `aborted`, `returned` |
 | `mode` | `clean` or `raw` |
 | `recognised` | verbatim recogniser output; empty if recognition never happened |
 | `final` | what was injected, or would have been; empty if none was produced |
@@ -441,7 +652,18 @@ notification says the filter did not run, and the record's outcome is `filter-fe
 **Step 5 — the failure matrix.** *Done when:* every row of §7 has either an automated test or an
 entry in the manual checklist of §11 with its expected visible result recorded.
 
-Steps 1–3 need no decision from the user. Step 4 does.
+**Step 6 — push-to-talk.** The held key of D5, with its floor (D21), its frontmost guard (D22) and
+its own target resolution (§5).
+*Done when:* (a) holding right Control inside an agterm pane records while it is down and injects on
+release, with no chord pressed at any point; (b) a right-Control combination typed at ordinary speed
+leaves no record entry carrying text and injects nothing; (c) holding the key while another
+application is frontmost does nothing observable at all — no sound, no indicator, no record entry;
+(d) a dictation begun by holding the key and ended with `⌃⌥⇧D` injects raw text, and the key release
+that follows it is silent; (e) holding the key while one of the user's own commands has agterm's
+native picker open types **nothing** into the session behind it and says why (D24).
+
+Steps 1–3 need no decision from the user. Step 4 does. Step 6 chose right Control and push-to-talk
+only, with the chords kept as they are — that was the user's call on 2026-08-23.
 
 ---
 
