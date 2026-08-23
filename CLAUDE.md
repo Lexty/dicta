@@ -361,6 +361,17 @@ Distilled from SPEC.md §3. Each one is a mistake already made, or one the spec 
   that resolves nothing.
 - **A config file never blocks a dictation** (§7). A missing or malformed dictionary skips the
   offending rules, applies the rest, and notifies once.
+- **`docs/replacements.example.conf` carries its own expectations, and they are executed.** Lines
+  reading `# check | <what was recognised> | <what the book must produce>` are comments to the
+  parser and assertions to `test: every check line in the example dictionary produces what it
+  claims`. They exist because the cascade fails in a way reading cannot catch — a rule above
+  rewrites the sentence a rule below was written for, and both still look right on the page; the
+  dead-rule test only covers a rule that cannot fire on its **own** pattern. Two rules of the file
+  itself: a pattern that is also an ordinary Russian word is a `misfire` waiting for a sentence — so
+  two garbles observed in the record have no rule on purpose, and the file says which and why — and
+  a pattern with no Cyrillic in it cannot be added at all — `test: the example dictionary that ships
+  parses with no problems` requires one, so recogniser garbles that come back in pure Latin
+  (`n-to-end` for "end-to-end") have no rule available and are a known gap rather than an oversight.
 - **No model load on the attempt path, ever** (D10, normative). The models are loaded once at daemon
   start and the transcriber refuses rather than loading if nobody prepared it — loading on demand
   "to be helpful" would satisfy the chord and break D10 in the same motion, invisibly. The one

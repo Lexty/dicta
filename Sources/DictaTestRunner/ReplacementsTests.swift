@@ -365,8 +365,12 @@ struct ReplacementsTests {
         #expect(book.problems.isEmpty, "the shipped example is degraded: \(trouble)")
         #expect(book.rules.count >= 5)
         #expect(Set(book.rules.map(\.id)).count == book.rules.count)
-        // Every rule replaces Cyrillic with something Latin: that is what Tier 0 is FOR (D9a), and
-        // an example that showed anything else would teach the wrong workflow.
+        // Every rule matches Cyrillic and replaces it with something: that is what Tier 0 is FOR
+        // (D9a), and an example that showed anything else would teach the wrong workflow. What is
+        // deliberately NOT asserted is that the replacement is Latin. It was, while the file held
+        // nothing but names; the vocabulary added on 2026-08-23 also repairs mishearings whose
+        // correct form is still Russian -- a garbled string that is no word at all, put back to the
+        // word the user said -- and a check demanding Latin would forbid exactly those.
         for rule in book.rules {
             #expect(rule.pattern.contains { $0.isCyrillic }, "rule \(rule.id) has no Cyrillic")
             #expect(!rule.replacement.isEmpty, "rule \(rule.id) deletes text")
@@ -390,6 +394,46 @@ struct ReplacementsTests {
             #expect(result.applied.fired.contains(rule.id),
                     "rule \(rule.id) never fires on its own pattern — an earlier rule ate it")
         }
+    }
+
+    /// What marks a line in the shipped file as an expectation rather than prose.
+    static let checkPrefix = "# check \(Replacements.separator)"
+
+    @Test("every check line in the example dictionary produces what it claims")
+    func exampleFileChecksHold() throws {
+        // The file carries its own expectations, written as
+        //
+        //     # check | <what the recogniser said> | <what the book must turn it into>
+        //
+        // which is a comment to the parser and an assertion here. `exampleFileHasNoDeadRules`
+        // above catches only the case where a rule cannot fire on its OWN pattern; the cascade's
+        // other failure -- a rule rewriting the sentence a later rule was written for, with both
+        // rules still looking correct on the page -- needs a whole sentence to show up in. Every
+        // check line runs through the whole book in file order, so what is pinned here is the
+        // behaviour of every rule with the rest of the book in front of it.
+        let text = try String(contentsOf: Self.exampleFile, encoding: .utf8)
+        let book = Replacements.parse(text, version: "example")
+        var checks = 0
+        for (index, raw) in text.split(omittingEmptySubsequences: false,
+                                       whereSeparator: \.isNewline).enumerated() {
+            let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard line.hasPrefix(Self.checkPrefix) else { continue }
+            let fields = line.dropFirst(Self.checkPrefix.count)
+                .split(separator: Replacements.separator, maxSplits: 1,
+                       omittingEmptySubsequences: false)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+            guard fields.count == 2, !fields[0].isEmpty else {
+                #expect(Bool(false), "line \(index + 1): a check needs an input and an output")
+                continue
+            }
+            checks += 1
+            let result = Replacements.apply(book, to: fields[0])
+            #expect(result.text == fields[1],
+                    "line \(index + 1): the book turned \"\(fields[0])\" into \"\(result.text)\"")
+        }
+        // A file that quietly lost its checks would leave this test green and asserting nothing --
+        // the same shape as a test bundle that builds and never runs (D18).
+        #expect(checks >= 10, "the example file has stopped carrying its own checks")
     }
 
     @Test("the example file's commented-out misfire rule is a rule, not prose")
