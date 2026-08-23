@@ -158,6 +158,55 @@ struct AudioCaptureTests {
         #expect(MicrophoneAccess(.notDetermined) == .undetermined)
     }
 
+    @Test("a prepared engine is reused only for the device it was built against")
+    func preparedEngineIsReusedOnlyForItsOwnDevice() {
+        // The rule that makes building an engine ahead of the chord safe. An engine prepared for
+        // the built-in microphone and started after AirPods arrived is the failure this exists to
+        // refuse: it either will not start -- costing the user a dictation they have already
+        // spoken -- or records something nobody checked the format of.
+        let built = InputDeviceIdentity(deviceID: 42, sampleRate: 48_000)
+        #expect(AudioCapture.reusesPrepared(prepared: built, current: built))
+        #expect(!AudioCapture.reusesPrepared(
+            prepared: built, current: InputDeviceIdentity(deviceID: 43, sampleRate: 48_000)))
+        // The same device at a different rate is the AirPods case: the id can survive a route
+        // change that the sample rate does not.
+        #expect(!AudioCapture.reusesPrepared(
+            prepared: built, current: InputDeviceIdentity(deviceID: 42, sampleRate: 16_000)))
+    }
+
+    @Test("an unreadable device is never a match, on either side of the question")
+    func preparedEngineRefusesWhatItCannotVerify() {
+        // `InputDeviceIdentity.current` answers `nil` when CoreAudio will not say. Reading that as
+        // "no change" would reuse an engine precisely when the machine is least able to describe
+        // itself, which is the wrong way round: 34 ms is the cost of being careful here, and a
+        // dictation is the cost of being wrong.
+        let built = InputDeviceIdentity(deviceID: 42, sampleRate: 48_000)
+        #expect(!AudioCapture.reusesPrepared(prepared: built, current: nil))
+        #expect(!AudioCapture.reusesPrepared(prepared: nil, current: built))
+        #expect(!AudioCapture.reusesPrepared(prepared: nil, current: nil))
+    }
+
+    @Test("prewarming a denied microphone opens nothing and changes no answer")
+    func prewarmingWithoutAGrantIsANoOp() throws {
+        // The preparation path is the one place in this file that touches AVAudioEngine without a
+        // chord having been pressed, so it asks TCC first for the same reason `begin` does: a
+        // denied device must not be opened, and the attempt that follows must still fault with the
+        // grant as its reason rather than with anything the preparation went and discovered.
+        let capture = AudioCapture(access: { .denied })
+        capture.prewarm()
+        let events = Events()
+
+        capture.begin(attempt: 7) { events.append($0) }
+
+        guard case let .fault(_, kind, reason) = try #require(events.all.first) else {
+            Issue.record("a denied microphone must fault whether or not anything was prewarmed")
+            return
+        }
+        #expect(events.all.count == 1)
+        #expect(kind == .denied)
+        #expect(reason == FaultReason.denied)
+    }
+
     @Test("a denied microphone faults immediately and never announces readiness")
     func deniedFaultsWithoutOpeningTheDevice() throws {
         // Before the engine is touched: opening a denied device yields a running engine feeding

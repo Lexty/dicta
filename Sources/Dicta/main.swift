@@ -216,6 +216,12 @@ capture.requestAccessIfNeeded { access in
         log("dicta cannot record until the microphone is granted in System Settings > Privacy & "
             + "Security > Microphone")
     }
+    // The first chord would otherwise build its own engine, and building one costs ~34 ms of the
+    // interval between the keypress and a live microphone (F4). Here rather than at construction
+    // because it is only legal once the microphone is granted, and this callback is where that is
+    // first known. Nothing is started and no indicator lights: a prepared engine is not a running
+    // one, which is the measurement that makes this allowed at all.
+    if access == .granted { capture.prewarm() }
 }
 
 // SIGTERM is what a LaunchAgent sends on unload, and SIGINT is what `Scripts/run.sh` gets from a
