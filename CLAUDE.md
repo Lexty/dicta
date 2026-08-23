@@ -149,20 +149,31 @@ testing.linker` to the `DictaTests` target — otherwise the failing test cannot
   `AGT_SESSION_ID`, `AGT_SESSION_NAME`, `AGT_SESSION_PWD`, `AGT_WORKSPACE_ID`, `AGT_WORKSPACE_NAME`,
   `AGT_WINDOW_ID`, `AGT_WINDOW_NAME`, `AGT_SELECTION`, `AGT_SOCKET`. The pane therefore comes from
   the live tree, not from the keypress (D6, §5).
-- **F4 — warm keypress cost, client invocation → "recording": 155–252 ms** (min 155.8, median
-  180.0, p90 229.1, max 252.5 over 10 consecutive warm attempts, `Scripts/measure.sh` against the
-  installed release build, 2026-08-18). The budget in SPEC §10 is 150 ms and **every one of the ten
-  attempts missed it**.
-  The number this file used to carry — 20–70 ms — was measured on the deleted skeleton `3dda6cb`,
-  **whose capture was a fake**: that build never opened the microphone, so the figure described the
-  path with its expensive part removed, and the 150 ms budget was calibrated against it. The lesson
-  is D18's in another costume — a measurement is only about the path it actually ran through.
-  Where the time goes, measured the same day: socket round trip 0–20 ms, `agtermctl tree --json`
-  ~10 ms (the old note said 38 ms), `window list --json` ~10 ms. The rest is `capture.begin`
-  building `AVAudioEngine`, touching `inputNode`, installing the tap and calling `engine.start()` —
-  all synchronous, all before the daemon answers, because the daemon does the work before it
-  replies. Holding a warm engine open between attempts would buy it back and is refused: a
-  permanently lit microphone indicator is not a trade this project makes.
+- **F4 — the warm keypress interval has TWO endpoints, ~35 ms apart, and a figure without its
+  endpoint is not a measurement.** Chord → live microphone ~95 ms; chord → lit indicator, which is
+  what `Scripts/measure.sh` scores because it times the whole `dictactl` invocation, median **122
+  ms** (p90 132, p95 145, worst of 120 attempts 158; 12 runs of 10 warm attempts on `4c2ac7c`,
+  2026-08-23). SPEC §10's budget is 150 ms and §10 (a) does not say which endpoint it means — see
+  F4 in SPEC.md, which now states that as an open decision rather than an answered one.
+  Medians of the phases, measured the same day with per-phase instrumentation inside the installed
+  LaunchAgent build over 26 attempts (instrumentation reverted): `dictactl` process + socket ~20,
+  resolving the target ~30, `engine.start()` ~40, the "listening" indicator ~35. **Two of the four
+  are `agtermctl` subprocesses, and the indicator runs after the microphone is already live** —
+  D13 requires that order, which is what splits the interval in two.
+  **Withdrawn: "the rest is `capture.begin`".** This file said so on 2026-08-18 and it was false —
+  `capture.begin` was 66–80 ms of ~165 (`inputNode` ~29, `installTap` ~5, `start()` ~39). `4c2ac7c`
+  moved the first two off the chord path by building the engine in advance, which is allowed because
+  a **prepared** engine is not a running one: measured on
+  `kAudioDevicePropertyDeviceIsRunningSomewhere`, `inputNode`, `installTap` and `prepare()` all
+  leave the device `false` and only `start()` sets it. Holding a **started** engine warm between
+  attempts is still refused — a permanently lit microphone indicator is not a trade this project
+  makes, and that refusal was never what cost the 34 ms.
+  The number this file carried before all of it — 20–70 ms — was measured on the deleted skeleton
+  `3dda6cb`, **whose capture was a fake**: that build never opened the microphone, so the figure
+  described the path with its expensive part removed, and the 150 ms budget was calibrated against
+  it. The lesson is D18's in another costume — a measurement is only about the path it actually ran
+  through, which is also why the 2026-08-18 entry was wrong: it attributed the whole interval to the
+  one component nobody had timed separately.
 - **F2 — `claude -p` costs 8.6–10.5 s of fixed startup** per invocation. It cannot be the filter,
   which is why v1 ships the seam empty (D9c).
 - **Recognition, measured on this machine (M3 Pro) with a throwaway probe in Task 10, since no unit

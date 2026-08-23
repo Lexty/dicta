@@ -437,20 +437,47 @@ quality was fine.
 `AGT_SESSION_PWD`, `AGT_WORKSPACE_ID`, `AGT_WORKSPACE_NAME`, `AGT_WINDOW_ID`, `AGT_WINDOW_NAME`,
 `AGT_SELECTION`, `AGT_SOCKET`. The skill documentation describes a newer build.
 
-**F4 — Warm keypress cost, client invocation to "recording": 155–252 ms on the real path.**
-Measured 2026-08-18 by `Scripts/measure.sh` against the installed release build, 10 consecutive warm
-attempts: min 155.8, median 180.0, p90 229.1, max 252.5 ms. Components measured separately the same
-day: the socket round trip 0–20 ms, `agtermctl tree --json` ~10 ms, `agtermctl window list --json`
-~10 ms — so the great majority of the interval is inside `capture.begin`, which constructs
-`AVAudioEngine`, touches `inputNode` (initialising the HAL), installs the tap and calls
-`engine.start()` synchronously before the daemon answers.
+**F4 — Warm keypress cost. The interval has TWO endpoints and they differ by ~35 ms, so a figure
+without its endpoint is not a measurement.** Chord to a live microphone: ~95 ms. Chord to the lit
+indicator, which is also what `Scripts/measure.sh` scores because it times the whole `dictactl`
+invocation: median **122 ms**, p90 132, p95 145, worst of 120 attempts 158 (measured 2026-08-23 on
+`4c2ac7c`, 12 runs of 10 warm attempts each).
 
-The earlier figure recorded here — 20–70 ms, client alone 9 ms, `agtermctl tree --json` 38 ms, cold
-start ~390 ms — was measured on the deleted step-1 skeleton, **whose capture was a fake**. That build
-never opened the microphone, so the number described a path with the expensive part missing. It is
-kept above because §10's 150 ms budget was calibrated against it, and the budget is therefore
-currently **not met**: all 10 attempts exceeded it. Whether to move the budget or to move the cost is
-open.
+Where the time goes, measured 2026-08-23 with per-phase instrumentation inside the installed
+LaunchAgent build over 26 warm attempts (the instrumentation was reverted; the numbers are medians):
+
+| phase | ms |
+|---|---|
+| `dictactl` process start + socket round trip | ~20 |
+| resolving the target (`agtermctl`) | ~30 |
+| `capture.begin` — `engine.start()` | ~40 |
+| the "listening" indicator (`agtermctl`) | ~35 |
+
+Two of those four are agterm subprocesses, and the indicator runs **after** the microphone is
+already live — which is what splits the interval in two. D13 requires that order: nothing is
+announced until capture confirms.
+
+**Withdrawn: that the great majority of the interval is inside `capture.begin`.** This entry said so
+on 2026-08-18, and it is false. `capture.begin` measured 66–80 ms of ~165 — `engine.inputNode` ~29,
+`installTap` ~5, `engine.start()` ~39. Only the last has to happen while the user waits, and
+`4c2ac7c` moved the other two off the chord path by building the engine in advance. That is allowed
+because it was measured rather than assumed: reading
+`kAudioDevicePropertyDeviceIsRunningSomewhere` on the default input device shows `false` through
+`inputNode`, `installTap` and `prepare()`, and only `engine.start()` sets it — a prepared engine
+lights no microphone indicator. Holding a *started* engine warm between attempts stays refused.
+
+The figures this entry carried before: 155–252 ms (2026-08-18, min 155.8, median 180.0, p90 229.1,
+max 252.5, ten attempts out of ten over budget) for the build without a prepared engine; and, before
+that, 20–70 ms measured on the deleted step-1 skeleton **whose capture was a fake**. That build never
+opened the microphone, so the number described a path with its expensive part missing — and §10's
+150 ms budget was calibrated against it, which is the origin of the whole discrepancy.
+
+**Against the later endpoint the budget is still not met, but the failure is now marginal**: 9 of 12
+runs had all ten attempts under 150 ms, 4 of 120 attempts were over, and those four were 153.5,
+156.3, 156.6 and 157.9 — the worst case in 120 attempts exceeds the budget by 5%. Before `4c2ac7c`
+the *best* attempt of ten was 152.3. Whether to move the budget, to name the earlier endpoint in
+§10, or to spend one of the two remaining `agtermctl` subprocesses, is open and is the user's
+decision.
 
 **F5 — Injection into a terminal input line works and does not submit.** Verified live on the
 skeleton against a fish prompt, using a deliberately hostile canned transcript containing a newline
@@ -748,7 +775,14 @@ then deleted.)*
 
 **Step 2 — microphone and models.** Signed bundle, TCC grant, capture converted to 16 kHz mono,
 recogniser warm at daemon start.
-*Done when:* (a) keypress-to-recording measured under 150 ms warm, over 10 consecutive attempts;
+*Done when:* (a) keypress-to-recording measured under 150 ms warm, over 10 consecutive attempts —
+and **the criterion as written does not say which end of that interval it means**, which F4 shows is
+a ~35 ms difference: the microphone is live before §6's indicator is lit, and D13 requires that
+order. `Scripts/measure.sh` scores the later endpoint, because it times the whole `dictactl`
+invocation and the daemon answers only after announcing. Against that endpoint the state on
+2026-08-23 is 9 runs of 12 clean, 4 attempts of 120 over, worst 158 ms; against the earlier one
+every attempt is inside the budget. Naming the endpoint is a decision this spec has not taken, and
+until it does, "(a) is met" is not a statement with one meaning;
 (b) a 20-second dictation in Russian containing at least two English technical terms produces text
 whose meaning the user judges correct, and the record shows `recognised` non-empty; (c) stop-to-
 injection for a 60-second utterance measured under 2 s; (d) the TCC grant survives a rebuild and

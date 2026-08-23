@@ -152,16 +152,25 @@ counts as a pass, so two people scoring it agree.
   unsubmitted.
 - **H5 — step 2 (a): keypress to recording under 150 ms, warm.** `bash Scripts/measure.sh` — 10
   attempts by default after one discarded warm-up, each ended with `abort`, so it types nothing into
-  a pane. Pass: every one of
-  10 consecutive attempts reports client-invocation → "recording" under **150 ms**, with the daemon
-  already running and its models already loaded. Fail: any attempt over the budget, or a run whose
-  first attempt is an outlier because the daemon was cold — that is a measurement of the wrong
-  thing, so restart it rather than averaging it away. **Scored once and FAILED**, 2026-08-18: min
-  155.8, median 180.0, p90 229.1, max 252.5 ms — ten attempts out of ten over budget. F4 now carries
-  those numbers and explains why the earlier 20–70 ms described a build with a fake microphone in
-  it. Re-scoring this item is only meaningful after the budget or the cost has moved; until one of
-  them does, the honest state of criterion (a) is failed. The script's own exit status carries the verdict — non-zero when either criterion
-  misses — so the PASS/FAIL line is not the only place a missed budget is visible.
+  a pane. Pass: every one of 10 consecutive attempts reports client-invocation → "recording" under
+  **150 ms**, with the daemon already running and its models already loaded. Fail: any attempt over
+  the budget, or a run whose first attempt is an outlier because the daemon was cold — that is a
+  measurement of the wrong thing, so restart it rather than averaging it away. The script's own exit
+  status carries the verdict — non-zero when either criterion misses — so the PASS/FAIL line is not
+  the only place a missed budget is visible.
+  **Scored twice, and still FAILED — but read F4 before re-scoring, because what the script measures
+  is not the only reading of the criterion.**
+  *2026-08-18, before the prepared capture engine:* min 155.8, median 180.0, p90 229.1, max 252.5 —
+  ten attempts out of ten over budget.
+  *2026-08-23, on `4c2ac7c`:* 12 runs of 10. Nine runs had every attempt under the budget; 4 attempts
+  of 120 were over, at 153.5, 156.3, 156.6 and 157.9 ms; pooled median 122.1, p90 132.1, p95 145.1,
+  min 97.8. The failure is now marginal rather than systematic — the worst of 120 attempts exceeds
+  the budget by 5%, where before the *best* of ten missed it by more — but the criterion says every
+  attempt, and three runs in twelve had one that did not.
+  Re-scoring is meaningful again only if the cost moves or the budget does. What is NOT a way to move
+  it: taking §6's indicator off the path before the daemon answers. That would cut ~35 ms from what
+  this script reports without the indicator appearing one millisecond sooner, which is scoring the
+  scorer rather than the tool.
 - **H6 — step 2 (b): a real Russian dictation with English terms in it is understood.** Dictate
   roughly 20 seconds of Russian containing **at least two** English technical terms, on this user's
   own microphone and in this user's own voice — the Task 10 probe used synthesised speech and a
