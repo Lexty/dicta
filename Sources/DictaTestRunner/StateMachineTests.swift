@@ -159,7 +159,7 @@ struct StateMachineTests {
         }
     }
 
-    @Test("recording + abort: cancels")
+    @Test("recording + abort: cancels, and the audio is kept for the record")
     func recordingAbort() {
         var machine = Self.machine(in: .recording)
         let id = machine.currentAttempt!.id
@@ -167,7 +167,11 @@ struct StateMachineTests {
 
         #expect(result.outcome == .accepted)
         #expect(result.state == .idle)
-        #expect(result.effects.contains(.discardCapture(id)))
+        // D26: kept, not thrown away. The user cancelled the DELIVERY -- the speaking already
+        // happened into an open microphone. `retainCapture` is emitted only by `cancel`, which has
+        // just set `.idle`, so there is no attempt left for the text to be delivered into.
+        #expect(result.effects.contains(.retainCapture(id)))
+        #expect(!result.effects.contains(.discardCapture(id)))
         #expect(!result.injects)
     }
 
@@ -197,7 +201,7 @@ struct StateMachineTests {
         #expect(machine.captureDrained(id).effects == [.transcribe(id, .clean)])
     }
 
-    @Test("draining + abort: cancels")
+    @Test("draining + abort: cancels, and does not race the drain already in flight")
     func drainingAbort() {
         var machine = Self.draining()
         let id = machine.currentAttempt!.id
@@ -205,7 +209,12 @@ struct StateMachineTests {
 
         #expect(result.outcome == .accepted)
         #expect(result.state == .idle)
-        #expect(result.effects.contains(.discardCapture(id)))
+        // `retainDrainingCapture`, NOT `retainCapture`: a drain is already running and two of them
+        // race for one buffer, since `take` hands a recording to exactly one thread. This effect
+        // only says where the audio belongs when it arrives (D26).
+        #expect(result.effects.contains(.retainDrainingCapture(id)))
+        #expect(!result.effects.contains(.retainCapture(id)))
+        #expect(!result.effects.contains(.discardCapture(id)))
         #expect(!result.injects)
     }
 
@@ -511,7 +520,10 @@ struct StateMachineTests {
         let result = machine.fault(id, reason: "capture failed while stopping")
 
         #expect(result.notifications == ["capture failed while stopping"])
-        #expect(result.effects.contains(.discardCapture(id)))
+        // The audio is kept for the record under D26 and STILL never injected, which is the half
+        // invariant 7 is about. A doubtful buffer decoding into nonsense is a line in a journal;
+        // what D16 forbids is that nonsense reaching a terminal, and `!injects` is that assertion.
+        #expect(result.effects.contains(.retainDrainingCapture(id)))
         #expect(!result.injects)
 
         var empty = Self.machine(in: .processing)

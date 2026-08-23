@@ -164,6 +164,12 @@ public final class Daemon: @unchecked Sendable {
         /// filter having fallen back (§7), or the dictionary being degraded (Task 11). Kept as
         /// a value rather than a flag because §9's `outcome` is one field with eleven values.
         var degraded: AttemptOutcome?
+        /// §9's speech window (D25). On the DRAFT rather than passed to `append`, because `append`
+        /// is the one place a line reaches the record whichever route produced it -- so a
+        /// superseding line carries the window for free, and cannot be the one route that drops it.
+        var speechStartedAt: Date?
+        var speechEndedAt: Date?
+        var audioSeconds: Double?
     }
 
     public let configuration: Configuration
@@ -187,6 +193,9 @@ public final class Daemon: @unchecked Sendable {
     /// a time: two scripts each expecting "the next thing the user says" cannot both be right, and
     /// the second is refused rather than silently handed somebody else's sentence.
     private var claim: Claim?
+    /// **Guarded by `stateLock`.** Attempts whose audio belongs to the record and to nothing else
+    /// (D26), because they were cancelled, capped or faulted after the microphone had opened.
+    private var journalling: Set<AttemptID> = []
     /// The audio of the attempt being processed, held in RAM and nowhere else (D14).
     private var drained: (attempt: AttemptID, audio: Audio)?
     /// **final** for the attempt about to be injected -- already replaced, already filtered or
@@ -622,6 +631,16 @@ public final class Daemon: @unchecked Sendable {
         case let .discardCapture(id):
             capture.discard(attempt: id)
             forget(id)
+        case let .retainCapture(id):
+            // Marked BEFORE the drain, because the real `AudioCapture` hands the audio over from
+            // inside `drain` -- synchronously, re-entering `receive` before this line returns. A
+            // mark set afterwards would arrive after the audio it is supposed to route (D26).
+            beginJournalling(id)
+            capture.drain(attempt: id)
+        case let .retainDrainingCapture(id):
+            // No `drain` call: one is already in flight and two race for the same buffer. This
+            // only says where the audio belongs when it arrives.
+            beginJournalling(id)
         case let .transcribe(id, mode):
             recognise(id, mode: mode, aimedAt: target)
         case let .inject(id, injectionTarget):
@@ -635,22 +654,109 @@ public final class Daemon: @unchecked Sendable {
         }
     }
 
+    /// Attempts whose audio, when it arrives, belongs to the record and to nothing else (D26).
+    ///
+    /// A set rather than a flag: a cancelled attempt's drain can still be in flight while the next
+    /// attempt is already recording, and routing the wrong buffer into the journal would attribute
+    /// one dictation's words to another's line.
+    private func beginJournalling(_ id: AttemptID) {
+        stateLock.withLock { _ = journalling.insert(id) }
+    }
+
+    private func endJournalling(_ id: AttemptID) {
+        stateLock.withLock { journalling.remove(id) }
+    }
+
+    private func isJournalling(_ id: AttemptID) -> Bool {
+        stateLock.withLock { journalling.contains(id) }
+    }
+
     /// What capture reports, on capture's own thread.
     private func receive(_ event: CaptureEvent) {
+        // Before the switch, and it is the whole structural guarantee of D26: audio belonging to a
+        // cancelled attempt never reaches `apply` at all, so no transition exists that could carry
+        // it to `.inject`. The text cannot be delivered because no state machine event is ever
+        // raised for it -- not because a branch declines to.
+        if case let .drained(id, audio) = event, isJournalling(id) {
+            journalRecognise(id, audio: audio)
+            return
+        }
+        if case let .fault(id, _, _) = event, isJournalling(id) {
+            // The attempt is already over and already recorded. A fault on the way out has nothing
+            // left to report and no text to offer.
+            endJournalling(id)
+            return
+        }
         switch event {
         case let .ready(id):
+            // Before `apply`, which can run the whole tail of the attempt synchronously -- record
+            // line included. Capture confirming is the moment speech could first be collected, and
+            // it is the same instant D13 gates its announcement on (D25).
+            updateDraft(id) { $0.speechStartedAt = self.clock.now }
             apply(.captureReady(id))
         case let .drained(id, audio):
             // Stored before the event, because the `.transcribe` effect the event produces is
             // performed synchronously and needs it. Stored against the id, so a drain belonging to
             // an abandoned attempt cannot become the next attempt's audio.
             stateLock.withLock { drained = (id, audio) }
+            // Also before `apply`, and for the same reason. The buffer's own length travels with
+            // it: it is the measurement a moved clock cannot corrupt (D25).
+            updateDraft(id) {
+                $0.speechEndedAt = self.clock.now
+                $0.audioSeconds = audio.duration
+            }
             apply(.captureDrained(id))
         case let .fault(id, kind, reason):
             // Always discards, never injects (D16, invariant 6), and always worded as a hardware
             // fault rather than as silence (invariant 7) -- the reason travels from capture.
             faulted(id, kind: kind, reason: reason)
         }
+    }
+
+    /// Recognition for the record ONLY (D26): an attempt the user cancelled, one the cap ended, or
+    /// one a fault killed. The words were spoken into an open microphone and are in whatever else
+    /// was listening, so refusing to write them down does not unmake them -- it only makes them
+    /// unattributable, which is the harm rather than the protection.
+    ///
+    /// A real `Thread`, for the reason the whole of this project uses them: `transcribe` blocks on
+    /// a semaphore bridging FluidAudio's actor, and blocking a cooperative thread on Darwin's
+    /// non-overcommit pool is the deadlock CLAUDE.md records about the control socket. It also
+    /// keeps `abort` fast, which is the one verb served concurrently precisely so that a cancel is
+    /// decided at once (§6).
+    ///
+    /// Nothing here calls `apply`. That is deliberate and is D26's structural half.
+    private func journalRecognise(_ id: AttemptID, audio: Audio) {
+        let thread = Thread { [weak self] in
+            guard let self else { return }
+            defer { self.endJournalling(id) }
+            var text = ""
+            var note: String?
+            do {
+                let spoken = try self.transcriber.transcribe(audio)
+                // The same judgement the delivery path applies (§7): text too large to travel back
+                // through the socket must not be accepted into a record that promises
+                // `dictactl last` can read it out again.
+                if case let .text(usable) = RecognisedText.validate(spoken) {
+                    text = usable
+                } else {
+                    note = "the words spoken before this attempt ended could not be used"
+                }
+            } catch {
+                note = "the words spoken before this attempt ended could not be recognised: "
+                    + Self.reason(error)
+            }
+            // Written even when there is NO text, which is the part worth being deliberate about.
+            // `audioSeconds` is then the evidence that a recogniser looked at this buffer and heard
+            // nothing — as opposed to an entry from a build that never looked at all. Those two are
+            // different facts and a reader cannot tell them apart from a missing field.
+            //
+            // The note keeps the third case distinguishable from the second: a recogniser that
+            // FAILED did not establish silence, and an entry with a measured buffer and no text
+            // would otherwise claim it did.
+            self.recordLateRecognised(id, text, audioSeconds: audio.duration, note: note)
+        }
+        thread.name = "dicta.journal"
+        thread.start()
     }
 
     /// Every capture fault goes through here, whatever raised it: the device, the watchdog, or
@@ -945,7 +1051,11 @@ public final class Daemon: @unchecked Sendable {
     /// and text arriving a moment later is text they have already said they do not want; keeping it
     /// would put a cancelled utterance into the file `dictactl last` reads back.
     private static func keepsLateRecognisedText(_ outcome: AttemptOutcome) -> Bool {
-        outcome == .capped || outcome == .captureFault
+        // `aborted` joined this list under D26, and it is the reversal that decision exists to
+        // record: it used to refuse the text on the grounds that the user had asked for the
+        // dictation to be dropped. What they cancelled is the DELIVERY. The speaking already
+        // happened, into a microphone that was open, and anything else recording the room has it.
+        outcome == .capped || outcome == .captureFault || outcome == .aborted
     }
 
     /// Writes the line for an attempt that has ended, folding in text that arrived while it was
@@ -962,8 +1072,12 @@ public final class Daemon: @unchecked Sendable {
             // Unconditionally, including for an ending that refuses the text: it belongs to this
             // attempt, and this attempt is over.
             lateRecognised = nil
-            supersedable = keepsText ? Ending(draft: draft, outcome: ending.outcome) : nil
-            append(draft, outcome: ending.outcome)
+            // `append` resolves D25's open-ended window, and the resolved draft is what becomes
+            // supersedable -- otherwise a superseding line would recompute the end from a later
+            // clock and the two lines for one attempt would disagree about when the speaking
+            // stopped.
+            let resolved = append(draft, outcome: ending.outcome)
+            supersedable = keepsText ? Ending(draft: resolved, outcome: ending.outcome) : nil
         }
     }
 
@@ -975,31 +1089,57 @@ public final class Daemon: @unchecked Sendable {
     /// has not, in which case the text is parked and `appendEnding` folds it into the one line that
     /// is still to come. Without the lock the two could write in either order and the text-less
     /// line could land second, which is the loss this is here to prevent.
-    private func recordLateRecognised(_ id: AttemptID, _ text: String) {
+    private func recordLateRecognised(_ id: AttemptID, _ text: String,
+                                      audioSeconds: Double? = nil,
+                                      note: String? = nil) {
         appendLock.withLock {
             guard var written = supersedable, written.draft.id == id else {
-                lateRecognised = (id, text)
+                // Only text can be parked; a duration with nothing to supersede has no line to
+                // ride on, and inventing one would add an entry rather than correct one.
+                if !text.isEmpty { lateRecognised = (id, text) }
                 return
             }
             guard written.draft.recognised.isEmpty else { return }
             written.draft.recognised = text
+            if let note { written.draft.notes.append(note) }
+            // The buffer survived to be measured, which it does not on the path that discards it
+            // (D25, D26). Only ever filled in, never overwritten: a drained attempt already has it.
+            if let audioSeconds, written.draft.audioSeconds == nil {
+                written.draft.audioSeconds = audioSeconds
+            }
             supersedable = nil
             append(written.draft, outcome: written.outcome)
         }
     }
 
-    /// The one place a line reaches the record, whichever route produced the draft.
-    private func append(_ draft: Draft, outcome: AttemptOutcome) {
+    /// The one place a line reaches the record, whichever route produced the draft. Returns the
+    /// draft as written, which is not always the draft handed in: see D25's end time below.
+    @discardableResult
+    private func append(_ draft: Draft, outcome: AttemptOutcome) -> Draft {
+        var draft = draft
+        let at = clock.now
+        // An attempt that ended while the microphone was still collecting -- an abort, a fault,
+        // D15's cap -- has a start and no end: capture is told to discard AFTER this line is
+        // written, so nothing later can fill it in. These are exactly the outcomes that carry no
+        // text, where the window is the only evidence the attempt leaves (D25). `at` is the same
+        // instant and is already being read, which matters: an extra `clock.now` here would consume
+        // the one-shot a test uses to land a chord in the middle of this write.
+        if draft.speechStartedAt != nil, draft.speechEndedAt == nil {
+            draft.speechEndedAt = at
+        }
         let entry = RecordEntry(
             id: draft.id,
-            at: clock.now,
+            at: at,
             outcome: outcome,
             mode: draft.mode,
             recognised: draft.recognised,
             final: draft.final,
             rules: draft.rules,
             target: draft.target,
-            error: draft.notes.isEmpty ? nil : draft.notes.joined(separator: "; ")
+            error: draft.notes.isEmpty ? nil : draft.notes.joined(separator: "; "),
+            speechStartedAt: draft.speechStartedAt,
+            speechEndedAt: draft.speechEndedAt,
+            audioSeconds: draft.audioSeconds
         )
         do {
             try history.append(entry)
@@ -1011,6 +1151,7 @@ public final class Daemon: @unchecked Sendable {
                     + " -- recovery from the record is unavailable"
             }
         }
+        return draft
     }
 
     private func reportHistoryTrouble(aimedAt target: Target?) {

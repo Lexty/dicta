@@ -215,7 +215,8 @@ Ten minutes of forgotten, unrelated speech landing in an agent's prompt is worse
 cap is a capture fault, so §2's rule applies; the recognised text, if any was produced, is still
 logged.
 
-**D16 — A capture fault always discards the audio and never injects.**
+**D16 — A capture fault never injects.** *(Amended by D26: the audio is no longer thrown away, but
+it never reaches a terminal. The injection half is the half that mattered.)*
 The audio boundary is in doubt, so the recording dies rather than being guessed at. Bridging input
 devices seamlessly is explicitly not a goal.
 
@@ -264,6 +265,120 @@ layer-0 window — and it can only be matched on a display name. D22 asks which 
 active, and `NSWorkspace` is the API that answers exactly that. Not frontmost is a **silent** no-op
 and not a rejection: the key means nothing there, and §6's rule is that a no-op is silent.
 
+**D23 — The hold key names the attempt it started, on the command that ends it.**
+The two triggers can be mixed inside one dictation — begin by holding, stop with `⌃⌥⇧D` to get raw
+(D3) — and the key is then released into a daemon that is already idle. A bare `stop` there is
+"nothing to stop": audible, and false. Carrying the attempt id from the `start` response turns it
+into §6's no-op naming a spent attempt instead — silent, which is what actually happened.
+**D24 — A dictation does not begin while agterm's own picker is open.**
+D22 asks whether agterm is in front. It does not ask whether the thing in front is somewhere text
+can go, and the native picker is the case where those differ: it is agterm's own window, so a held
+key passes D22 and then delivers into the terminal **behind** the dialog — not where the user is
+looking, and with nothing on screen to say it went elsewhere. The tree names the pending picker
+(`pickPending`, window-scoped exactly as the tree is), so this costs nothing beyond the read that
+was happening anyway.
+
+A rejection, not a silent no-op, and the difference is intent: holding the key in front of a dialog
+means the user meant to dictate **into** it. §6's silence is for a key that meant nothing (D22).
+Refusing **before capture** is the part that matters most — refusing after would leave a lit
+microphone recording for a pane nobody can see.
+
+Typing into the picker is not something dicta can do today, and not for want of trying: `agtermctl
+pick` sets a query only when it *opens* the picker, and nothing sets the query of one already open.
+That is an agterm capability rather than a dicta one. Until it exists this is a refusal; when it
+exists, this decision becomes the place the delivery is described instead.
+
+**D25 — The record carries the speech window, not only the moment the line was written.**
+`at` is when the entry reached the file: after recognition, before injection (invariant 10). It
+therefore locates neither the start of the speaking nor its length, and neither is recoverable from
+anything else in the record — so an attempt that produced no text at all leaves an entry that cannot
+be placed in time.
+
+That matters outside dicta. The sibling project `acta` records meetings, and dictation spoken while
+a meeting is being recorded lands in the meeting's own audio and comes back in the transcript as a
+remark made to the room. Correlating the two needs the interval the microphone was collecting, and
+the useful case is exactly the one `at` serves worst: `aborted`, `empty` and `capture-fault` carry
+no text to match on, so the window is the only evidence there is.
+
+Three fields rather than two, and `audioSeconds` is not redundant with the pair. A buffer's length
+cannot be moved by the machine sleeping mid-attempt and two wall-clock stamps can, so the two
+disagreeing is itself the signal that the clock moved — a wrong answer that announces itself rather
+than one that does not.
+
+**Absent is a state, not a gap.** An attempt cancelled while `warming` never had audio, and writing
+a fabricated window would put an invented moment into a file another tool correlates against a
+recording. The three fields ride on the daemon's per-attempt draft rather than being passed to the
+writer, and that is what makes §9's superseding line carry them too: there is exactly one place a
+line reaches the record, and it reads them off the draft.
+
+`speechStartedAt` is capture's own confirmation — the same instant D13 gates its announcement on —
+and deliberately not the keypress, which precedes it by however long the audio engine takes to
+start.
+
+**What would break the end, and it is not what it looks like.** An attempt that ends while the
+microphone is still collecting is told to discard *after* its line has been written, so its end has
+to be resolved at write time or it can never be filled in at all. That makes the whole `aborted` /
+`capture-fault` / `capped` class depend on capture's teardown staying **synchronous with the
+ending**. The obvious optimisation on that path is to defer teardown, or make it asynchronous, to
+get an engine rebuild off the ending — and that would move `engine.stop()`, and with it the moment
+collecting actually ends, to after the record line was written. The end would then be a timestamp
+for something that had not happened yet. Preparing the next engine so that it *overlaps* a teardown
+which was going to block anyway is the version of that optimisation which is safe, because it
+changes nothing about when the stop happens.
+
+The consequence of resolving it at write time is worth stating rather than discovering: for that
+class `speechEndedAt` equals `at` exactly, because both come from the same reading of the clock. It
+is therefore slightly late — by the cost of the discard — and never early. A reader must not use the
+two differing as a way to tell that class from a drained attempt; the presence of `audioSeconds` is
+what distinguishes them.
+
+**D26 — Speech that was captured is written down, even when the attempt delivered nothing.**
+An attempt that ends after the microphone opened — an **abort**, or D15's **cap** — used to throw
+its buffer away unrecognised, so it left an entry with no words in it at all. It is now recognised,
+and the text is stored as §9's `recognised`. It is **never injected**, and `final` stays empty.
+
+The reasoning, because this reverses a decision written in the user's own words ("the user asked for
+that dictation to be dropped"). What an abort cancels is the **delivery**. The speaking already
+happened, aloud, into an open microphone — and anything else listening to the room has it. The
+sibling project `acta` is the concrete case: dictation spoken while a meeting is being recorded
+lands in the meeting's own audio and comes back in the transcript as a remark made to the room.
+Refusing to write the words down does not unmake them; it only makes them **unattributable**, which
+is the harm rather than the protection. With the text, the same speech is matched word-for-word and
+marked as what it was.
+
+The price is real and was accepted deliberately: the record now accumulates text the user chose not
+to send, and an abort is no longer a gesture that leaves no words anywhere. That is why this is a
+decision with reasoning rather than an implementation detail. The record is `0600` inside a `0700`
+directory and already holds every other thing said to this machine, so no new class of secret
+appears — but a new *kind* of entry does.
+
+**No injection, structurally rather than by routing.** The effect is emitted only by `cancel`, which
+has already moved the phase to `.idle`, and the recognition it triggers never calls `apply` at all.
+There is therefore no transition that could produce an `.inject` effect and no live attempt for one
+to aim at — the text cannot be delivered because no state exists to carry it, not because a branch
+declines to. `dictactl last` answers off `final`, so a cancelled dictation reads as "produced no
+final text (aborted)" rather than as something to re-send; `--recognised` shows it, which is
+diagnosis and not delivery (§9).
+
+**A device-raised `capture-fault` produces no text, and that is D16 still working.** This decision
+does not reach it, and an earlier draft of this paragraph said it did — wrongly, and in a way no
+test would have contradicted. When a fault has been recorded against a recording, the capture layer
+answers a drain with that fault **even with a full buffer in hand**, deliberately: the audio's
+boundary is in doubt, so it dies rather than being guessed at. Usually the drain does not get that
+far at all, because the fault's own thread has already taken the recording. So the class D26 covers
+is the two outcomes whose buffers are clean — an abort, where nothing is wrong with the audio and
+the user simply changed their mind, and the cap, which is a daemon-side decision that never marks
+the recording at all.
+
+The effect is still emitted on the fault path, and that is not an oversight: it costs nothing, and
+if the capture layer ever chose to hand over what it had, this decision says that text belongs in
+the record. Nonsense in a journal is a line a reader can dismiss; what D16 forbids is nonsense
+reaching a terminal, and that is untouched either way. What must not happen again is a sentence here
+promising words that the layer below deliberately drops.
+
+**Nothing is journalled that never existed.** An attempt cancelled while `warming` has no buffer:
+the device never confirmed. It writes no text and no speech window, as before (D25).
+
 **D29 — A caller can claim the next dictation's text instead of a pane getting it.**
 `dictactl dictate` blocks, the user dictates exactly as always, and the text is printed on **stdout**
 rather than typed anywhere. `PROMPT=$(dictactl dictate)` is the whole interface.
@@ -301,30 +416,6 @@ the same grounds `abort` does, and on one more: it neither begins an attempt nor
 **It is what lifts D24's refusal.** That rule refuses to start in front of an open picker because
 the words would land in the pane behind it. With a caller waiting they have somewhere else to go, so
 the refusal has nothing left to protect — the exception is D24 answered rather than overridden.
-
-**D24 — A dictation does not begin while agterm's own picker is open.**
-D22 asks whether agterm is in front. It does not ask whether the thing in front is somewhere text
-can go, and the native picker is the case where those differ: it is agterm's own window, so a held
-key passes D22 and then delivers into the terminal **behind** the dialog — not where the user is
-looking, and with nothing on screen to say it went elsewhere. The tree names the pending picker
-(`pickPending`, window-scoped exactly as the tree is), so this costs nothing beyond the read that
-was happening anyway.
-
-A rejection, not a silent no-op, and the difference is intent: holding the key in front of a dialog
-means the user meant to dictate **into** it. §6's silence is for a key that meant nothing (D22).
-Refusing **before capture** is the part that matters most — refusing after would leave a lit
-microphone recording for a pane nobody can see.
-
-Typing into the picker is not something dicta can do today, and not for want of trying: `agtermctl
-pick` sets a query only when it *opens* the picker, and nothing sets the query of one already open.
-That is an agterm capability rather than a dicta one. Until it exists this is a refusal; when it
-exists, this decision becomes the place the delivery is described instead.
-
-**D23 — The hold key names the attempt it started, on the command that ends it.**
-The two triggers can be mixed inside one dictation — begin by holding, stop with `⌃⌥⇧D` to get raw
-(D3) — and the key is then released into a daemon that is already idle. A bare `stop` there is
-"nothing to stop": audible, and false. Carrying the attempt id from the `start` response turns it
-into §6's no-op naming a spent attempt instead — silent, which is what actually happened.
 
 ---
 
@@ -545,9 +636,9 @@ Every row states: no injection unless said otherwise, a visible reason, and what
 | recogniser returns text that is not valid UTF-8 or is longer than the frame limit | processing failure | no injection; notify; record the raw bytes' length and the error |
 | replacement dictionary unreadable, unparsable, or a rule is malformed | processing failure | **skip only the offending rules**, apply the rest, and notify once that the dictionary is degraded; never block injection over a config file. An **absent** file is not a degraded one: nothing switches the dictionary on, so absence is how a user who does not want one says so, and notifying on every dictation would train them to dismiss dicta's notifications — which is the property this row exists to protect |
 | a replacement produces empty text | processing failure | treat as "empty" above; the dictionary must not silently delete a dictation |
-| capture fails while stopping | **capture fault** | discard; notify as a hardware fault, explicitly *not* as silence |
-| sleep, audio interruption, input device or route change | **capture fault** | discard; notify |
-| duration cap reached | **capture fault** | discard audio, no injection, record whatever text was produced, loud notification (D15) |
+| capture fails while stopping | **capture fault** | no injection; notify as a hardware fault, explicitly *not* as silence. **No text**: the samples in hand are dropped because the audio's boundary is in doubt (D16), which D26 does not override |
+| sleep, audio interruption, input device or route change | **capture fault** | no injection; notify; **no text**, for the same reason as the row above (D16) |
+| duration cap reached | **capture fault** | no injection, loud notification (D15); the ten minutes are recognised into the record only, which is where forgotten speech is worth having (D26) |
 | target gone at injection time | delivery failure | do not re-aim (D4); notify; text preserved |
 | `session type` fails before any keystroke | delivery failure | notify; text preserved; no automatic retry |
 | `session type` fails after keystrokes have begun | delivery failure | notify that the insertion **may be partial**; text preserved; **never retry** — a retry would double part of the text |
@@ -565,6 +656,7 @@ Every row states: no injection unless said otherwise, a visible reason, and what
 | hold key released after a chord already ended the attempt | — | no-op naming a spent attempt (D23); silent |
 | the active session cannot be read from the tree when the hold key goes down | — | nothing starts; notify, because the key did mean something and produced nothing |
 | the hold trigger is not armed, or its source reads nothing | — | the chords are unaffected and remain the whole interface. **This failure is silent by construction and that is stated rather than hidden**: `CGEventSource.flagsState` returns a word of flags and has no error channel, so "no modifier is down" and "this is not working" are the same answer. What exists instead is a startup line naming the armed key, and `--no-hold` to turn it off deliberately |
+| the user aborts after speaking | — | nothing is injected and nothing is announced as delivered; the words reach the record and only the record (D26) |
 
 A failing filter must never cost the user their words; that is why **replaced** is its fallback
 rather than an error.
@@ -613,10 +705,32 @@ One append-only local file, one entry per attempt, written before injection is a
 | `rules` | ids of replacement rules that fired, and the dictionary's version or mtime |
 | `target` | session id and pane |
 | `error` | the reason shown to the user, when there was one |
+| `recognised` on a cancelled attempt | present, and `final` empty: the words were spoken but never delivered (D26) |
+| `speechStartedAt`, `speechEndedAt` | when the microphone actually began and stopped collecting — absent for an attempt that never had audio (D25) |
+| `audioSeconds` | the collected buffer's own length, `samples / sampleRate` (D25) |
 
 Reading an entry back is not injection, so invariant 1 does not apply to it: the client prints
-`final` by default and `recognised` verbatim on request. That is the whole point of storing both —
-a replacement misfire is only diagnosable by comparing them.
+`final` by default and `recognised` verbatim on request.
+
+**`recognised` is the recogniser's output byte for byte — before the dictionary, before the filter,
+before any tidying — and TWO separate things depend on that.** Both are written down because a rule
+with one reason gets repealed the day that reason lapses, by somebody who reads the single
+justification, judges it obsolete and simplifies accordingly.
+
+1. A replacement misfire is only diagnosable by comparing `recognised` with `final`. Normalise the
+   first and the comparison stops showing what the dictionary did.
+2. The sibling project `acta` correlates dictations against meetings it recorded at the same time,
+   and the correlation is textual: both projects run the same recogniser (Parakeet TDT 0.6B v3 at
+   16 kHz), so the same speech decoded twice agrees almost token for token. Anything applied to
+   `recognised` here degrades that match **silently** — in another repository, with no test in this
+   one to notice.
+
+**The file is append-only and nothing rotates or truncates it, deliberately.** §9's "one entry per
+attempt" is a property of the READER: an attempt whose delivery went differently than the saved line
+claimed gets a second line with the same id, and `Record.entries` takes the last. A rotation that
+cut between those two lines would leave the reader taking the **superseded** one — silently
+reporting the wrong outcome for an attempt, which is the one failure this file cannot afford. Any
+future bound on the record's size must therefore bound what is READ, never what is kept.
 
 ---
 

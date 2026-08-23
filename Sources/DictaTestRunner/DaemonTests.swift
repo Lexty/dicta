@@ -409,19 +409,22 @@ struct DaemonTests {
         #expect(harness.notifier.messages == ["aborted"])
     }
 
-    @Test("abort while recording discards the audio and injects nothing")
+    @Test("abort while recording keeps the audio for the record and injects nothing")
     func abortWhileRecording() {
         let harness = Harness()
         let id = harness.startRecording()
 
         harness.send(Request(cmd: .abort))
 
-        #expect(harness.capture.callLog == [.begin(id), .discard(id)])
+        // `drain`, not `discard` (D26). The words were spoken into an open microphone and are in
+        // whatever else was listening; what the user cancelled is the delivery, which is the
+        // assertion two lines below and the one that must never weaken.
+        #expect(harness.capture.callLog == [.begin(id), .drain(id)])
         #expect(harness.transcriber.transcribed.isEmpty)
         #expect(harness.injector.delivered.isEmpty)
     }
 
-    @Test("abort while draining discards the audio and injects nothing")
+    @Test("abort while draining does not issue a second drain for the same buffer")
     func abortWhileDraining() {
         let harness = Harness()
         let id = harness.startRecording()
@@ -430,7 +433,10 @@ struct DaemonTests {
         harness.send(Request(cmd: .abort))
 
         #expect(harness.daemon.state == .idle)
-        #expect(harness.capture.callLog == [.begin(id), .drain(id), .discard(id)])
+        // Exactly one `drain`. The abort marks where the audio belongs (D26) and issues no capture
+        // command of its own: two drains race for one buffer, and `take` hands a recording to one
+        // thread, so the loser would get nothing and the record would lose the words.
+        #expect(harness.capture.callLog == [.begin(id), .drain(id)])
         #expect(harness.injector.delivered.isEmpty)
     }
 
@@ -1231,6 +1237,64 @@ struct DaemonTests {
         #expect(done.wait(timeout: .now() + 5) == .success)
     }
 
+    @Test("an attempt that produced no text still records when the speaking happened")
+    func speechWindowSurvivesAnAttemptWithNoText() throws {
+        // D25's whole point, and the case `acta` actually needs. An abort, an empty dictation and a
+        // capture fault leave NO text -- so for those, the speech window is the only evidence the
+        // attempt existed at a particular moment, and it is exactly when a meeting recording needs
+        // to know that the microphone was being spoken into deliberately.
+        let harness = Harness()
+        let id = harness.startRecording()
+        harness.clock.advance(by: 6.5)
+        harness.capture.reportDrained(id, audio: Audio(samples: Array(repeating: 0, count: 96_000),
+                                                       sampleRate: 16_000))
+        harness.send(Request(cmd: .abort, attempt: id))
+
+        let entry = try #require(harness.history.entries().last)
+        #expect(entry.recognised.isEmpty)
+        #expect(entry.speechStartedAt != nil)
+        #expect(entry.speechEndedAt != nil)
+        // Six seconds of samples at 16 kHz, whatever the clock did in the meantime.
+        #expect(entry.audioSeconds == 6)
+    }
+
+    @Test("an abort while recording still bounds the speech, though it kept no audio to measure")
+    func abortWhileRecordingBoundsTheSpeech() throws {
+        // The realistic abort, and the one the earlier test does not cover: nothing is drained, so
+        // there is no buffer and `audioSeconds` cannot exist. The window must still close --
+        // capture is told to discard only AFTER the line is written, so if the end were not
+        // resolved here it could never be filled in at all.
+        let harness = Harness()
+        let id = harness.startRecording()
+        harness.clock.advance(by: 4)
+        harness.send(Request(cmd: .abort, attempt: id))
+
+        let entry = try #require(harness.history.entries().last)
+        #expect(entry.outcome == .aborted)
+        let started = try #require(entry.speechStartedAt)
+        let ended = try #require(entry.speechEndedAt)
+        #expect(ended.timeIntervalSince(started) == 4)
+        // No buffer was ever handed over, so there is nothing to have measured. Absent, not zero:
+        // zero would claim the microphone collected nothing, which is not what happened.
+        #expect(entry.audioSeconds == nil)
+    }
+
+    @Test("an attempt abandoned before audio existed carries no speech window, and that is honest")
+    func warmingAbortCarriesNoWindow() throws {
+        // Absent is a state, not a gap (D25). Capture never confirmed, so no microphone ever
+        // collected anything, and inventing a window here would put a fabricated moment into a
+        // file another tool correlates against a meeting.
+        let harness = Harness()
+        let started = harness.chord()
+        harness.send(Request(cmd: .abort, attempt: started.attempt))
+
+        let entry = try #require(harness.history.entries().last)
+        #expect(entry.outcome == .aborted)
+        #expect(entry.speechStartedAt == nil)
+        #expect(entry.speechEndedAt == nil)
+        #expect(entry.audioSeconds == nil)
+    }
+
     @Test("a start with no session id is refused rather than guessed at")
     func startWithoutSessionIsRefused() {
         // `dictactl` will not send this, but a hand-typed frame can, and inventing a session would
@@ -1355,7 +1419,9 @@ struct DaemonTests {
         harness.clock.advance(by: 11)
 
         #expect(harness.daemon.state == .idle)
-        #expect(harness.capture.callLog == [.begin(id), .drain(id), .discard(id)])
+        // No `discard`, and no second `drain` either: the wedged drain is already in flight and
+        // the fault only says where its audio belongs if it ever arrives (D26).
+        #expect(harness.capture.callLog == [.begin(id), .drain(id)])
         #expect(harness.injector.delivered.isEmpty)
         let message = try #require(harness.notifier.messages.last)
         #expect(message == "the microphone did not stop")
@@ -1403,7 +1469,9 @@ struct DaemonTests {
         // Invariant 6 through D15: the cap is a capture fault, and a capture fault never injects.
         #expect(harness.injector.delivered.isEmpty)
         #expect(harness.transcriber.transcribed.isEmpty)
-        #expect(harness.capture.callLog == [.begin(id), .discard(id)])
+        // Kept for the record under D26 -- ten minutes of forgotten speech is exactly the case
+        // where the words are worth having written down and worth never typing anywhere.
+        #expect(harness.capture.callLog == [.begin(id), .drain(id)])
         #expect(harness.notifier.announcements == [.listening, .blocked])
         let message = try #require(harness.notifier.messages.first)
         #expect(message == FaultReason.durationCap)
@@ -1479,11 +1547,118 @@ struct DaemonTests {
         #expect(entry.final.isEmpty)
     }
 
-    @Test("an abort while the recogniser is running still drops the text, as the user asked")
-    func abortDuringRecognitionDropsTheText() throws {
-        // The other side of the rule above, and the reason it is written as an outcome-by-outcome
-        // decision rather than "late text always lands": an abort is the user saying they do not
-        // want this dictation, so text that arrives a moment later is not a rescue.
+    @Test("an abort while recording is written down and typed nowhere")
+    func abortWhileRecordingIsJournalled() throws {
+        // D26's main case, and the one that motivated it: "I said it out loud and thought better of
+        // sending it." For dicta the text stopped existing; for anything else recording the room it
+        // never did, and the words sit in that recording looking like a remark made to it.
+        let harness = Harness()
+        let id = harness.startRecording()
+        harness.send(Request(cmd: .abort))
+        // The drain the abort issued now delivers, as a real microphone would from inside `drain`.
+        harness.capture.reportDrained(id, audio: Audio(samples: Array(repeating: 0, count: 32_000),
+                                                       sampleRate: 16_000))
+
+        waitUntil("the cancelled attempt was written down") {
+            harness.history.appended.count == 2
+        }
+        let entry = try #require(harness.history.appended.last)
+        #expect(entry.id == id)
+        #expect(entry.outcome == .aborted)
+        #expect(entry.recognised == FakeTranscriber.hostileText)
+        // The three assertions that make this safe rather than merely useful.
+        #expect(entry.final.isEmpty, "a cancelled dictation acquired deliverable text")
+        #expect(harness.injector.delivered.isEmpty, "a cancelled dictation was typed anyway")
+        #expect(harness.notifier.announcements == [.listening, .blocked])
+        // The buffer survived long enough to be measured, which it does not when it is discarded.
+        #expect(entry.audioSeconds == 2)
+    }
+
+    @Test("a cancelled attempt the recogniser heard nothing in still records that it looked")
+    func silenceOnACancelledAttemptIsStillEvidence() throws {
+        // "Nobody looked" and "something looked and heard nothing" are different facts, and a
+        // reader cannot tell them apart from a missing field. `audioSeconds` is what separates
+        // them: present means a recogniser was handed this buffer (D26). Without this, a silent
+        // abort on a build that HAS D26 is byte-identical to one from a build that does not.
+        let harness = Harness()
+        harness.transcriber.setText("")
+        let id = harness.startRecording()
+        harness.send(Request(cmd: .abort))
+        harness.capture.reportDrained(id, audio: Audio(samples: Array(repeating: 0, count: 48_000),
+                                                       sampleRate: 16_000))
+
+        waitUntil("the silent attempt was measured") { harness.history.appended.count == 2 }
+        let entry = try #require(harness.history.appended.last)
+        #expect(entry.outcome == .aborted)
+        #expect(entry.recognised.isEmpty)
+        #expect(entry.audioSeconds == 3)
+        #expect(entry.final.isEmpty)
+        // No note: heard nothing is not the same as could not be used, and only the second earns
+        // one. Whitespace is `text` to the validator and is kept verbatim, exactly as on the
+        // delivery path — §9's `recognised` is what the recogniser said, whatever that was.
+        // The cancel's own reason and nothing else: §9's `error` joins the notes, so "aborted"
+        // alone is the assertion that no recogniser complaint was added.
+        #expect(entry.error == "aborted")
+        #expect(harness.injector.delivered.isEmpty)
+    }
+
+    @Test("a recogniser that failed on a cancelled attempt does not read as silence")
+    func failedJournalRecognitionIsNotSilence() throws {
+        // Invariant 7's shape, in the journal rather than in a notification. A measured buffer with
+        // no text would otherwise claim that nothing was said, when in truth nothing was heard
+        // BECAUSE the recogniser fell over. The note is what keeps the two apart.
+        struct Broken: Error, CustomStringConvertible { var description: String { "no model" } }
+        let harness = Harness()
+        harness.transcriber.setError(Broken())
+        let id = harness.startRecording()
+        harness.send(Request(cmd: .abort))
+        harness.capture.reportDrained(id, audio: Audio(samples: Array(repeating: 0, count: 16_000),
+                                                       sampleRate: 16_000))
+
+        waitUntil("the failure was recorded") { harness.history.appended.count == 2 }
+        let entry = try #require(harness.history.appended.last)
+        #expect(entry.recognised.isEmpty)
+        #expect(entry.audioSeconds == 1)
+        #expect(entry.error?.contains("could not be recognised") == true)
+        #expect(harness.injector.delivered.isEmpty)
+    }
+
+    @Test("dictactl last does not offer a cancelled dictation as text to deliver")
+    func lastWillNotHandBackCancelledText() throws {
+        // acta wants the words in the journal; nothing downstream may read them as something that
+        // was, or could be, sent. `last` is the one reader that hands text to a human as
+        // re-sendable, and it answers off `final` — which stays empty, so a cancelled attempt
+        // reads as exactly what it is.
+        let harness = Harness()
+        let id = harness.startRecording()
+        harness.send(Request(cmd: .abort))
+        harness.capture.reportDrained(id, audio: Audio(samples: Array(repeating: 0, count: 16_000),
+                                                       sampleRate: 16_000))
+        waitUntil("the cancelled attempt was written down") {
+            harness.history.appended.count == 2
+        }
+
+        let plain = harness.send(Request(cmd: .last))
+        #expect(plain.kind == .noop)
+        #expect(plain.text == nil)
+        #expect(plain.message?.contains("aborted") == true)
+        // `--recognised` is the diagnostic reader and DOES show it: that is the whole point of
+        // storing the words, and it is not a delivery path.
+        let verbatim = harness.send(Request(cmd: .last, verbatim: true))
+        #expect(verbatim.kind == .accepted)
+        #expect(verbatim.text == FakeTranscriber.hostileText)
+    }
+
+    @Test("an abort while the recogniser is running keeps the text but never delivers it")
+    func abortDuringRecognitionKeepsTheText() throws {
+        // REVERSED by D26, deliberately, and this test is where the reversal is visible. It used to
+        // assert that the text was dropped, on the grounds that an abort is the user saying they do
+        // not want this dictation. What they do not want is the DELIVERY: the words were already
+        // spoken aloud into an open microphone, and anything else recording the room has them, so
+        // refusing to write them down makes them unattributable rather than unsaid.
+        //
+        // The half that did NOT change is the first assertion, and it is the one that matters:
+        // nothing is injected, ever.
         let harness = Locked<Harness?>(nil)
         let transcriber = ReentrantTranscriber {
             _ = harness.value?.send(Request(cmd: .abort))
@@ -1494,12 +1669,16 @@ struct DaemonTests {
 
         let id = fixture.dictate()
 
-        #expect(fixture.injector.delivered.isEmpty)
-        #expect(fixture.history.appended.count == 1, "the cancelled text was written after all")
+        #expect(fixture.injector.delivered.isEmpty, "a cancelled dictation was typed anyway")
+        // Two lines: the ending, written first, and the superseding one carrying the text (§9).
+        #expect(fixture.history.appended.count == 2)
         let entry = try #require(fixture.history.appended.last)
         #expect(entry.id == id)
         #expect(entry.outcome == .aborted)
-        #expect(entry.recognised.isEmpty)
+        #expect(!entry.recognised.isEmpty)
+        // `final` stays empty, which is what stops anything downstream reading this as text that
+        // was, or could be, delivered.
+        #expect(entry.final.isEmpty)
     }
 
     @Test("the cap is not disarmed by the stop chord, because a wedged drain is still ten minutes")
@@ -1738,10 +1917,12 @@ struct DaemonTests {
         #expect(aborted.kind == .accepted)
         #expect(harness.daemon.state == .idle)
         #expect(harness.injector.delivered.isEmpty, "a cancelled dictation was typed anyway")
-        // One entry, and it says the attempt was aborted -- the text is dropped rather than left
-        // for a later path to find, but the attempt itself does not disappear (§9, property 2).
-        #expect(harness.history.appended.count == 1)
+        // Two lines under D26: the ending, and the superseding one carrying the words that were
+        // spoken before the cancel. The attempt does not disappear (§9, property 2) and neither do
+        // the words -- but `final` stays empty and nothing was typed.
+        #expect(harness.history.appended.count == 2)
         #expect(harness.history.appended.last?.outcome == .aborted)
+        #expect(harness.history.appended.last?.final.isEmpty == true)
     }
 
     @Test("a second daemon on a live socket refuses to start")

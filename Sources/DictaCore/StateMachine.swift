@@ -73,6 +73,16 @@ public enum Effect: Equatable, Sendable {
     /// Stop capturing and throw the audio away. Every path that ends an attempt before text exists
     /// goes through here (D16).
     case discardCapture(AttemptID)
+    /// Stop capture and keep the audio **for the record only** (D26). Never followed by an
+    /// injection: it is emitted only by `cancel`, which has already moved the phase to `.idle`, so
+    /// there is no live attempt for a later `.recognised` to deliver into. That is the structural
+    /// half of D26 — the text cannot reach a terminal because no state exists that would carry it
+    /// there, rather than because no code path happens to.
+    case retainCapture(AttemptID)
+    /// The same, for an attempt cancelled while a drain was ALREADY in flight. No second `drain`
+    /// call: two of them race for one buffer, and `take` hands a recording to exactly one thread.
+    /// The audio is already on its way; this only says where it now belongs.
+    case retainDrainingCapture(AttemptID)
     /// Turn the drained audio into text, in this mode. The mode is the stopping chord's (D3).
     case transcribe(AttemptID, Mode)
     /// Deliver **final** to this target. The text reaches the record first (invariant 10), and the
@@ -278,7 +288,7 @@ public struct StateMachine: Equatable, Sendable {
             // No audio exists yet, so nothing can be delivered. Ending here rather than sending an
             // empty buffer down the pipeline, which would report as silence (invariant 7).
             return cancel(attempt, reason: "stopped before the microphone started",
-                          discardingCapture: true)
+                          capture: .nothingToKeep)
         case let .recording(attempt):
             phase = .draining(attempt, mode)
             // The announcement comes FIRST, and the order is load-bearing. A real `AudioCapture`
@@ -301,13 +311,19 @@ public struct StateMachine: Equatable, Sendable {
         switch phase {
         case .idle:
             return noop("nothing to abort")
-        case let .warming(attempt), let .recording(attempt):
-            return cancel(attempt, reason: "aborted", discardingCapture: true)
+        case let .warming(attempt):
+            // The device never confirmed, so there is no buffer -- an abort here journals nothing
+            // because there is nothing, not because it was refused (D26).
+            return cancel(attempt, reason: "aborted", capture: .nothingToKeep)
+        case let .recording(attempt):
+            return cancel(attempt, reason: "aborted", capture: .keepForRecord)
         case let .draining(attempt, _):
-            return cancel(attempt, reason: "aborted", discardingCapture: true)
+            return cancel(attempt, reason: "aborted", capture: .alreadyDraining)
         case let .processing(attempt, _):
-            // Capture is already over; there is only the text to drop, and nothing is injected.
-            return cancel(attempt, reason: "aborted", discardingCapture: false)
+            // Capture is already over; there is only the text, and nothing is injected. The text
+            // still reaches the record (D26): the user cancelled the DELIVERY, not the fact that
+            // they spoke into a microphone that was open.
+            return cancel(attempt, reason: "aborted", capture: .over)
         case let .injecting(attempt, _):
             // D20: keystrokes already in the terminal cannot be recalled, so a cancellation the
             // user then watches being contradicted on screen is worse than the refusal.
@@ -380,10 +396,17 @@ public struct StateMachine: Equatable, Sendable {
             // Unreachable: `.idle` carries no attempt, so the guard above has already returned.
             // Present because the switch is exhaustive over `Phase`, not because it is a case.
             return ignored(id)
-        case .warming, .recording, .draining:
-            return cancel(attempt, reason: reason, discardingCapture: true)
+        case .warming:
+            return cancel(attempt, reason: reason, capture: .nothingToKeep)
+        case .recording:
+            // D16 still holds where it matters: the audio is never INJECTED. Keeping it for the
+            // record is not a retreat from that -- a doubtful buffer decoding into nonsense is a
+            // line in a journal, which is exactly where a doubtful thing belongs (D26).
+            return cancel(attempt, reason: reason, capture: .keepForRecord)
+        case .draining:
+            return cancel(attempt, reason: reason, capture: .alreadyDraining)
         case .processing:
-            return cancel(attempt, reason: reason, discardingCapture: false)
+            return cancel(attempt, reason: reason, capture: .over)
         case .injecting:
             // The audio is long gone and the keystrokes are already going in; there is nothing to
             // discard and nothing truthful left to announce. D20 from the other direction.
@@ -425,12 +448,33 @@ public struct StateMachine: Equatable, Sendable {
         Transition(outcome: .noop, state: state, attempt: currentAttempt?.id, message: reason)
     }
 
+    /// What becomes of the microphone's buffer when an attempt is cancelled.
+    ///
+    /// Four cases rather than a `Bool`, because "throw it away" and "keep it for the record" are
+    /// different fates and used to be the same flag. Getting this wrong in either direction is
+    /// serious: a buffer kept when no audio existed would journal silence, and one discarded when
+    /// the user had spoken is the loss D26 exists to stop.
+    enum CaptureEnding {
+        /// Capture is already over -- `processing`, `injecting`. There is nothing left to end.
+        case over
+        /// No audio has ever existed (`warming`): the device never confirmed, so there is nothing
+        /// to keep and nothing a recogniser could be given but silence.
+        case nothingToKeep
+        /// Audio exists. Stop, and keep it for the record (D26).
+        case keepForRecord
+        /// A drain is already in flight and its audio belongs to the record now (D26).
+        case alreadyDraining
+    }
+
     private mutating func cancel(_ attempt: Attempt, reason: String,
-                                 discardingCapture: Bool) -> Transition {
+                                 capture: CaptureEnding) -> Transition {
         phase = .idle
         var effects: [Effect] = []
-        if discardingCapture {
-            effects.append(.discardCapture(attempt.id))
+        switch capture {
+        case .over: break
+        case .nothingToKeep: effects.append(.discardCapture(attempt.id))
+        case .keepForRecord: effects.append(.retainCapture(attempt.id))
+        case .alreadyDraining: effects.append(.retainDrainingCapture(attempt.id))
         }
         // Visible, even though the user asked for it: the indicator must not be left claiming a
         // recording that is not happening (§7), and property 2 says nothing disappears quietly.

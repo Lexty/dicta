@@ -304,7 +304,7 @@ Distilled from SPEC.md §3. Each one is a mistake already made, or one the spec 
   across `history.append`, because what must be ordered is the bytes on disk — a superseding line is
   only superseding if it lands second — and the two orders are handled symmetrically: supersede the
   ending if it is written, park the text for `appendEnding` to fold in if it is not. `aborted`
-  refuses the text on purpose; the user asked for that dictation to be dropped. Do NOT "fix" this by
+  **used to** refuse the text on purpose and no longer does — see the D26 note below. Do NOT "fix" this by
   disarming the cap during `processing`: a ten-minute dictation would then be injected, which is the
   one thing D15 exists to prevent.
 - **A failing record append never blocks a delivery** (§7). It injects, then says loudly that
@@ -365,6 +365,27 @@ Distilled from SPEC.md §3. Each one is a mistake already made, or one the spec 
   that has just gone idle takes the **start** branch and opens the microphone aimed at the finished
   attempt's pane, in another session, never re-resolved: D4's substitution through the one door
   that resolves nothing.
+- **Speech that was captured is written down even when nothing was delivered** (D26). An **abort**
+  and D15's **cap** now DRAIN rather than discard — but NOT a device-raised `capture-fault`, whose
+  samples the capture layer drops on purpose even with a full buffer, because the audio's boundary
+  is in doubt (D16). Getting that wrong in a spec sentence is exactly what happened on the first
+  draft, and no test would have caught it. The two that do work: the buffer is recognised on a thread of
+  its own and the words land in §9's `recognised`, with `final` empty and nothing injected, ever.
+  This reverses a rule this file used to state the other way round, so the reasoning matters. What
+  an abort cancels is the **delivery** — the speaking already happened into an open microphone, and
+  anything else recording the room (the sibling project `acta`, concretely) has it. Refusing to
+  write the words down does not unmake them; it makes them unattributable, which is the harm rather
+  than the protection.
+  Three things hold it safe and none of them is a branch that declines to inject. The effect is
+  emitted only by `StateMachine.cancel`, which has already set `.idle`; `journalRecognise` never
+  calls `apply`, so no transition exists that could carry an `.inject` effect; and `dictactl last`
+  answers off `final`, which stays empty, so a cancelled dictation reads as "produced no final text
+  (aborted)" rather than as something re-sendable. `--recognised` does show it — that is diagnosis.
+  Two traps if you touch this. An attempt cancelled while `warming` must journal NOTHING, because no
+  buffer ever existed and a recogniser handed silence would write a line about speech that did not
+  happen. And an attempt cancelled while **draining** must NOT issue a second `drain`: one is
+  already in flight, `take` hands a recording to exactly one thread, and the loser gets nothing —
+  that is why `retainDrainingCapture` exists beside `retainCapture` and does not call capture at all.
 - **A config file never blocks a dictation** (§7). A missing or malformed dictionary skips the
   offending rules, applies the rest, and notifies once.
 - **`docs/replacements.example.conf` carries its own expectations, and they are executed.** Lines

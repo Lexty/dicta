@@ -111,6 +111,30 @@ public struct RecordEntry: Codable, Sendable, Equatable {
     /// attempt can have both a filter fallback and a delivery failure.
     public var error: String?
 
+    /// When the microphone actually began collecting samples — capture's own confirmation, the
+    /// same instant that gates D13's announcement, and NOT the keypress.
+    ///
+    /// `at` cannot stand in for it. `at` is when the line was written, which is after recognition
+    /// and before injection, so it says nothing about when the speaking happened or how long it
+    /// lasted (D25).
+    public var speechStartedAt: Date?
+    /// When capture handed the buffer over and stopped.
+    public var speechEndedAt: Date?
+    /// The collected buffer's own length, `samples / sampleRate`. More authoritative than the
+    /// difference of the two timestamps above: a clock can be moved by the machine sleeping and a
+    /// sample count cannot, so the two disagreeing is itself the signal that something did (D25).
+    ///
+    /// **It means the buffer's length and nothing else. Do not overload it.** Present with no
+    /// `recognised` means a recogniser was handed this audio and heard nothing — that is a
+    /// consequence of writing it unconditionally (D26), not a second meaning. It was nearly given
+    /// one: a reader downstream would have found it convenient if a FAILED recognition left the
+    /// field absent, since "measured" would then have read as "recognition succeeded" and saved
+    /// them parsing a message. That is the same class of mistake as reading `at == speechEndedAt`
+    /// as a guarantee, only better disguised — the convenience is immediate and the cost arrives
+    /// months later, in a reader that cannot say which of the two things it is being told. A
+    /// recogniser that fell over says so in `error`, which is where reasons live (§9).
+    public var audioSeconds: Double?
+
     public init(
         id: AttemptID,
         at: Date,
@@ -120,8 +144,14 @@ public struct RecordEntry: Codable, Sendable, Equatable {
         final: String = "",
         rules: RulesApplied = .none,
         target: Target,
-        error: String? = nil
+        error: String? = nil,
+        speechStartedAt: Date? = nil,
+        speechEndedAt: Date? = nil,
+        audioSeconds: Double? = nil
     ) {
+        self.speechStartedAt = speechStartedAt
+        self.speechEndedAt = speechEndedAt
+        self.audioSeconds = audioSeconds
         self.id = id
         self.at = at
         self.outcome = outcome

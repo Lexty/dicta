@@ -727,3 +727,92 @@ struct RecordTests {
         }
     }
 }
+
+/// §9's speech window (D25): when the microphone was actually collecting, and for how long.
+///
+/// Added for `acta`, which correlates dicta's record against a meeting recording so that dictation
+/// spoken into a live meeting is marked in the transcript as input rather than as something said to
+/// the room. `at` alone cannot serve: it is when the LINE was written, after recognition and before
+/// injection, so it neither locates the speech nor bounds it.
+@Suite("speech window")
+struct SpeechWindowTests {
+    static let target = Target(sessionID: "S1", pane: .left)
+    static let started = Date(timeIntervalSince1970: 1_766_000_000)
+
+    static func entry(window: Bool) -> RecordEntry {
+        RecordEntry(
+            id: 7,
+            at: started.addingTimeInterval(9.2),
+            outcome: .injected,
+            mode: .clean,
+            recognised: "one two",
+            final: "one two",
+            target: target,
+            speechStartedAt: window ? started : nil,
+            speechEndedAt: window ? started.addingTimeInterval(8.75) : nil,
+            audioSeconds: window ? 8.74 : nil
+        )
+    }
+
+    @Test("the speech window survives a round trip through the file format")
+    func roundTripWithWindow() throws {
+        let line = try Record.encode(Self.entry(window: true))
+        let back = try Record.decode(line)
+        #expect(back == Self.entry(window: true))
+        #expect(back.speechStartedAt == Self.started)
+        #expect(back.audioSeconds == 8.74)
+    }
+
+    @Test("an attempt with no audio omits the three keys rather than writing nulls")
+    func absentKeysAreAbsent() throws {
+        // An abort while `warming` never had audio, and the honest record of that is silence, not
+        // `"speechStartedAt": null`. A reader distinguishing "no audio existed" from "this build
+        // does not record it" needs the key genuinely absent.
+        let text = String(decoding: try Record.encode(Self.entry(window: false)), as: UTF8.self)
+        #expect(!text.contains("speechStartedAt"))
+        #expect(!text.contains("speechEndedAt"))
+        #expect(!text.contains("audioSeconds"))
+        #expect(try Record.decode(Data(text.utf8)) == Self.entry(window: false))
+    }
+
+    @Test("a line written before the speech window existed still reads, losing nothing")
+    func oldLinesStillRead() throws {
+        // Shaped like the first lines the daemon wrote, before the speech window existed. Backward
+        // compatibility here is not a nicety: this file is the only copy of every dictation they
+        // have made, and a decoder that rejected it would take the lot.
+        let line = #"""
+        {"at":"2026-08-16T09:00:00.000Z","error":"aborted","final":"","id":1,"mode":"clean",\#
+        "outcome":"aborted","recognised":"","rules":{"fired":[]},"target":{"pane":"left",\#
+        "sessionID":"7C3F9B2E-4A1D-4E6B-8F20-5D9A1C6E3B47"}}
+        """#
+        let entry = try Record.decode(Data(line.utf8))
+        #expect(entry.id == 1)
+        #expect(entry.outcome == .aborted)
+        #expect(entry.target.sessionID == "7C3F9B2E-4A1D-4E6B-8F20-5D9A1C6E3B47")
+        #expect(entry.speechStartedAt == nil)
+        #expect(entry.speechEndedAt == nil)
+        #expect(entry.audioSeconds == nil)
+    }
+
+    @Test("a superseding line carries the speech window too, rather than dropping it")
+    func supersedingKeepsTheWindow() throws {
+        // §9's rule is that the last line for an id wins. If the window rode only on the first
+        // line, every attempt whose delivery went differently than the saved line claimed -- which
+        // is every interesting failure -- would lose it at exactly the moment it became evidence.
+        var first = Self.entry(window: true)
+        first.outcome = .injected
+        var superseding = first
+        superseding.outcome = AttemptOutcome.injectionPartial
+        superseding.at = first.at.addingTimeInterval(0.4)
+
+        var data = Data()
+        data.append(try Record.encode(first))
+        data.append(try Record.encode(superseding))
+        let entries = Record.entries(in: data)
+
+        #expect(entries.count == 1)
+        #expect(entries[0].outcome == .injectionPartial)
+        #expect(entries[0].speechStartedAt == Self.started)
+        #expect(entries[0].audioSeconds == 8.74)
+    }
+}
