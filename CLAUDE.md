@@ -580,6 +580,16 @@ Distilled from SPEC.md §3. Each one is a mistake already made, or one the spec 
   an earlier rule produced, and `6 .` is the whole pattern. Stated as "no letters" rather than as an
   exemption list, because that is what keeps the edge — a rule matching an English word is still
   refused, whatever it is called.
+- **The merge request is repaired in two passes, because writing out the pairs does not converge.**
+  Fifteen entries in the record carry the term and eleven spell it differently: the recogniser
+  garbles the first word, splits the pair where it likes, and inflects whichever half it lands on.
+  Five rules covered five spellings and three more arrived the same week. So pass 1 repairs the
+  first word on its own and pass 2 matches the pair -- nine garbles times fourteen endings is 126
+  phrasings out of 23 rules, and tomorrow's garble is one line rather than one line per ending. The
+  boundary rule is what makes pass 2 safe to list flat, since a pattern ending in a letter cannot
+  fire inside a longer word. One spelling is refused on purpose and the file says so: the recogniser
+  once heard the first word as an ordinary Russian pronoun, and a rule on that would rewrite the
+  pronoun everywhere.
 - **Spoken version numbers are three passes over the same dictionary, and the reason is the space.**
   A version dictated as words — "one tochka six tochka zero" — becomes `1.6.0` through thirty rules:
   `tochka <word>` → `.<digit>`, then `<word> .` → `<digit>.`, then the same join once the left side
