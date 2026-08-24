@@ -108,6 +108,12 @@ let package = Package(
     targets: [
         .target(name: "DictaCore", path: "Sources/DictaCore"),
         .target(name: "DictaIPC", dependencies: ["DictaCore"], path: "Sources/DictaIPC"),
+        // Reading §9's record off disk. Split out for the SAME concrete reason `DictaIPC` was, in
+        // its second instance rather than as a new principle: the menu-bar UI needs the reader, and
+        // `DictaRuntime` is where FluidAudio and CoreML land (D27, invariant 8). The other half of
+        // the reason is that the reader here is BOUNDED — the record is append-only and grows for
+        // ever, and a panel that opens many times a day cannot parse all of it each time.
+        .target(name: "DictaRecord", dependencies: ["DictaCore"], path: "Sources/DictaRecord"),
         // FluidAudio lands HERE and nowhere else. It is the whole of the CoreML weight D12 keeps
         // off the keypress path: `dictactl` depends on DictaCore + DictaIPC, so it cannot reach
         // this even by accident.
@@ -116,6 +122,7 @@ let package = Package(
             dependencies: [
                 "DictaCore",
                 "DictaIPC",
+                "DictaRecord",
                 .product(name: "FluidAudio", package: "FluidAudio"),
             ],
             path: "Sources/DictaRuntime"
@@ -133,7 +140,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "DictaTestRunner",
-            dependencies: ["DictaCore", "DictaIPC", "DictaRuntime"],
+            dependencies: ["DictaCore", "DictaIPC", "DictaRecord", "DictaRuntime"],
             path: "Sources/DictaTestRunner",
             swiftSettings: testing.swift,
             linkerSettings: testing.linker

@@ -209,6 +209,18 @@ public final class Daemon: @unchecked Sendable {
     /// A record append that failed, waiting to be said out loud. §7 puts the injection first and
     /// the complaint second, so it is parked here rather than notified where it happens.
     private var historyTrouble: String?
+    /// Guards `faculties` and `lastPublishedSequence`. A lock of its own, and not `stateLock`,
+    /// because publishing must never be able to wait on a transition — the whole promise of D27 is
+    /// that the UI cannot slow a dictation down, and sharing the machine's lock would make that a
+    /// matter of luck about who takes it first.
+    private let readinessLock = NSLock()
+    /// **Guarded by `readinessLock`.** What has been established about the daemon's ability to
+    /// dictate. Written from outside (`observe`), because each fact is already known by the code
+    /// that owns it — the warm-up thread, the microphone callback, the `agtermctl` lookup.
+    private var faculties = Faculties()
+    /// **Guarded by `readinessLock`.** The newest transition already sent to watchers, so a stale
+    /// one that lost a race is dropped rather than rewriting the UI backwards.
+    private var lastPublishedSequence: UInt64 = 0
     private var terminal: Terminal
     /// The `$AGT_SOCKET` `terminal` was built from, kept so the parked target can name the agterm
     /// instance the attempt belongs to (§7's stale-indicator row).
@@ -402,6 +414,14 @@ public final class Daemon: @unchecked Sendable {
     private func handle(_ request: Request) -> Response {
         switch request.cmd {
         case .status:
+            return response(.accepted)
+        // The handshake of a `watch` stream, and nothing more (D27). It answers exactly what
+        // `status` answers, because that is what it is: the daemon's state right now, which the
+        // stream then keeps up to date. Whether there is ROOM for another watcher was settled by
+        // `ControlServer` before this ran — a cap on open sockets is a property of the transport,
+        // and the daemon has no idea how many are open. Nothing here changes, which is what lets
+        // the verb be served concurrently.
+        case .watch:
             return response(.accepted)
         case .last:
             return answerLast(verbatim: request.verbatim == true)
@@ -611,6 +631,24 @@ public final class Daemon: @unchecked Sendable {
         // when they are performed -- a capture that reports synchronously would otherwise leave a
         // watchdog armed on an attempt that has already moved on.
         sync(phase, sequence)
+        // BEFORE the effects, and the position is load-bearing in a way that is easy to get exactly
+        // backwards.
+        //
+        // Publishing AFTER the loop looks safer — nothing inserted ahead of the user's own
+        // indicator — and is wrong, because the effects RE-ENTER. The real `AudioCapture` hands its
+        // audio over from inside `drain`, so `.drainCapture` runs recognition, injection and the
+        // terminal announcement before this line would be reached: the inner transitions would
+        // publish `idle` first and this one would then publish `processing` on top of it, leaving
+        // the menu-bar glyph amber over a dictation that finished seconds ago. The sequence guard
+        // would not save it either, since the outer transition's stamp is the older one.
+        //
+        // It costs nothing measurable in front of the announcement: `publish` takes a lock, copies
+        // a snapshot and signals — no syscall, no subprocess. Which is also why the temptation this
+        // forecloses must stay foreclosed: the ~35 ms `Scripts/measure.sh` attributes to the
+        // indicator is an `agtermctl` subprocess (F4), and moving the indicator behind the UI would
+        // buy a better number and not one millisecond of a lit indicator. Publishing may never
+        // reorder, delay or replace an announcement.
+        publish(sequence: sequence)
         for effect in transition.effects { perform(effect, aimedAt: target) }
         // Last, so §7's order holds: the injection is attempted first and the complaint about the
         // record comes after it.
@@ -1430,7 +1468,81 @@ public final class Daemon: @unchecked Sendable {
     private func response(_ kind: CommandOutcome, message: String? = nil) -> Response {
         let (state, attempt) = stateLock.withLock { (machine.state, machine.currentAttempt?.id) }
         return Response(kind: kind, state: state, attempt: attempt, target: knownTarget,
-                        message: message)
+                        message: message, snapshot: snapshot())
+    }
+
+    /// What the daemon is doing, as one value (D27).
+    ///
+    /// **One function, two callers** — `status` and the `watch` stream — and that is the whole
+    /// reason it exists rather than each route assembling its own. Two assemblies would drift, and
+    /// the drift would show up as a UI whose first frame disagrees with its second: the panel would
+    /// open saying "Ready" and then, on the first event, admit the models were never downloaded.
+    func snapshot() -> StatusSnapshot {
+        let (state, attempt, target, speaking) = stateLock.withLock {
+            (machine.state,
+             machine.currentAttempt?.id,
+             machine.currentAttempt?.target ?? rememberedTarget,
+             draft?.speechStartedAt)
+        }
+        return StatusSnapshot(
+            state: state,
+            readiness: readinessLock.withLock { faculties.readiness },
+            attempt: attempt,
+            target: target,
+            // Measured from the moment capture CONFIRMED, never from the keypress:
+            // `speechStartedAt` is stamped by `.captureReady` (D13, D25), so the timer cannot
+            // claim to have been
+            // recording during the ~95 ms before the device was live.
+            speakingSeconds: speaking.map { clock.now.timeIntervalSince($0) },
+            capSeconds: configuration.durationCap
+        )
+    }
+
+    /// What the daemon knows about its own ability to dictate.
+    ///
+    /// Set from outside rather than discovered here, and that is deliberate wiring rather than
+    /// laziness: the facts live in three different places — the warm-up thread's load result, the
+    /// microphone's TCC callback, and whether `agtermctl` was found — and each is already known by
+    /// the code that owns it. A daemon that went looking again would be asking questions it has
+    /// already been told the answers to, on the attempt path, in a value the UI polls.
+    /// How many `watch` streams are attached (D27). Zero when the socket is not bound.
+    ///
+    /// Exposed for the same reason `ControlServer.watcherCount` is: a watcher registers on its own
+    /// connection thread, so anything publishing immediately after connecting would be asserting
+    /// on a race rather than on behaviour.
+    public var watcherCount: Int { server?.watcherCount ?? 0 }
+
+    /// Hands the current snapshot to every `watch` stream (D27).
+    ///
+    /// **`sequence` is what keeps a stream monotonic.** `apply` is entered from threads that share
+    /// no lock — the socket handler, capture's own thread, the drain watchdog, D15's cap — and a
+    /// transition descheduled between taking `stateLock` and reaching here can otherwise be
+    /// published AFTER a newer one. The daemon already stamps transitions for exactly this hazard
+    /// (see the note on `apply`); this is the third place that stamp is load-bearing. Without it a
+    /// finished dictation could leave the menu-bar glyph red for ever.
+    ///
+    /// A `nil` sequence means "not a transition" — a readiness change — and is always published:
+    /// it is the newest word on a fact that moves at most twice in a daemon's lifetime.
+    private func publish(sequence: UInt64? = nil) {
+        guard let server else { return }
+        if let sequence {
+            let isNewest = readinessLock.withLock { () -> Bool in
+                guard sequence > lastPublishedSequence else { return false }
+                lastPublishedSequence = sequence
+                return true
+            }
+            guard isNewest else { return }
+        }
+        server.publish(.update(snapshot(), sequence: sequence))
+    }
+
+    public func observe(_ change: (inout Faculties) -> Void) {
+        readinessLock.withLock { change(&faculties) }
+        // Readiness is not a transition, so it carries no sequence number and cannot be dropped as
+        // stale — it is the newest thing known about a fact that moves at most twice in a daemon's
+        // life. It is published immediately because the whole value of the fault banner is that the
+        // user sees "the models are not downloaded" at login rather than after losing an utterance.
+        publish()
     }
 
     /// Why an attempt whose recogniser produced text is nevertheless empty (§7's "a replacement

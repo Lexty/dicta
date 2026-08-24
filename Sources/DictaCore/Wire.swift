@@ -28,6 +28,19 @@ public enum Command: String, Codable, Sendable, CaseIterable {
     /// surface, so `session type` cannot reach it and there is no way to set the query of a picker
     /// that is already open — a dictation aimed at a dialog has to arrive before the dialog does.
     case dictate
+    /// Observe the daemon's state until the connection is dropped (D27).
+    ///
+    /// The one verb that is not a command at all: it changes nothing, decides nothing, and its
+    /// answer is not an event but a series of them. It exists because the menu-bar UI has to show
+    /// what the daemon is doing without asking — a client polling `status` at 1 Hz would queue
+    /// behind every running pipeline on the handler lock and freeze for exactly the interval it is
+    /// there to display, besides waking the daemon 86 400 times a day for nothing.
+    ///
+    /// **This is a second SHAPE of connection, not a sixth case in this enum**, and most of what it
+    /// cost is in `ControlServer`: every other verb is one frame in, one frame out, and the read
+    /// timeouts are all sized as "how long may one answer take". See `WatchEvent` for what travels,
+    /// and `ControlTimeouts.watchIdle` for the timeout that had to be invented rather than reused.
+    case watch
 
     /// Whether the daemon serves this command **without waiting for the one already in flight**.
     ///
@@ -57,6 +70,11 @@ public enum Command: String, Codable, Sendable, CaseIterable {
         // `abort` does and on one more: it neither begins an attempt nor ends one. It parks a claim
         // and waits.
         case .dictate: true
+        // `watch` is the third, and the list is a TEST rather than a habit — `dictate` is what made
+        // that visible. The test is: does this verb begin an attempt or end one? A watcher does
+        // neither. It also outlives every command that does, so holding the lock for its lifetime
+        // would not merely delay a chord, it would stop the daemon serving any at all.
+        case .watch: true
         case .status, .toggle, .start, .stop, .last: false
         }
     }
@@ -83,8 +101,79 @@ public enum Command: String, Codable, Sendable, CaseIterable {
         // anybody is watching stderr — and a script IS watching, because it reads the answer. A
         // desktop notification would be shouting at somebody already looking.
         case .dictate: true
+        // Sent by a long-lived program that renders the answer, so there is always something
+        // watching — and a UI that could not reach the daemon says so in its own window, which is
+        // the one place the user is already looking.
+        case .watch: true
         case .toggle, .start, .stop, .abort: false
         }
+    }
+}
+
+/// One frame on a `watch` stream (D27).
+///
+/// The handshake is deliberately the SAME as every other verb's — one `Request`, one `Response` —
+/// and the stream begins only after the daemon has accepted. That is what keeps `ControlServer`'s
+/// existing path byte-identical for the other six verbs: a rejection (the watcher cap, a daemon
+/// shutting down) is an ordinary short `Response`, not a special case, and not a dropped
+/// connection.
+///
+/// **A dropped connection is never how a stream ends.** `ControlClient` reads a close as
+/// `closedByPeer` and reports that the daemon died — which is why an oversized answer is already
+/// refused with a short `Response` rather than a hang-up. A watcher would otherwise report a
+/// crashed daemon every time the daemon shut down cleanly, which is the opposite of the truth and
+/// the exact false alarm the UI exists to avoid raising.
+public struct WatchEvent: Codable, Sendable, Equatable {
+    public enum Kind: String, Codable, Sendable, CaseIterable {
+        /// The daemon's state, as of now. Coalesced: a slow reader is given the newest one, never a
+        /// queue of stale ones, because nothing downstream of the UI wants the history of a glyph.
+        case update
+        /// The stream is over and the connection is about to close, on purpose. Carries a reason so
+        /// the difference between "the daemon stopped" and "you were dropped" is readable.
+        case end
+    }
+
+    public var kind: Kind
+    /// Absent on `.end`: there is nothing true to say about the state of a daemon that has stopped,
+    /// and a stale snapshot would be worse than none.
+    public var snapshot: StatusSnapshot?
+    /// Why the stream ended, in the words a user could be shown. `nil` on `.update`.
+    public var reason: String?
+    /// The daemon's transition counter, so a stream cannot go backwards.
+    ///
+    /// `Daemon.apply` is reached from threads that share no lock — the socket handler, capture's
+    /// own thread, the drain watchdog, D15's cap — and a transition descheduled between taking
+    /// the lock and publishing can otherwise arrive after a NEWER one. The daemon already stamps
+    /// every transition for exactly this hazard; this carries the stamp out so the drop happens
+    /// once, where the ordering is known, rather than being re-derived by every reader.
+    public var sequence: UInt64?
+
+    public init(
+        kind: Kind,
+        snapshot: StatusSnapshot? = nil,
+        reason: String? = nil,
+        sequence: UInt64? = nil
+    ) {
+        self.kind = kind
+        self.snapshot = snapshot
+        self.reason = reason
+        self.sequence = sequence
+    }
+
+    /// The state as of now.
+    public static func update(_ snapshot: StatusSnapshot,
+                              sequence: UInt64? = nil) -> WatchEvent {
+        WatchEvent(kind: .update, snapshot: snapshot, sequence: sequence)
+    }
+
+    /// Convenience for the tests and for a daemon with nothing else to report.
+    public static func update(state: LifecycleState) -> WatchEvent {
+        .update(StatusSnapshot(state: state))
+    }
+
+    /// The end of the stream, with the reason a human could be shown.
+    public static func end(_ reason: String) -> WatchEvent {
+        WatchEvent(kind: .end, reason: reason)
     }
 }
 
@@ -220,6 +309,12 @@ public struct Response: Codable, Sendable, Equatable {
     /// Text the command was asked to produce — `last` and nothing else so far. Reading text back is
     /// not injection, so invariant 1 does not apply to it (§9).
     public var text: String?
+    /// The same value a `watch` stream carries (D27), on the answers that have one.
+    ///
+    /// `status` and the `watch` handshake both fill it, from one function, and that is the point:
+    /// two routes to "what is dicta doing" that computed the answer separately would drift, and the
+    /// drift would show up as a UI whose first frame disagreed with its second.
+    public var snapshot: StatusSnapshot?
 
     public init(
         kind: CommandOutcome,
@@ -227,7 +322,8 @@ public struct Response: Codable, Sendable, Equatable {
         attempt: AttemptID? = nil,
         target: Target? = nil,
         message: String? = nil,
-        text: String? = nil
+        text: String? = nil,
+        snapshot: StatusSnapshot? = nil
     ) {
         self.kind = kind
         self.state = state
@@ -235,6 +331,7 @@ public struct Response: Codable, Sendable, Equatable {
         self.target = target
         self.message = message
         self.text = text
+        self.snapshot = snapshot
     }
 }
 

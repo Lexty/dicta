@@ -126,6 +126,33 @@ case let .failure(error):
 
 let controlSocket = invocation.controlSocket ?? Paths.current.socket.path
 
+// `watch` is the one verb whose answer is not an answer but a series of them (D27), so it cannot go
+// through `send`. It is here so a person can watch the daemon from a terminal without the menu-bar
+// UI installed — which is also the only way the stream is checkable by hand.
+//
+// One line of JSON per event, deliberately: this is a diagnostic, and a diagnostic whose output can
+// be piped into `jq` is worth more than one that is pretty. It ends when the daemon ends the
+// stream, which is a normal exit: a daemon shutting down is not a failure of what watches it.
+if invocation.request.cmd == .watch {
+    do {
+        try ControlClient.watch(to: controlSocket) { event in
+            if let line = try? Wire.encode(event),
+               let text = String(data: line, encoding: .utf8) {
+                print(text.trimmingCharacters(in: .newlines))
+                // Flushed, because the whole point is to see events as they happen and stdout to a
+                // pipe is block-buffered.
+                fflush(stdout)
+            }
+        }
+        exit(ClientCommand.ExitCode.ok)
+    } catch let error as ControlClient.ClientError {
+        // Typed by hand, so no desktop notification: somebody is already reading this.
+        fail("\(error)", code: ClientCommand.ExitCode.unreachable)
+    } catch {
+        fail("\(error)", code: ClientCommand.ExitCode.unreachable)
+    }
+}
+
 do {
     // A caller that named its own `--timeout` is telling the daemon how long to wait, so the client
     // must be willing to wait at least that long plus whatever the attempt itself costs. Reading

@@ -97,6 +97,7 @@ public enum ClientCommand {
       abort    end an attempt and deliver nothing
       status   print the daemon's current state
       last     print the text of the most recent attempt
+      watch    print the daemon's state as one JSON line per change, until it stops (D27)
       dictate  wait for the next dictation and print its text — nothing is typed anywhere (D29)
 
     options:
@@ -139,7 +140,11 @@ public enum ClientCommand {
         case .stop: [modeFlag, agtermSocketFlag, controlFlag]
         case .last: [recognisedFlag, agtermSocketFlag, controlFlag]
         case .dictate: [timeoutFlag, modeFlag, agtermSocketFlag, controlFlag]
-        case .abort, .status: [agtermSocketFlag, controlFlag]
+        // `watch` takes only the reaching flags, and that is the whole of its surface: it names no
+        // attempt, chooses no mode and pins no session, because it changes nothing (D27). It is
+        // exposed on the client at all so a person can see the stream without building the UI —
+        // the same reason `last` is there.
+        case .abort, .status, .watch: [agtermSocketFlag, controlFlag]
         }
     }
 

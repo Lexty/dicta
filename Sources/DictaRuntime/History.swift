@@ -1,4 +1,5 @@
 import DictaCore
+import DictaRecord
 import Foundation
 
 // The record's I/O half (§9): one file, opened for append, one `write` per entry.
@@ -102,7 +103,28 @@ public struct FileHistory: History, Sendable {
     }
 
     public func entries() throws -> [RecordEntry] {
-        Record.entries(in: try contents())
+        // Delegated, so the project has exactly ONE thing that turns bytes on disk into entries.
+        // Two readers would eventually disagree about the superseding rule or about a torn tail,
+        // and the disagreement would be between what `dictactl last` says and what the panel shows.
+        //
+        // The ERROR TYPE is translated rather than passed through: `HistoryError` is this seam's
+        // contract, and a caller matching on it — §7's "the record cannot be read" row — would stop
+        // matching if the reader's own error escaped. Delegating an implementation is not the same
+        // as delegating an interface.
+        do {
+            return try RecordReader.all(in: url)
+        } catch let error as RecordReader.ReaderError {
+            throw HistoryError.cannotRead(path: url.path, reason: "\(error)")
+        }
+    }
+
+    /// The last `count` attempts, without parsing the journal from the start (D27).
+    ///
+    /// Not on the `History` protocol: the daemon has no use for it, and a seam grows a method only
+    /// when something behind it needs one. The menu-bar UI reads this file directly and read-only —
+    /// it is a second reader of the record, never a second writer.
+    public func tail(_ count: Int) throws -> RecordReader.Reading {
+        try RecordReader.tail(of: url, entries: count)
     }
 
     /// Every line, including ones a later line supersedes. What "append-only" looks like from

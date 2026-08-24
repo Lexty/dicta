@@ -74,6 +74,35 @@ public enum ControlTimeouts {
     /// wait for ever, or the user's `⌃⌥C` appears to have hung and the only way out is to find the
     /// process.
     public static let dictateWait: TimeInterval = 60.0
+    /// How long a `watch` client waits between frames before deciding the daemon is gone (D27).
+    ///
+    /// **This value had to be invented rather than reused, and that is the whole point of the
+    /// entry.** Every other number here means "how long may ONE answer take", and a watcher is not
+    /// waiting for an answer: it is waiting for the user to press a key, which they may not do
+    /// until tomorrow. A stream silent for an hour because nobody dictated is perfectly healthy,
+    /// and no timeout above says so — `clientRead` would call such a daemon dead within three
+    /// seconds.
+    ///
+    /// So it is generous, and it is not a heartbeat interval: the daemon sends nothing when nothing
+    /// happens. What actually detects a dead peer is the write that fails, in whichever direction
+    /// moves first. This bounds the case where the daemon's process is gone without its socket
+    /// having been closed — a `SIGKILL` with a descriptor inherited by a child, say — which no
+    /// write from the client's side would otherwise reveal.
+    public static let watchIdle: TimeInterval = 3600.0
+
+    /// How many `watch` connections the daemon serves at once (D27).
+    ///
+    /// The number is small because the expected population is one — the menu-bar UI — and a second
+    /// is a developer looking. It exists at all because a watcher **breaks the premise every other
+    /// connection here rests on**. `ControlServer` serves each connection on its own real `Thread`,
+    /// and the comment justifying that says outright: "the daemon serves a keypress or two a
+    /// second, so a thread per connection costs nothing worth counting". Momentary connections make
+    /// that true. A watcher lives for hours, so "how many can exist" stops being answered by "they
+    /// are all over in milliseconds" and has to be answered here.
+    ///
+    /// Over the cap the daemon REFUSES with an ordinary short `Response`, never by dropping the
+    /// connection — see `WatchEvent`.
+    public static let maxWatchers = 4
 
     /// The read timeout a verb deserves. Every verb a CHORD can send gets the pipeline's ceiling.
     ///
@@ -97,6 +126,11 @@ public enum ControlTimeouts {
     public static func read(for command: Command) -> TimeInterval {
         switch command {
         case .stop, .toggle, .start, .abort: pipelineRead
+        // The handshake, not the stream. `watch`'s first frame is an ordinary accept-or-refuse
+        // `Response` and arrives as fast as the daemon can take its lock; `watchIdle` governs
+        // everything after it, and is applied by the watching client rather than looked up here —
+        // a single number per verb cannot express "short, then long".
+        case .watch: clientRead
         // The daemon's wait, plus the ceiling on everything it does AFTER the user stops speaking.
         // A caller that names its own `--timeout` overrides this from `dictactl`, because a read
         // timeout shorter than the wait it asked for would report a daemon that is doing exactly
@@ -164,6 +198,52 @@ public enum Framing {
                 if code == EAGAIN || code == EWOULDBLOCK { throw TransportError.timedOut }
                 throw TransportError.io("write()", code: code)
             }
+        }
+    }
+
+    /// Reads one frame from a connection that carries MANY, keeping whatever arrived after it.
+    ///
+    /// `readFrame` below discards the tail of the chunk it read past the newline, and says so: with
+    /// one frame per connection those bytes belong to nobody. On a `watch` stream they belong to
+    /// the next event — two frames written back-to-back arrive in a single `read` — and discarding
+    /// them would silently drop the newer state, which is the one thing the stream exists to carry.
+    /// Hence a second reader rather than a flag: the two have genuinely different contracts, and
+    /// the one-frame reader's discarding is load-bearing where it is used.
+    public static func readStreamedFrame(
+        from descriptor: Int32,
+        buffer: inout Data,
+        limit: Int = Wire.maxFrameBytes
+    ) throws -> Data {
+        var chunk = [UInt8](repeating: 0, count: chunkBytes)
+        while true {
+            if let newline = buffer.firstIndex(of: 0x0A) {
+                let frame = Data(buffer[buffer.startIndex ..< newline])
+                // The limit counts the newline, so a body one byte short of it is legal.
+                guard frame.count + 1 <= limit else {
+                    throw TransportError.frameTooLarge(bytes: frame.count + 1, limit: limit)
+                }
+                buffer = Data(buffer[buffer.index(after: newline)...])
+                return frame
+            }
+            // Refused at the moment it crosses the line, so a peer cannot make us buffer its whole
+            // idea of a message before we get to disagree with it.
+            guard buffer.count < limit else {
+                throw TransportError.frameTooLarge(bytes: buffer.count, limit: limit)
+            }
+            let count = chunk.withUnsafeMutableBytes { raw -> Int in
+                Darwin.read(descriptor, raw.baseAddress, raw.count)
+            }
+            if count == 0 {
+                if buffer.isEmpty { throw TransportError.closedByPeer }
+                throw TransportError.truncated(bytes: buffer.count)
+            }
+            if count < 0 {
+                let code = errno
+                if code == EINTR { continue }
+                if code == EAGAIN || code == EWOULDBLOCK { throw TransportError.timedOut }
+                throw TransportError.io("read()", code: code)
+            }
+            buffer.append(contentsOf: chunk[0 ..< count])
         }
     }
 
@@ -305,6 +385,71 @@ public final class ControlServer: @unchecked Sendable {
     private var wakeupRead: Int32 = -1
     private var wakeupWrite: Int32 = -1
     private var running = false
+    /// The live `watch` streams (D27), keyed so one can be removed without identity games. Guarded
+    /// by `stateLock` like everything else here, and bounded by `ControlTimeouts.maxWatchers`.
+    private var watchers: [Int: Watcher] = [:]
+    private var nextWatcherID = 0
+
+    /// One `watch` stream's outbox.
+    ///
+    /// It holds at most ONE event, and that is the coalescing rule rather than an optimisation: a
+    /// UI wants the daemon's state now, never the history of how it got there, and a reader that
+    /// fell behind must not be handed a queue to replay. `post` overwrites; the writer thread picks
+    /// up whatever is there when it next looks.
+    ///
+    /// An `NSCondition` rather than a semaphore because two different things wake the writer — a
+    /// new event, and the end of the stream — and they must be distinguishable when both are
+    /// pending. The writer is the connection's own thread, which already exists and is already a
+    /// real `Thread`; nothing new is spawned per watcher.
+    private final class Watcher {
+        private let condition = NSCondition()
+        private var pending: WatchEvent?
+        private var ending: WatchEvent?
+        private var done = false
+
+        /// The newest state. Replaces anything not yet written.
+        func post(_ event: WatchEvent) {
+            condition.lock()
+            defer { condition.unlock() }
+            guard !done else { return }
+            pending = event
+            condition.signal()
+        }
+
+        /// Ends the stream after at most one more update. Idempotent.
+        func finish(_ event: WatchEvent) {
+            condition.lock()
+            defer { condition.unlock() }
+            guard !done, ending == nil else { return }
+            ending = event
+            condition.signal()
+        }
+
+        /// Blocks until there is a frame to write, or the stream is over (`nil`).
+        func next() -> WatchEvent? {
+            condition.lock()
+            defer { condition.unlock() }
+            while pending == nil, ending == nil, !done { condition.wait() }
+            if let event = pending {
+                pending = nil
+                return event
+            }
+            if let event = ending {
+                ending = nil
+                done = true
+                return event
+            }
+            return nil
+        }
+
+        /// Wakes the writer with nothing to say, so it can leave.
+        func cancel() {
+            condition.lock()
+            defer { condition.unlock() }
+            done = true
+            condition.signal()
+        }
+    }
 
     /// The socket file is removed by whichever of `stop` and `acceptLoop` gets there second, and
     /// only once the loop has actually exited: unlinking the path while the loop is still accepting
@@ -412,6 +557,13 @@ public final class ControlServer: @unchecked Sendable {
             return true
         }
         guard wasRunning else { return }
+        // Every watcher is TOLD the stream is over, rather than discovering it when the socket
+        // closes underneath them (D27). A client reads a close as `closedByPeer` and reports that
+        // the daemon died — so without this, an orderly `launchctl bootout` would put "dicta
+        // crashed" in front of the user every single time, which is both false and the exact
+        // alarm the UI exists to avoid raising.
+        let live = stateLock.withLock { Array(watchers.values) }
+        for watcher in live { watcher.finish(.end("the daemon is shutting down")) }
         // Only unlink once the loop has confirmed it is gone. On the timeout the loop is still
         // accepting on this path, and removing the file underneath it would leave a listener no
         // client can address while `dictactl` reported "dicta is not running".
@@ -530,6 +682,59 @@ public final class ControlServer: @unchecked Sendable {
         if !askedToStop { onUnexpectedExit?() }
     }
 
+    /// Hands the newest state to every live `watch` stream (D27).
+    ///
+    /// Safe to call from any thread and from inside a transition's aftermath: it takes `stateLock`
+    /// only long enough to copy the list, and each `post` is a lock and a signal over one pointer.
+    /// It never blocks on a socket — the writing happens on each watcher's own connection thread —
+    /// so a wedged UI cannot slow a dictation down. That property is the reason this is a fan-out
+    /// to outboxes rather than a loop of writes.
+    /// How many `watch` streams are live. Exposed because registration happens on the connection's
+    /// own thread, so a test that published immediately after connecting would be asserting on a
+    /// race; and because "how many watchers are there" is the question the cap exists to answer.
+    public var watcherCount: Int { stateLock.withLock { watchers.count } }
+
+    public func publish(_ event: WatchEvent) {
+        let live = stateLock.withLock { Array(watchers.values) }
+        for watcher in live { watcher.post(event) }
+    }
+
+    /// Registers a watcher if there is room. `nil` means the cap is reached, and the caller answers
+    /// with an ordinary refusal rather than by closing the connection.
+    private func registerWatcher() -> (id: Int, watcher: Watcher)? {
+        stateLock.withLock {
+            guard running, watchers.count < ControlTimeouts.maxWatchers else { return nil }
+            nextWatcherID += 1
+            let watcher = Watcher()
+            watchers[nextWatcherID] = watcher
+            return (nextWatcherID, watcher)
+        }
+    }
+
+    private func removeWatcher(_ id: Int) {
+        stateLock.withLock { _ = watchers.removeValue(forKey: id) }
+    }
+
+    /// Writes frames to one watcher until the stream ends or the peer goes away.
+    ///
+    /// This runs on the connection's own thread, which would otherwise have returned. Nothing is
+    /// read from the socket after the handshake: the client says nothing more, and a peer that has
+    /// gone away is discovered by the write that fails — `EPIPE`, with `SIGPIPE` already silenced
+    /// on this descriptor. A watcher that is simply idle costs one parked thread and no syscalls.
+    private func stream(to client: Int32, watcher: Watcher) {
+        while let event = watcher.next() {
+            guard let frame = try? Wire.encode(event) else { continue }
+            do {
+                try Framing.write(frame, to: client)
+            } catch {
+                // The peer is gone. A dead watcher is not an event and is not retried: it is
+                // dropped, and the client reconnects if it still cares.
+                return
+            }
+            if event.kind == .end { return }
+        }
+    }
+
     private func serve(_ client: Int32) {
         let incoming: Incoming
         do {
@@ -546,6 +751,29 @@ public final class ControlServer: @unchecked Sendable {
         } catch {
             incoming = .undecodable(Self.explain(error))
         }
+
+        // `watch` is claimed BEFORE the handler runs, because the cap is a property of this server
+        // and not of the daemon behind it — the handler has no idea how many sockets are open. Over
+        // the cap the connection is answered and closed like any refused command; the stream simply
+        // never starts.
+        var registration: (id: Int, watcher: Watcher)?
+        if case let .request(request) = incoming, request.cmd == .watch {
+            registration = registerWatcher()
+            if registration == nil {
+                let refusal = Response(
+                    kind: .rejected,
+                    state: .idle,
+                    message: "dicta is already serving \(ControlTimeouts.maxWatchers) watchers"
+                )
+                if let frame = try? Wire.encode(refusal) {
+                    try? Framing.write(frame, to: client)
+                }
+                return
+            }
+        }
+        // Registered above, so it is removed on every path out of here — including the ones that
+        // return early below.
+        defer { if let registration { removeWatcher(registration.id) } }
 
         // Serialised, except for the one verb whose whole point is to overtake the command in
         // flight (`Command.isServedConcurrently`). Taking the lock for `abort` too is what made
@@ -570,7 +798,18 @@ public final class ControlServer: @unchecked Sendable {
             guard let fallback = try? Wire.encode(apology) else { return }
             frame = fallback
         }
-        try? Framing.write(frame, to: client)
+        do {
+            try Framing.write(frame, to: client)
+        } catch {
+            return
+        }
+
+        // Everything above is one frame in, one frame out — the shape every other verb has and
+        // keeps. The stream begins only here, only for `watch`, and only once the daemon has
+        // accepted: a refusal is an ordinary `Response` the client has already read.
+        if let registration, response.kind == .accepted {
+            stream(to: client, watcher: registration.watcher)
+        }
     }
 
     /// Whether this frame may overtake the command in flight.
@@ -607,6 +846,11 @@ public enum ControlClient {
         case timedOut(seconds: TimeInterval)
         case transport(TransportError)
         case malformedResponse(String)
+        /// The daemon answered the `watch` handshake with a refusal — the watcher cap, today. A
+        /// distinct case because it is the one failure here that is not a fault: the daemon is
+        /// healthy, it is answering, and it said no. A UI reporting it as unreachable would be
+        /// wrong in the direction that matters.
+        case watchRefused(String)
 
         public var description: String {
             switch self {
@@ -620,6 +864,8 @@ public enum ControlClient {
                 "dicta could not be reached: \(error.description)"
             case let .malformedResponse(detail):
                 "dicta answered something unreadable: \(detail)"
+            case let .watchRefused(reason):
+                "dicta refused to be watched: \(reason)"
             }
         }
     }
@@ -678,6 +924,113 @@ public enum ControlClient {
             throw ClientError.daemonCrashed(path: path)
         } catch let error as TransportError {
             throw ClientError.transport(error)
+        }
+    }
+
+    /// Opens a `watch` stream and delivers events until it ends (D27).
+    ///
+    /// **Blocks for the lifetime of the stream, so it must be called on a real `Thread`** — the
+    /// same rule the server serves connections under, and for the same measured reason: on Darwin,
+    /// Swift
+    /// concurrency's executor shares the non-overcommit pool `DispatchQueue.global()` draws from,
+    /// and that pool does not grow when its threads block. A watcher parked on a cooperative thread
+    /// for hours is one worker that will never come back.
+    ///
+    /// `onEvent` runs on that thread. Callers that touch a UI hop to the main queue themselves;
+    /// doing it here would make the transport know what its caller is.
+    ///
+    /// Returns normally when the daemon ends the stream, and throws when it could not be reached or
+    /// the connection broke. The difference matters to the caller: the first is "the daemon stopped
+    /// and said so", the second is "something went wrong", and a UI that showed the same thing for
+    /// both would be the false crash report `WatchEvent` exists to prevent.
+    public static func watch(
+        to path: String = Paths.current.socket.path,
+        connectTimeout: TimeInterval = ControlTimeouts.connect,
+        idleTimeout: TimeInterval = ControlTimeouts.watchIdle,
+        onEvent: (WatchEvent) -> Void
+    ) throws {
+        var address: sockaddr_un
+        do {
+            address = try unixAddress(for: path)
+        } catch let error as TransportError {
+            throw ClientError.transport(error)
+        }
+
+        let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard descriptor >= 0 else { throw ClientError.transport(.io("socket()", code: errno)) }
+        defer { close(descriptor) }
+        silenceSIGPIPE(descriptor)
+
+        guard let payload = try? Wire.encode(Request(cmd: .watch)) else {
+            throw ClientError.malformedResponse("the watch request could not be encoded")
+        }
+
+        try connect(descriptor, to: &address, path: path, timeout: connectTimeout)
+        // The handshake is one answer and deserves the ordinary short timeout; the STREAM is a
+        // different question and gets `watchIdle` below. One number per verb cannot say both.
+        setReadTimeout(descriptor, seconds: ControlTimeouts.read(for: .watch))
+
+        var accepted: Response?
+        do {
+            try Framing.write(payload, to: descriptor)
+            let frame = try Framing.readFrame(from: descriptor)
+            let response = try Wire.decode(Response.self, from: frame)
+            guard response.kind == .accepted else {
+                throw ClientError.watchRefused(response.message ?? "dicta refused the watch")
+            }
+            accepted = response
+        } catch let error as ClientError {
+            throw error
+        } catch TransportError.timedOut {
+            throw ClientError.timedOut(seconds: ControlTimeouts.read(for: .watch))
+        } catch TransportError.closedByPeer {
+            throw ClientError.daemonCrashed(path: path)
+        } catch let error as TransportError {
+            throw ClientError.transport(error)
+        } catch {
+            throw ClientError.malformedResponse("\(error)")
+        }
+
+        // **The handshake's snapshot IS the stream's first event, and dropping it was a defect.**
+        // The daemon publishes on TRANSITIONS, so a watcher that attaches to an idle daemon is told
+        // nothing until somebody dictates. Measured 2026-08-24 (F9b): `dictactl watch` against a
+        // healthy idle daemon printed nothing for as long as it was left running, and after a
+        // daemon restart the menu-bar strip went on saying "dicta is not answering" over a
+        // connection that had been live for minutes — a lie that sustains itself, since the user
+        // does not dictate at a strip that says dicta is dead.
+        //
+        // Nothing had to be added to the wire for it. `Response.snapshot` is filled by the same
+        // function `status` uses, precisely so the UI's first frame and its second cannot disagree
+        // (see `Response.snapshot`); the client was being handed the answer and throwing it away.
+        // The synthesised event carries no `sequence`, which is already the vocabulary for "not a
+        // transition" — the daemon uses it for readiness changes and never drops one.
+        if let snapshot = accepted?.snapshot {
+            onEvent(WatchEvent.update(snapshot))
+        }
+
+        setReadTimeout(descriptor, seconds: idleTimeout)
+        // A stream, so the reader must keep what arrived after the newline: `Framing.readFrame`
+        // discards it, which is correct when a connection carries exactly one frame and wrong here.
+        // Two events written back-to-back land in one `read`, and dropping the tail would silently
+        // lose the newer one — the one that matters, since the newest state is the whole point.
+        var buffered = Data()
+        while true {
+            let event: WatchEvent
+            do {
+                let frame = try Framing.readStreamedFrame(from: descriptor, buffer: &buffered)
+                event = try Wire.decode(WatchEvent.self, from: frame)
+            } catch TransportError.closedByPeer {
+                // The daemon vanished without ending the stream: a crash, not a shutdown.
+                throw ClientError.daemonCrashed(path: path)
+            } catch TransportError.timedOut {
+                throw ClientError.timedOut(seconds: idleTimeout)
+            } catch let error as TransportError {
+                throw ClientError.transport(error)
+            } catch {
+                throw ClientError.malformedResponse("\(error)")
+            }
+            onEvent(event)
+            if event.kind == .end { return }
         }
     }
 

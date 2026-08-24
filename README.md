@@ -172,6 +172,7 @@ verbs:
   abort    end an attempt and deliver nothing
   status   print the daemon's current state
   last     print the text of the most recent attempt
+  watch    print the daemon's state as one JSON line per change, until it stops (D27)
   dictate  wait for the next dictation and print its text — nothing is typed anywhere (D29)
 
 options:

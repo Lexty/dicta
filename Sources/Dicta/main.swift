@@ -201,6 +201,13 @@ do {
 
 log("listening on \(controlSocket)")
 
+// The third of the three facts the UI's readiness is derived from (D27). It is unconditionally true
+// here: `Agterm.locate()` above is a `guard` that exits when it fails, so reaching this line IS the
+// observation. Recorded anyway rather than defaulted, because `Faculties` distinguishes "known
+// good" from "nobody has looked", and a daemon that left this `nil` would sit at `starting` for
+// ever — a UI showing "Starting…" for the rest of the session is worse than one showing a fault.
+daemon.observe { $0.terminal = true }
+
 // Push-to-talk (D5), armed after the socket is bound because the trigger reaches the daemon through
 // that socket exactly as `dictactl` does -- it is a keypress source, not a second door into the
 // lifecycle.
@@ -245,6 +252,11 @@ if armHoldTrigger {
 let warmUp = Thread {
     do {
         let summary = try transcriber.prepare()
+        // The UI's fault banner is fed from here (D27). Both branches report, because "the models
+        // never loaded" is exactly the fact a user otherwise discovers by pressing a chord and
+        // losing an utterance -- and it is the common state of a fresh install rather than a
+        // malfunction.
+        daemon.observe { $0.models = true }
         log(String(format: "recognition is warm: models loaded in %.1f s, dummy inference %.2f s",
                    summary.loadSeconds, summary.warmUpSeconds))
         if let warmUpError = summary.warmUpError {
@@ -254,6 +266,7 @@ let warmUp = Thread {
             log("the warm-up inference failed (\(warmUpError)) -- the first dictation may be slow")
         }
     } catch {
+        daemon.observe { $0.models = false }
         log("recognition is UNAVAILABLE -- \(error)")
     }
 }
@@ -266,6 +279,7 @@ warmUp.start()
 // first chord rather than during it.
 log("microphone: \(capture.access.rawValue)")
 capture.requestAccessIfNeeded { access in
+    daemon.observe { $0.microphone = access == .granted }
     log("microphone: \(access.rawValue)")
     if access != .granted {
         log("dicta cannot record until the microphone is granted in System Settings > Privacy & "
