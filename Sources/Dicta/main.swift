@@ -26,6 +26,8 @@ options:
   --agterm-socket <path>   agterm's control socket, when it is not the default one
   --fetch-models           download the recognition models, then exit
   --no-hold                do not arm push-to-talk; the keymap chords still work
+  --hold-key <name>        arm push-to-talk on this key instead of the default pair
+                           (\(HoldKey.everyName)); repeat the flag to arm several
   --help                   print this
 """
 
@@ -33,6 +35,10 @@ var controlSocket = Paths.current.socket.path
 var agtermSocket: String?
 var fetchModels = false
 var armHoldTrigger = true
+/// Empty means "whatever `HoldTrigger.Configuration` defaults to". Not seeded with that default
+/// here: the first `--hold-key` has to REPLACE the pair rather than join it, and a list that starts
+/// out full cannot tell the two apart.
+var holdKeys: [HoldKey] = []
 
 var arguments = Array(CommandLine.arguments.dropFirst())
 while let argument = arguments.first {
@@ -64,6 +70,22 @@ while let argument = arguments.first {
         agtermSocket = value("--agterm-socket")
     case "--no-hold":
         armHoldTrigger = false
+    case "--hold-key":
+        let name = value("--hold-key")
+        guard let key = HoldKey.named(name) else {
+            let accepted = HoldKey.everyName
+            let complaint = "dicta: --hold-key does not know \"\(name)\"; it accepts \(accepted)\n"
+            FileHandle.standardError.write(Data(complaint.utf8))
+            exit(2)
+        }
+        // A repeat is refused rather than deduplicated. Two watches on one key would each report
+        // its edges and `HoldWatch` would swallow the second -- correct, and silently different
+        // from what the user wrote.
+        guard !holdKeys.contains(key) else {
+            FileHandle.standardError.write(Data("dicta: --hold-key \(name) was given twice\n".utf8))
+            exit(2)
+        }
+        holdKeys.append(key)
     case "--fetch-models":
         fetchModels = true
     default:
@@ -187,7 +209,9 @@ log("listening on \(controlSocket)")
 // state of the modifier keys and no key code ever reaches this process (F6, invariant 11).
 var holdTrigger: HoldTrigger?
 if armHoldTrigger {
-    let configuration = HoldTrigger.Configuration(socketPath: controlSocket)
+    let configuration = holdKeys.isEmpty
+        ? HoldTrigger.Configuration(socketPath: controlSocket)
+        : HoldTrigger.Configuration(keys: holdKeys, socketPath: controlSocket)
     // Only as a notifier. The target is resolved inside the daemon, from one tree read, because the
     // trigger asks for it with `focus: true` rather than looking it up itself (§5).
     let agterm = Agterm(executable: agtermctl, agtermSocket: defaultAgtermSocket)
@@ -198,7 +222,10 @@ if armHoldTrigger {
     )
     trigger.start()
     holdTrigger = trigger
-    log("push-to-talk is armed on \(configuration.key.describedName)")
+    // Named in full, and every one of them: two keys are armed by default (F6a) and a user who
+    // reads this line after passing `--hold-key` is reading it precisely to find out which.
+    let armed = configuration.keys.map(\.describedName).joined(separator: " and ")
+    log("push-to-talk is armed on \(armed)")
 } else {
     log("push-to-talk is disabled (--no-hold); the keymap chords are unaffected")
 }

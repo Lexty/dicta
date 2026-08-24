@@ -15,29 +15,48 @@ import Foundation
 /// trigger would fire on every `⌃C` and `⌃R` typed with the other hand, which in a terminal is all
 /// day long.
 ///
-/// Only the two keys F6 actually measured on this user's external keyboard are offered. A third
-/// case here would be a guess wearing the same clothes as a measurement, and the right Option key
-/// this keyboard does not have is exactly how that guess would have gone wrong.
+/// Only keys a probe has actually reported on this user's own hardware are offered. A case here
+/// that nobody pressed would be a guess wearing the same clothes as a measurement, which is why
+/// this enum grew by exactly one case when a second keyboard was measured and not by three.
+///
+/// The reason there is more than one at all is F6a: **the built-in keyboard of this laptop has no
+/// right Control key.** D5's key exists on the external keyboard and nowhere else, so on the
+/// laptop push-to-talk was unreachable — not degraded, absent.
 public enum HoldKey: String, Codable, Sendable, CaseIterable {
     case rightControl
     case rightCommand
+    case rightOption
 
-    /// The device-dependent bit, from `IOLLEvent.h`'s `NX_DEVICER*KEYMASK`, confirmed against this
-    /// keyboard in F6: right Control `0x2000` against left Control `0x1`, right Command `0x10`
-    /// against left Command `0x8`.
+    /// The device-dependent bit, from `IOLLEvent.h`'s `NX_DEVICER*KEYMASK`, confirmed against real
+    /// keyboards rather than read out of the header: right Control `0x2000` against left Control
+    /// `0x1` and right Command `0x10` against left Command `0x8` on the external keyboard (F6),
+    /// right Command `0x10` and right Option `0x40` on the built-in one (F6a).
     public var bit: UInt64 {
         switch self {
         case .rightControl: 0x0000_2000
         case .rightCommand: 0x0000_0010
+        case .rightOption: 0x0000_0040
         }
     }
 
-    /// What the user would call it, for a notification that has to name the key.
+    /// What the user would call it, for a notification or a log line that has to name the key.
     public var describedName: String {
         switch self {
         case .rightControl: "the right Control key"
         case .rightCommand: "the right Command key"
+        case .rightOption: "the right Option key"
         }
+    }
+
+    /// The name `--hold-key` accepts, which is the enum's own raw value spelled in the same case a
+    /// user would type it.
+    public static func named(_ name: String) -> HoldKey? {
+        allCases.first { $0.rawValue.lowercased() == name.lowercased() }
+    }
+
+    /// Every name `--hold-key` accepts, for a usage line that cannot drift from the enum.
+    public static var everyName: String {
+        allCases.map(\.rawValue).joined(separator: "|")
     }
 }
 
@@ -81,6 +100,84 @@ public struct ModifierWatch: Sendable, Equatable {
     }
 }
 
+/// One edge, and which key produced it.
+public struct HoldEdge: Sendable, Equatable {
+    public var key: HoldKey
+    public var edge: ModifierWatch.Edge
+
+    public init(key: HoldKey, edge: ModifierWatch.Edge) {
+        self.key = key
+        self.edge = edge
+    }
+}
+
+/// Several watched keys, presented to the gesture as if there were one.
+///
+/// Two keys arm push-to-talk because one keyboard does not have the other's key (F6a), and the
+/// whole difficulty is what happens when both are involved in the same gesture. The rule is
+/// **first key wins, and owns the gesture until it is released**: every other key is furniture
+/// while it holds.
+///
+/// The failure that rule exists to prevent is not hypothetical arithmetic. Hold right Control,
+/// begin dictating, and idly press right Command in the middle of it -- with two independent
+/// watches feeding one `HoldToTalk`, the release of right Command is an `up` like any other, so it
+/// would stop and DELIVER the dictation while the key the user is still holding says otherwise.
+/// The user then goes on speaking into a microphone that closed, and the words already spoken land
+/// in a pane they were not finished aiming.
+///
+/// Every watch is sampled on every call even when its edge is discarded, and that is the load-
+/// bearing half. A watch that is not sampled keeps the state it had, so the press it slept through
+/// becomes an edge later -- the second key, pressed during a hold and released long after it, would
+/// report a `down` the next time anything looked. Sampling all and choosing one keeps every watch
+/// honest about the world; only the reporting is filtered.
+public struct HoldWatch: Sendable, Equatable {
+    /// In the order given, which is the order a tie is broken in when two keys go down inside one
+    /// poll interval. Not a `Set`: "first" has to mean something.
+    public let keys: [HoldKey]
+    private var watches: [ModifierWatch]
+    /// The index of the key that owns the gesture in flight, if one does.
+    private var owning: Int?
+
+    public init(keys: [HoldKey]) {
+        self.keys = keys
+        self.watches = keys.map { ModifierWatch(key: $0) }
+    }
+
+    /// The key that owns the gesture in flight, if any.
+    public var owner: HoldKey? {
+        guard let owning else { return nil }
+        return keys[owning]
+    }
+
+    /// Whether any watched key is currently believed to be down. `false` before the first sample.
+    public var isHeld: Bool { watches.contains { $0.isHeld } }
+
+    /// One sample of the whole modifier word; the one edge it is allowed to produce.
+    public mutating func sample(_ flags: UInt64) -> HoldEdge? {
+        var reported: HoldEdge?
+        for index in watches.indices {
+            let edge = watches[index].sample(flags)
+            guard let edge else { continue }
+            if let owning {
+                // Only the owner may end the gesture. Anything else that moved is swallowed --
+                // including its `down`, which is what stops a second attempt being started over
+                // the top of the first.
+                guard index == owning, edge == .up else { continue }
+                reported = HoldEdge(key: keys[index], edge: .up)
+                self.owning = nil
+                continue
+            }
+            // No gesture in flight. A `down` claims it; an `up` with no owner belongs to a gesture
+            // that never was -- the key was already held when the watch was primed -- and saying
+            // so would ask the daemon to end an attempt nobody started.
+            guard edge == .down else { continue }
+            owning = index
+            reported = HoldEdge(key: keys[index], edge: .down)
+        }
+        return reported
+    }
+}
+
 /// The gesture itself: press, hold, release, and what each of those is worth.
 ///
 /// The type owns one piece of state a caller would otherwise have to keep by hand and get wrong --
@@ -101,8 +198,10 @@ public struct HoldToTalk: Sendable, Equatable {
         case ignore
     }
 
-    /// D21's floor. Measured against it: an ordinary press of a modifier lasts 90-150 ms (F6), so
-    /// 300 ms is twice the longest press observed and a small fraction of any real dictation.
+    /// D21's floor. Measured against it: an ordinary press of a modifier lasts 90-150 ms on the
+    /// external keyboard (F6) and 86-195 ms on the built-in one (F6a). It is no longer twice the
+    /// longest press observed -- F6a's 195 ms took that margin -- but 105 ms clear of the worst
+    /// press yet seen, and a small fraction of any real dictation.
     public static let defaultFloor: TimeInterval = 0.3
 
     public let floor: TimeInterval
@@ -154,7 +253,8 @@ public struct HoldToTalk: Sendable, Equatable {
         // case anything can rely on. `Date` arithmetic is binary floating point, so a press timed
         // at exactly 300 ms comes back as 0.29999999999999993 and lands on the discard side. That
         // is not worth defending against, and the reason it is not is the same reason the floor is
-        // safe at all: the two populations it separates are 90-150 ms and several seconds (F6), so
+        // safe at all: the two populations it separates are 86-195 ms and several seconds (F6,
+        // F6a), so
         // nothing real lives within a rounding error of the boundary. A floor that needed exact
         // arithmetic would be a floor in the wrong place.
         return held < floor ? .discard(attempt: id) : .deliver(attempt: id)

@@ -104,9 +104,24 @@ public final class SystemFrontmost: FrontmostApplication, @unchecked Sendable {
 /// The loop that turns a held key into a dictation.
 public final class HoldTrigger: @unchecked Sendable {
     public struct Configuration: Sendable {
-        /// Right Control (D5). Measured to be distinguishable from left Control on this user's
-        /// external keyboard, which is what makes `⌃C` typed with the other hand harmless (F6).
-        public var key: HoldKey
+        /// The keys that arm push-to-talk, in the order a tie between them is broken.
+        ///
+        /// Right Control is D5's key and stays first: measured distinguishable from left Control,
+        /// which is what makes `⌃C` typed with the other hand harmless (F6). Right Command joins it
+        /// because **this laptop's built-in keyboard has no right Control key at all** (F6a) -- on
+        /// the machine's own keyboard push-to-talk was not degraded but unreachable. Both are the
+        /// same gesture and only one can be in flight, which is `HoldWatch`'s whole subject.
+        ///
+        /// Right Command is not free of collisions and the choice was made with them in view: it is
+        /// the modifier of `⌘V`, `⌘K` and `⌘T`, all of which are ordinary presses that D21's floor
+        /// discards (126 ms measured on this keyboard, against a 300 ms floor). The one gesture
+        /// that does hold it past the floor is `⌘Tab`, and holding it with the RIGHT hand while
+        /// agterm is frontmost opens the microphone for the length of the switch. That costs an
+        /// attempt with no text in it, never an injection into the wrong place -- D22 read
+        /// frontmost at the press, so the target is the pane the user was looking at.
+        /// `--hold-key rightOption` is the escape hatch if it turns out to bite in practice: right
+        /// Option has no such long-held gesture and was measured on the same keyboard (F6a).
+        public var keys: [HoldKey]
         /// D21's floor.
         public var floor: TimeInterval
         /// 16 ms -- 62 samples a second, costing 0.03% of a core (F7).
@@ -126,12 +141,12 @@ public final class HoldTrigger: @unchecked Sendable {
         /// dicta's own control socket -- the same one `dictactl` connects to.
         public var socketPath: String
 
-        public init(key: HoldKey = .rightControl,
+        public init(keys: [HoldKey] = [.rightControl, .rightCommand],
                     floor: TimeInterval = HoldToTalk.defaultFloor,
                     pollInterval: TimeInterval = 0.016,
                     agtermBundleIdentifier: String = HoldTrigger.agtermBundleIdentifier,
                     socketPath: String = Paths.current.socket.path) {
-            self.key = key
+            self.keys = keys
             self.floor = floor
             self.pollInterval = pollInterval
             self.agtermBundleIdentifier = agtermBundleIdentifier
@@ -145,6 +160,10 @@ public final class HoldTrigger: @unchecked Sendable {
     /// instant it happened.
     public struct Pending: Sendable, Equatable {
         public var edge: ModifierWatch.Edge
+        /// Which of the armed keys produced it. Nothing downstream branches on this -- the gesture
+        /// is the same whichever key carries it -- but a `Pending` that did not name its key would
+        /// make "first key wins" a rule assertable only through its consequences.
+        public var key: HoldKey
         public var at: Date
         /// Captured in the poll loop rather than read by the sender, so D22 asks "was agterm
         /// frontmost when the key went down" and not "is it frontmost now that we got round to it".
@@ -160,7 +179,7 @@ public final class HoldTrigger: @unchecked Sendable {
     private let clock: any Clock
     private let send: Sender
 
-    private var watch: ModifierWatch
+    private var watch: HoldWatch
     private var gesture: HoldToTalk
 
     private let lock = NSCondition()
@@ -181,7 +200,7 @@ public final class HoldTrigger: @unchecked Sendable {
         self.notifier = notifier
         self.clock = clock
         self.send = send
-        self.watch = ModifierWatch(key: configuration.key)
+        self.watch = HoldWatch(keys: configuration.keys)
         self.gesture = HoldToTalk(floor: configuration.floor)
     }
 
@@ -239,11 +258,11 @@ public final class HoldTrigger: @unchecked Sendable {
     /// test can drive a gesture a step at a time: the alternative is asserting about a keyboard by
     /// waiting in real seconds, which is how a suite becomes flaky and then becomes ignored.
     public func sample() -> Pending? {
-        guard let edge = watch.sample(modifiers.flags()) else { return nil }
+        guard let held = watch.sample(modifiers.flags()) else { return nil }
         // Read at the edge and not in the sender: whether agterm was frontmost is a fact about the
         // keypress, and the sender can be several seconds behind it.
-        let frontmost = edge == .down ? isAgtermFrontmost() : false
-        return Pending(edge: edge, at: clock.now, wasFrontmost: frontmost)
+        let frontmost = held.edge == .down ? isAgtermFrontmost() : false
+        return Pending(edge: held.edge, key: held.key, at: clock.now, wasFrontmost: frontmost)
     }
 
     private func isAgtermFrontmost() -> Bool {
@@ -277,8 +296,9 @@ public final class HoldTrigger: @unchecked Sendable {
 
     private func begin(_ pending: Pending) {
         // D22, and silent on purpose: the key means nothing outside agterm, and §6's rule is that a
-        // no-op makes no sound. A notification here would fire every time the user pressed a right
-        // Control combination in their browser.
+        // no-op makes no sound. A notification here would fire every time the user pressed a
+        // combination with one of the armed keys in their browser -- and with right Command among
+        // them (F6a) that is every `⌘V` and every `⌘W` they type all day.
         guard pending.wasFrontmost else { return }
         guard case .start = gesture.down(at: pending.at) else { return }
 
@@ -314,8 +334,8 @@ public final class HoldTrigger: @unchecked Sendable {
             // began it, and one key cannot carry two modes (D3). raw stays on its chord.
             dispatch(Request(cmd: .stop, mode: .clean, attempt: attempt))
         case let .discard(attempt):
-            // D21. Under the floor this was a right-Control combination the user typed, not a
-            // dictation -- so it dies with no text and no sound.
+            // D21. Under the floor this was a combination the user typed with the key -- `⌃C`,
+            // `⌘V` -- and not a dictation, so it dies with no text and no sound.
             dispatch(Request(cmd: .abort, attempt: attempt))
         case .start, .ignore:
             // Nothing was ever started under this key: either agterm was not frontmost, or the

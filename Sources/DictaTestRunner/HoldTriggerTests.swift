@@ -61,6 +61,174 @@ struct ModifierWatchTests {
     }
 }
 
+@Suite("hold keys")
+struct HoldKeyTests {
+    @Test("every key has its own bit, and none of them is a left-hand one")
+    func theBitsAreDistinctAndRightHanded() {
+        // The left-hand twins, which are what the sides exist to be told from (F6, F6a). A case
+        // added with the wrong constant would arm `⌃C` or `⌘V` themselves rather than the key
+        // beside them, and nothing else in the suite would notice: every gesture test drives the
+        // fake keyboard through `HoldKey.bit`, so it would agree with the mistake.
+        let leftHanded: Set<UInt64> = [0x0000_0001, 0x0000_0002, 0x0000_0008, 0x0000_0020]
+        var seen: Set<UInt64> = []
+        for key in HoldKey.allCases {
+            #expect(!leftHanded.contains(key.bit), "\(key) carries a left-hand bit")
+            #expect(key.bit != 0, "\(key) carries no bit at all")
+            // The ordinary side-blind masks, which say only that SOME Control is down.
+            #expect(key.bit < 0x0001_0000, "\(key) is a side-blind mask, not a device bit")
+            #expect(seen.insert(key.bit).inserted, "\(key) shares its bit with another key")
+        }
+    }
+
+    @Test("every key name --hold-key accepts round-trips to the key it names")
+    func everyNameResolves() {
+        for key in HoldKey.allCases {
+            #expect(HoldKey.named(key.rawValue) == key)
+            // Typed by a person into a LaunchAgent plist, so the case they use is theirs to pick.
+            #expect(HoldKey.named(key.rawValue.lowercased()) == key)
+            #expect(HoldKey.named(key.rawValue.uppercased()) == key)
+            #expect(HoldKey.everyName.contains(key.rawValue))
+            // The log line names the key to a person, so it says a side out loud.
+            #expect(key.describedName.contains("right"))
+        }
+    }
+
+    @Test("a key name nobody defined is refused rather than guessed at")
+    func anUnknownNameIsRefused() {
+        // `--hold-key` exits on nil. Resolving "rightshift" to something near it would arm a key
+        // the user did not ask for, which is worse than the typo.
+        for name in ["", "right", "rightShif", "leftControl", "fn"] {
+            #expect(HoldKey.named(name) == nil, "\"\(name)\" resolved to a key")
+        }
+    }
+}
+
+@Suite("hold watch")
+struct HoldWatchTests {
+    static let rightControl = HoldKey.rightControl.bit
+    static let rightCommand = HoldKey.rightCommand.bit
+    static let watched: [HoldKey] = [.rightControl, .rightCommand]
+
+    @Test("either armed key starts a gesture of its own")
+    func eitherKeyArms() {
+        // F6a's whole point: the external keyboard's right Control and the built-in keyboard's
+        // right Command are the same gesture, and neither is the special case.
+        for key in Self.watched {
+            var watch = HoldWatch(keys: Self.watched)
+            #expect(watch.sample(0) == nil)
+            #expect(watch.sample(key.bit) == HoldEdge(key: key, edge: .down))
+            #expect(watch.owner == key)
+            #expect(watch.sample(0) == HoldEdge(key: key, edge: .up))
+            #expect(watch.owner == nil)
+        }
+    }
+
+    @Test("the key that started the gesture is the only one that can end it")
+    func theOwnerEndsIt() {
+        // The failure this forbids: right Command pressed and released in the middle of a dictation
+        // held on right Control would otherwise stop and DELIVER it, while the user goes on
+        // speaking into a microphone that closed.
+        var watch = HoldWatch(keys: Self.watched)
+        #expect(watch.sample(0) == nil)
+        #expect(watch.sample(Self.rightControl) == HoldEdge(key: .rightControl, edge: .down))
+        // The other key joins and leaves: not one edge is reported for either move.
+        #expect(watch.sample(Self.rightControl | Self.rightCommand) == nil)
+        #expect(watch.sample(Self.rightControl) == nil)
+        #expect(watch.owner == .rightControl)
+        // And the owner still ends it, which is what makes the swallowing above a filter and not a
+        // watch that has lost track of the world.
+        #expect(watch.sample(0) == HoldEdge(key: .rightControl, edge: .up))
+    }
+
+    @Test("a key that moved during someone else's hold leaves no edge behind for later")
+    func theSwallowedKeyIsStillSampled() {
+        // The trap in filtering by owner: a watch that is not sampled keeps the state it had, so a
+        // key pressed during a hold and still down when the hold ends would report a stale `down`
+        // the next time anything looked -- opening the microphone for a key the user pressed
+        // minutes ago. Every watch is sampled on every call; only the reporting is filtered.
+        var watch = HoldWatch(keys: Self.watched)
+        #expect(watch.sample(0) == nil)
+        #expect(watch.sample(Self.rightControl) == HoldEdge(key: .rightControl, edge: .down))
+        // The second key goes down mid-hold and stays down THROUGH the release of the first.
+        #expect(watch.sample(Self.rightControl | Self.rightCommand) == nil)
+        #expect(watch.sample(Self.rightCommand) == HoldEdge(key: .rightControl, edge: .up))
+        // It is held, and it is not a gesture: it went down while another key owned the watch.
+        #expect(watch.owner == nil)
+        #expect(watch.sample(Self.rightCommand) == nil)
+        // Releasing it says nothing either -- there is no attempt for it to end.
+        #expect(watch.sample(0) == nil)
+        // And the next real press of it is an ordinary gesture again.
+        #expect(watch.sample(Self.rightCommand) == HoldEdge(key: .rightCommand, edge: .down))
+    }
+
+    @Test("the second key starts the next gesture once the first has let go")
+    func ownershipIsHandedOn() {
+        var watch = HoldWatch(keys: Self.watched)
+        #expect(watch.sample(0) == nil)
+        #expect(watch.sample(Self.rightControl) == HoldEdge(key: .rightControl, edge: .down))
+        #expect(watch.sample(0) == HoldEdge(key: .rightControl, edge: .up))
+        #expect(watch.sample(Self.rightCommand) == HoldEdge(key: .rightCommand, edge: .down))
+        #expect(watch.sample(0) == HoldEdge(key: .rightCommand, edge: .up))
+    }
+
+    @Test("two keys going down inside one sample produce one gesture, not two")
+    func aTieIsBrokenByOrder() {
+        // 16 ms is long enough for both to arrive in one poll (F7's interval), and two `down`s out
+        // of one sample would be two attempts, the second started over the top of the first.
+        var watch = HoldWatch(keys: Self.watched)
+        #expect(watch.sample(0) == nil)
+        let edge = watch.sample(Self.rightControl | Self.rightCommand)
+        #expect(edge == HoldEdge(key: .rightControl, edge: .down))
+        #expect(watch.owner == .rightControl)
+        // The one that lost the tie is held and silent, and the winner still ends the gesture.
+        #expect(watch.sample(Self.rightCommand) == HoldEdge(key: .rightControl, edge: .up))
+    }
+
+    @Test("the first sample primes every watch rather than reporting an edge")
+    func theFirstSamplePrimesAll() {
+        // A daemon that started while the user happened to be holding a key. Priming is per watch,
+        // and the release of a key that was never a gesture says nothing at all: `HoldToTalk` would
+        // ignore it, but an `up` reported with no owner is a claim about an attempt that never was.
+        var watch = HoldWatch(keys: Self.watched)
+        #expect(watch.sample(Self.rightCommand) == nil)
+        #expect(watch.isHeld)
+        #expect(watch.owner == nil)
+        #expect(watch.sample(0) == nil)
+    }
+
+    @Test("the left-hand twin of an armed key never arms anything")
+    func leftHandTwinsAreNotArmed() {
+        // F6 for right Control, F6a for right Command: `0x1` against `0x2000`, `0x8` against
+        // `0x10`. Without the sides every `⌃C` and every `⌘V` in a terminal would open the
+        // microphone, which is the reason the key is a side and not merely a modifier.
+        let leftControl: UInt64 = 0x0000_0001
+        let leftCommand: UInt64 = 0x0000_0008
+        let anyControl: UInt64 = 0x0004_0000
+        let anyCommand: UInt64 = 0x0010_0000
+        var watch = HoldWatch(keys: Self.watched)
+        #expect(watch.sample(0) == nil)
+        #expect(watch.sample(leftControl | anyControl) == nil)
+        #expect(watch.sample(leftCommand | anyCommand) == nil)
+        #expect(watch.sample(leftControl | leftCommand | anyControl | anyCommand) == nil)
+        #expect(watch.sample(0) == nil)
+        #expect(!watch.isHeld)
+    }
+
+    @Test("the non-coalesced bit the real keyboard sets is not mistaken for a key")
+    func theNoiseBitIsIgnored() {
+        // Measured in F6a and worth an assertion because it is exactly the shape of thing that
+        // looks like a key: every sample after the first press carried `0x100`
+        // (`NX_NONCOALSESCEDMASK`) whether or not anything was down.
+        let noise: UInt64 = 0x0000_0100
+        var watch = HoldWatch(keys: Self.watched)
+        #expect(watch.sample(0) == nil)
+        #expect(watch.sample(noise) == nil)
+        let pressed = watch.sample(noise | Self.rightCommand)
+        #expect(pressed == HoldEdge(key: .rightCommand, edge: .down))
+        #expect(watch.sample(noise) == HoldEdge(key: .rightCommand, edge: .up))
+    }
+}
+
 @Suite("hold gesture")
 struct HoldToTalkTests {
     static let start = Date(timeIntervalSince1970: 1_766_000_000)
@@ -76,8 +244,9 @@ struct HoldToTalkTests {
 
     @Test("a hold under the floor discards rather than delivering")
     func shortHoldDiscards() {
-        // Invariant 12, and D21's reason for existing: 150 ms is the LONGEST ordinary press F6
-        // measured, so a right-Control combination the user typed lands here and not in a pane.
+        // Invariant 12, and D21's reason for existing: 150 ms is the longest ordinary press F6
+        // measured (F6a has since seen 195 on the other keyboard, still under the floor), so a
+        // combination the user typed with an armed key lands here and not in a pane.
         var gesture = HoldToTalk(floor: 0.3)
         #expect(gesture.down(at: Self.start) == .start)
         gesture.started(attempt: 3)
@@ -291,13 +460,22 @@ struct HoldTriggerTests {
             _ = trigger.sample()
         }
 
-        /// One whole gesture: press, wait, release.
-        func hold(for seconds: TimeInterval) {
-            modifiers.press(.rightControl)
+        /// One whole gesture: press, wait, release. The key defaults to D5's own, so every test
+        /// written before a second one was armed still says what it said.
+        func hold(_ key: HoldKey = .rightControl, for seconds: TimeInterval) {
+            modifiers.press(key)
             if let down = trigger.sample() { trigger.perform(down) }
             clock.advance(by: seconds)
-            modifiers.release(.rightControl)
+            modifiers.release(key)
             if let up = trigger.sample() { trigger.perform(up) }
+        }
+
+        /// One sample of whatever the fake keyboard now says, performed if it produced an edge.
+        @discardableResult
+        func step() -> HoldTrigger.Pending? {
+            guard let edge = trigger.sample() else { return nil }
+            trigger.perform(edge)
+            return edge
         }
     }
 
@@ -391,6 +569,51 @@ struct HoldTriggerTests {
         rig.daemon.queue(Response(kind: .accepted, state: .warming, attempt: nil))
         rig.hold(for: 2)
         #expect(rig.daemon.verbs == [.start])
+    }
+
+    @Test("a dictation held on right Command is the same dictation held on right Control")
+    func theSecondKeyIsNotASecondPath() {
+        // F6a: the built-in keyboard has no right Control key, so this is the ONLY gesture
+        // available on the laptop. It has to produce the identical pair of verbs, in `clean`, with
+        // no notification -- not "something that also works".
+        let rig = Rig()
+        rig.hold(.rightCommand, for: 2)
+        #expect(rig.daemon.verbs == [.start, .stop])
+        #expect(rig.daemon.requests[0].focus == true)
+        #expect(rig.daemon.requests[1].mode == .clean)
+        #expect(rig.notifier.signals.isEmpty)
+    }
+
+    @Test("an ordinary Command combination is under the floor and delivers nothing")
+    func theSecondKeyHasTheSameFloor() {
+        // D21 for the key that was added second, and the reason it could be added at all: `⌘V`
+        // measured 126 ms on this keyboard (F6a) against a 300 ms floor, so the paste the user
+        // typed reaches the daemon as an abort and no text is produced.
+        let rig = Rig()
+        rig.hold(.rightCommand, for: 0.126)
+        #expect(rig.daemon.verbs == [.start, .abort])
+    }
+
+    @Test("the second key pressed during a hold neither starts nor ends a dictation")
+    func theSecondKeyDoesNotInterruptTheFirst() {
+        // The whole reason `HoldWatch` exists, asserted where it would do its damage: one gesture
+        // in, one start and one stop out, however many armed keys were touched in between.
+        let rig = Rig()
+        rig.modifiers.press(.rightControl)
+        rig.step()
+        rig.clock.advance(by: 1)
+        // The other armed key is pressed and released in the middle of the dictation.
+        rig.modifiers.press(.rightCommand)
+        rig.step()
+        rig.modifiers.release(.rightCommand)
+        rig.step()
+        #expect(rig.daemon.verbs == [.start])
+        rig.clock.advance(by: 1)
+        rig.modifiers.release(.rightControl)
+        rig.step()
+        #expect(rig.daemon.verbs == [.start, .stop])
+        #expect(rig.daemon.requests[1].mode == .clean)
+        #expect(rig.notifier.signals.isEmpty)
     }
 
     @Test("a left-Control combination never reaches the daemon")

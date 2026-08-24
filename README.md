@@ -1,7 +1,8 @@
 # dicta
 
-Voice dictation into **agterm** — hold the right Control key, speak, let go, and the text appears in
-the input line you were typing in. It is meant for dictating prompts to Claude Code and instructions
+Voice dictation into **agterm** — hold the right Control key (or the right Command key, which is the
+one a MacBook keyboard actually has), speak, let go, and the text appears in the input line you were
+typing in. It is meant for dictating prompts to Claude Code and instructions
 to agents running inside agterm.
 
 Everything is local. The audio is recognised on this machine by Parakeet TDT 0.6B v3 on the Apple
@@ -79,9 +80,16 @@ agtermctl keymap reload
 ## Holding the key
 
 **Hold right Control, speak, let go.** That is the whole interface, and it needs no keymap line and
-no setup: the daemon arms it at startup and says so in its log. Nothing is configured because
-nothing has to be — right Control is a key you already have and, on macOS, one that does nothing by
-itself.
+no setup: the daemon arms it at startup and says which keys in its log. Nothing is configured
+because nothing has to be — these are keys you already have and, on macOS, ones that do nothing by
+themselves when held alone.
+
+**Two keys are armed, not one: right Control and right Command.** A MacBook's built-in keyboard has
+no right Control key at all, so on the laptop the first one is unreachable and the second is the
+whole feature; on an external keyboard both work. They are one gesture rather than two — whichever
+you press first owns the dictation until you let it go, and pressing the other one in the middle
+does nothing at all. Pass `--hold-key rightOption` (repeatable) to the daemon to arm something else;
+`--hold-key` replaces the pair rather than adding to it.
 
 It asks for **no permission**, and that is worth being precise about, because every other
 push-to-talk tool on this platform asks for Input Monitoring or Accessibility. dicta does not read
@@ -94,9 +102,12 @@ keystroke, the check fails by name (invariant 11).
 Two rules follow from holding a key rather than pressing a chord:
 
 - **A tap is not a dictation.** Hold it under 300 ms and the attempt is thrown away — no text, no
-  injection, no sound. Right Control is a real modifier, so `⌃C` typed with your right hand looks
+  injection, no sound. Both are real modifiers, so `⌃C` and `⌘V` typed with your right hand look
   exactly like a very short dictation; the only thing that tells them apart is that an ordinary
-  press lasts 90–150 ms and speaking does not (D21).
+  press lasts 86–195 ms and speaking does not (D21). The one combination that does hold a key past
+  300 ms is `⌘Tab` — do that with the right-hand Command inside agterm and you spend a dictation
+  that recognises nothing. Nothing is typed anywhere; if it becomes a nuisance, arm right Option
+  instead.
 - **It does nothing unless agterm is in front.** A chord carries the session it fired in; a held key
   carries nothing, so the session comes from live focus — and live focus is only meaningful while
   you are looking at agterm. Hold it in a browser and nothing at all happens, silently (D22).
@@ -202,6 +213,10 @@ options:
                            passes "$AGT_SOCKET" overrides this per attempt; this is the fallback
                            for a keymap that does not
   --fetch-models           download the recognition models, then exit
+  --no-hold                do not arm push-to-talk; the keymap chords still work
+  --hold-key <name>        arm push-to-talk on this key instead of the default pair
+                           (rightControl|rightCommand|rightOption); repeat the flag to
+                           arm several, and note that the first one REPLACES the pair
   --help                   print this
 ```
 
