@@ -572,9 +572,26 @@ Distilled from SPEC.md §3. Each one is a mistake already made, or one the spec 
   dead-rule test only covers a rule that cannot fire on its **own** pattern. Two rules of the file
   itself: a pattern that is also an ordinary Russian word is a `misfire` waiting for a sentence — so
   two garbles observed in the record have no rule on purpose, and the file says which and why — and
-  a pattern with no Cyrillic in it cannot be added at all — `test: the example dictionary that ships
-  parses with no problems` requires one, so recogniser garbles that come back in pure Latin
-  (`n-to-end` for "end-to-end") have no rule available and are a known gap rather than an oversight.
+  a pattern with **letters** but no Cyrillic in it cannot be added at all — `test: the example
+  dictionary that ships parses with no problems` requires one, so recogniser garbles that come back
+  in pure Latin (`n-to-end` for "end-to-end") have no rule available and are a known gap rather than
+  an oversight. A pattern with no letters at all is the carve-out, and it exists for exactly one
+  thing: the third pass of the version-number block, where the left-hand side of the join is a digit
+  an earlier rule produced, and `6 .` is the whole pattern. Stated as "no letters" rather than as an
+  exemption list, because that is what keeps the edge — a rule matching an English word is still
+  refused, whatever it is called.
+- **Spoken version numbers are three passes over the same dictionary, and the reason is the space.**
+  A version dictated as words — "one tochka six tochka zero" — becomes `1.6.0` through thirty rules:
+  `tochka <word>` → `.<digit>`, then `<word> .` → `<digit>.`, then the same join once the left side
+  is already a digit. A literal rule cannot bridge a space unless its pattern contains **both**
+  sides, and a pattern may not begin with one (the fields are trimmed), so the alternative to the
+  three passes is 200 rules spelling out every pair. Number words are NOT converted anywhere else: a
+  bare "two" stays a word, and only a `tochka` between two numbers says a version is being spelled
+  out. The edge, which the record will show: pass 1 fires on `tochka <number>` even when nothing to
+  its left can absorb the result, so a misspoken "one tochka five, tochka four" comes out `1.5, .4`.
+  Measured before it shipped, which is the only reason it is here: the whole dictionary, old and
+  new, was run over all 279 dictations in this machine's record. 24 came out different, every one of
+  them an improvement, and no rule fired on ordinary speech.
 - **No model load on the attempt path, ever** (D10, normative). The models are loaded once at daemon
   start and the transcriber refuses rather than loading if nobody prepared it — loading on demand
   "to be helpful" would satisfy the chord and break D10 in the same motion, invisibly. The one

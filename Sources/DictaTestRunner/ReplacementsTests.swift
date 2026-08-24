@@ -371,8 +371,18 @@ struct ReplacementsTests {
         // nothing but names; the vocabulary added on 2026-08-23 also repairs mishearings whose
         // correct form is still Russian -- a garbled string that is no word at all, put back to the
         // word the user said -- and a check demanding Latin would forbid exactly those.
+        //
+        // The one shape allowed through without Cyrillic is a pattern with no LETTERS in it at all.
+        // That is the third pass of the version-number block, where the left-hand side of the join
+        // is a digit an earlier rule produced -- `6 .` is the entire pattern, and there is no
+        // Cyrillic left in it to require. The carve-out is stated as "no letters" rather than as an
+        // exemption list because that is the property that keeps the file's edge: a rule matching
+        // an English word still cannot be added, whatever it is called.
         for rule in book.rules {
-            #expect(rule.pattern.contains { $0.isCyrillic }, "rule \(rule.id) has no Cyrillic")
+            let cyrillic = rule.pattern.contains { $0.isCyrillic }
+            let letters = rule.pattern.contains { $0.isLetter }
+            #expect(cyrillic || !letters,
+                    "rule \(rule.id) has no Cyrillic, and is not pure digits and punctuation")
             #expect(!rule.replacement.isEmpty, "rule \(rule.id) deletes text")
         }
     }
