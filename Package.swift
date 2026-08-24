@@ -138,6 +138,21 @@ let package = Package(
             dependencies: ["DictaCore", "DictaIPC"],
             path: "Sources/dictactl"
         ),
+        // The menu-bar UI (D27). The SAME dependency budget as `dictactl`, and for the same reason
+        // one step further out: this binary must not be able to open the microphone (invariant 8),
+        // because the TCC grant belongs to the daemon's signed bundle alone (D11). It links SwiftUI
+        // on top, which `dictactl` may not — that is the one difference between their two rows in
+        // `Scripts/linkage.sh`, and it is written down there rather than left to be inferred.
+        //
+        // Note what putting the menu HERE rather than in `Dicta` buys, since the alternative is the
+        // obvious one and `acta` takes it: the daemon's binary keeps failing invariant 11's gate on
+        // `_OBJC_CLASS_$_NSEvent`, which a SwiftUI status item would drag in; and F6/F8a stay
+        // measurements of the process they were taken in, which has no `NSApplication` (D27).
+        .executableTarget(
+            name: "DictaMenu",
+            dependencies: ["DictaCore", "DictaIPC", "DictaRecord"],
+            path: "Sources/DictaMenu"
+        ),
         .executableTarget(
             name: "DictaTestRunner",
             dependencies: ["DictaCore", "DictaIPC", "DictaRecord", "DictaRuntime"],

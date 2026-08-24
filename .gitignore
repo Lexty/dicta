@@ -5,5 +5,9 @@
 # The bundled daemon, produced by Scripts/bundle.sh (Task 8).
 Dicta.app/
 
+# The menu-bar UI's bundle, produced by the same script since D27. Ignored for the same reason: it
+# is build output carrying a signature, and a signed binary in git is a binary nobody can verify.
+DictaMenu.app/
+
 # Loop-runner bookkeeping, not part of the project.
 .ralphex/

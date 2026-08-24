@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template for the MENU's agent (D27). `Scripts/install.sh` substitutes the two placeholders and
+  writes the result to ~/Library/LaunchAgents/dev.personal.dicta.menu.plist. A template rather than
+  a finished file for the same reason as the daemon's: launchd resolves neither `~` nor `$HOME` in
+  any of these keys, and a test asserts that every placeholder here is one the installer replaces.
+
+  Read this beside `Scripts/launchagent.plist`. The two differ in exactly two places, and both
+  differences are the point rather than an oversight.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.personal.dicta.menu</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__DICTA_MENU_APP__/Contents/MacOS/DictaMenu</string>
+    </array>
+
+    <!-- Same as the daemon: at login, and again whenever it dies. A menu-bar item that quietly
+         vanished would be read as "dicta is not running", which is a lie the UI must not tell —
+         its "not running" glyph means the DAEMON's socket is absent, and that is a different
+         claim from "the UI crashed". -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- DIFFERENCE 1: no `ProcessType`. The daemon declares `Interactive` because a human waits on
+         its keypress path (F4). Nothing waits on this one: D27 says the UI is never on the attempt
+         path, and claiming a scheduling priority it does not need would be asking launchd to
+         prefer the menu over the thing the menu is about. -->
+
+    <!-- DIFFERENCE 2: no `StandardErrorPath`. The daemon logs to a file because it is the only
+         record of a start-up fault nobody is watching. The UI's faults are visible in the UI. -->
+</dict>
+</plist>

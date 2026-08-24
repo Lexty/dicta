@@ -56,8 +56,13 @@ struct BundleTests {
         let executable = try #require(info["CFBundleExecutable"] as? String)
         #expect(executable == "Dicta")
         // The bundle would launch nothing at all if bundle.sh copied the binary under another name.
+        // Since D27 the layout is done by one `assemble` function for both bundles, so the claim is
+        // in two halves: the function puts the binary where the plist says, and the daemon's call
+        // hands it the daemon's name.
         let bundleScript = try Self.text(at: "Scripts/bundle.sh")
-        #expect(bundleScript.contains("$APP_DIR/Contents/MacOS/$APP_NAME"))
+        #expect(bundleScript.contains("cp \"$binary\" \"$app_dir/Contents/MacOS/$exe\""))
+        #expect(bundleScript.contains(
+            "assemble \"$APP_DIR\" \"$APP_NAME\" \"$BIN\" \"$ROOT/Resources/Info.plist\""))
         #expect(bundleScript.contains("APP_NAME=\"Dicta\""))
     }
 
@@ -106,8 +111,15 @@ struct BundleTests {
     @Test("bundle.sh signs with the entitlements file and the bundle id, never ad hoc")
     func signingArguments() throws {
         let bundleScript = try Self.text(at: "Scripts/bundle.sh")
-        #expect(bundleScript.contains("--entitlements \"$ROOT/Resources/Dicta.entitlements\""))
-        #expect(bundleScript.contains("--identifier \"$BUNDLE_ID\""))
+        // Since D27 both bundles are signed by one `sign_and_check`, so the entitlements path and
+        // the identifier are named at the CALL SITE rather than inline. The property is unchanged
+        // and is now two assertions: the daemon is signed with its entitlements and its id, and the
+        // function really passes what it was given. `MenuBundleTests` asserts the other call, whose
+        // third argument is empty — the UI may not claim audio-input.
+        #expect(bundleScript.contains(
+            "sign_and_check \"$APP_DIR\" \"$BUNDLE_ID\" \"$ROOT/Resources/Dicta.entitlements\""))
+        #expect(bundleScript.contains("--entitlements \"$entitlements\""))
+        #expect(bundleScript.contains("--identifier \"$identifier\""))
         #expect(bundleScript.contains("BUNDLE_ID=\"\(Paths.bundleID)\""))
         // `codesign -s -` is the ad-hoc signature whose requirement is a cdhash: it would revoke
         // the microphone grant on every rebuild — the failure this whole task exists to avoid.

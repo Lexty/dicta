@@ -40,7 +40,9 @@ That one command builds a release, signs `Dicta.app`, installs the pieces and re
 |---|---|---|
 | `dictactl` | `~/.local/bin/dictactl` | the keymap invokes it by absolute path, so it must not move with the checkout |
 | `Dicta.app` | `~/Applications/Dicta.app` | the signed bundle is the identity the microphone permission attaches to (D11) |
+| `DictaMenu.app` | `~/Applications/DictaMenu.app` | the menu-bar item — a second bundle, so the daemon's identity and its permission are untouched |
 | the LaunchAgent | `~/Library/LaunchAgents/dev.personal.dicta.plist` | starts the daemon at login and keeps it running |
+| the menu's agent | `~/Library/LaunchAgents/dev.personal.dicta.menu.plist` | starts the menu-bar item at login |
 | the log | `~/Library/Logs/dicta.log` | the daemon's stderr |
 
 The signing identity is self-signed, created in a dedicated keychain by `Scripts/setup-signing.sh`,
@@ -76,6 +78,49 @@ Finally, add the chords, if you want them. Push-to-talk works without this step;
 cat docs/keymap.snippet.conf >> ~/.config/agterm/keymap.conf
 agtermctl keymap reload
 ```
+
+## The menu bar
+
+A microphone appears in the menu bar, and while you are dictating it turns red and grows a clock:
+
+```
+… ⏱  🎙  〰  🔋 100% …          idle
+… ⏱  ⏺ 0:42  〰  🔋 100% …     dictating, 42 seconds in
+```
+
+The clock is there because a glyph that only changes its fill is not something you notice while
+working — and because macOS's own microphone indicator tells you that *some* application is
+recording, not which. It goes amber in the last minute before the ten-minute cap, so the cap stops
+being a surprise that eats a dictation.
+
+Clicking it opens a small panel:
+
+- **what dicta is doing right now**, and — if it cannot dictate at all — one red sentence saying why,
+  with the single button that fixes it: the microphone was denied (opens the right Settings pane),
+  the models are not downloaded (runs `--fetch-models`), `agtermctl` is not on the PATH.
+- **where the current dictation is going**, by session name and pane, with `Stop and type` and
+  `Abort`. They are there only while something is being dictated. There is no Start, and there
+  cannot be: a click carries no session to aim at, so dictations are started by the key or a chord
+  and nothing else.
+- **the last five dictations**, each with what was said, how long ago, how it ended, and — when it
+  did not go well — the same sentence the notification gave you. A button copies the text. That is
+  the whole recovery story: if a dictation went nowhere because you closed the pane, this is where
+  you get the words back without opening a terminal.
+
+A dictation that was cancelled shows what dicta *heard*, in italic, and has **no copy button**. That
+is deliberate: those words were never prepared for delivery, and the clipboard is only ever loaded
+with text that was.
+
+The menu bar is **optional**. It is a separate application that watches the daemon through the same
+socket `dictactl` uses; the daemon does not start it, cannot tell whether it is running, and every
+dictation behaves identically without it. To stop it:
+
+```sh
+launchctl bootout gui/$UID/dev.personal.dicta.menu
+```
+
+`launchctl kickstart -k gui/$UID/dev.personal.dicta.menu` starts it again. Installing it asks for no
+permission of any kind, and does not disturb the microphone permission you granted the daemon.
 
 ## Holding the key
 

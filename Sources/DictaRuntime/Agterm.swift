@@ -122,7 +122,12 @@ struct TreeSurface: Equatable {
 public struct Agterm: Injector, Notifier, Sendable {
     /// Where the tool is looked for, in order. A LaunchAgent's PATH is not a login shell's, so the
     /// absolute paths come first and `PATH` is only the fallback (§12).
-    public static let candidatePaths = ["/opt/homebrew/bin/agtermctl", "/usr/local/bin/agtermctl"]
+    ///
+    /// The list itself moved to `AgtermTool` in `DictaCore` when the menu-bar UI became a second
+    /// process that shells out to agterm (D27): it cannot link this module, and one operational
+    /// fact copied into two binaries is one of them getting fixed alone. This stays as the name the
+    /// daemon's own code already used.
+    public static let candidatePaths = AgtermTool.candidatePaths
 
     /// How many agterm windows one session lookup will open a tree on, the frontmost included.
     ///
@@ -160,12 +165,7 @@ public struct Agterm: Injector, Notifier, Sendable {
         candidates: [String] = Agterm.candidatePaths,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> String? {
-        let searchPath = (environment["PATH"] ?? "").split(separator: ":").map {
-            "\($0)/agtermctl"
-        }
-        return (candidates + searchPath).first {
-            FileManager.default.isExecutableFile(atPath: $0)
-        }
+        AgtermTool.locate(candidates: candidates, environment: environment)
     }
 
     // MARK: - target resolution (§5, D6)

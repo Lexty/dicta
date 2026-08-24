@@ -32,10 +32,28 @@
 # their symbols: if one ever appears, D5's claim has quietly stopped being true and the user is
 # about to be asked for a permission this project promised not to need.
 #
+# A fifth assertion, about a THIRD binary. D27 gives dicta a menu-bar UI, and puts it in its own
+# bundle precisely so the daemon's shape does not move. `DictaMenu` inherits invariant 8 one step
+# further out — it must not be able to open the microphone, because the grant belongs to the
+# daemon's bundle alone — and invariant 11, because a UI is the natural place to reach for a hotkey
+# and an `NSEvent` monitor is how that would be spelled. What it may do that `dictactl` may not is
+# link SwiftUI: that is the single difference between their rules, and it is stated here rather than
+# left to be inferred from a passing run.
+#
+# Measured while this check was written (2026-08-23), because the strength of the rule depended on
+# it: a trivial SwiftUI `MenuBarExtra` binary references NEITHER `_OBJC_CLASS_$_NSEvent` NOR AppKit
+# in its load commands — SwiftUI reaches AppKit internally — while a binary calling
+# `NSEvent.addGlobalMonitorForEvents` shows `U _OBJC_CLASS_$_NSEvent` in `nm -u` AND the selector
+# `addGlobalMonitorForEventsMatchingMask:handler:` in `strings`. So the menu is held to the daemon's
+# full four-symbol rule rather than a weakened one, and the selector is checked as well: the class
+# check is the strong general net, the selector check is the one that names the actual capability
+# and would survive a future legitimate reason to mention `NSEvent`.
+#
 # Usage:
-#   bash Scripts/linkage.sh                     # build both binaries and check them
+#   bash Scripts/linkage.sh                     # build all three binaries and check them
 #   bash Scripts/linkage.sh --binary <path>     # check an existing client binary, building nothing
 #   bash Scripts/linkage.sh --daemon <path>     # score §8.11 against a binary, and nothing else
+#   bash Scripts/linkage.sh --menu <path>       # score the menu's rules against a binary, only
 #
 # The second form is how the check was probed: run against `DictaTestRunner`, which legitimately
 # links all three frameworks, every assertion fires. A check nobody has watched fail is a check
@@ -46,7 +64,8 @@ cd "$ROOT"
 
 BINARY=""
 DAEMON=""
-DAEMON_ONLY=0
+MENU=""
+ONLY=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --binary)
@@ -57,7 +76,13 @@ while [ "$#" -gt 0 ]; do
         --daemon)
             [ "$#" -ge 2 ] || { echo "linkage: --daemon needs a path" >&2; exit 2; }
             DAEMON="$2"
-            DAEMON_ONLY=1
+            ONLY=1
+            shift 2
+            ;;
+        --menu)
+            [ "$#" -ge 2 ] || { echo "linkage: --menu needs a path" >&2; exit 2; }
+            MENU="$2"
+            ONLY=1
             shift 2
             ;;
         *)
@@ -67,16 +92,19 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-if [ "$DAEMON_ONLY" -eq 1 ]; then
-    # Probing mode: score §8.11 against the binary handed in and skip the client's three checks.
-    # This is how check 4 was watched failing, which is the only way a check becomes evidence.
-    [ -f "$DAEMON" ] || { echo "linkage: no such binary: $DAEMON" >&2; exit 2; }
+if [ "$ONLY" -eq 1 ]; then
+    # Probing mode: score one binary's own rules and skip everything else. This is how checks 4 and
+    # 5 were watched failing, which is the only way a check becomes evidence.
+    [ -z "$DAEMON" ] || [ -f "$DAEMON" ] || { echo "linkage: no such binary: $DAEMON" >&2; exit 2; }
+    [ -z "$MENU" ] || [ -f "$MENU" ] || { echo "linkage: no such binary: $MENU" >&2; exit 2; }
 elif [ -z "$BINARY" ]; then
     swift build --product dictactl >/dev/null
     BINARY="$(swift build --show-bin-path)/dictactl"
     # Only on the default path: `--binary` means "check exactly this one and build nothing".
     swift build --product Dicta >/dev/null
     DAEMON="$(swift build --show-bin-path)/Dicta"
+    swift build --product DictaMenu >/dev/null
+    MENU="$(swift build --show-bin-path)/DictaMenu"
 fi
 
 status=0
@@ -169,23 +197,111 @@ fi
 # nothing about invariant 11. The invariant is about reading a KEYSTROKE, and the four symbols below
 # are the four ways to do it; `_OBJC_CLASS_$_NSEvent` is among them because an `NSEvent` global
 # monitor is the AppKit-shaped way to break it, and dicta has no other reason to name that class.
-if [ -n "$DAEMON" ]; then
-    if ! file "$DAEMON" | grep -q 'Mach-O'; then
-        echo "linkage: $DAEMON is not a Mach-O binary — the §8.11 check did not run" >&2
+KEYSTROKES='CGEventTapCreate|CGEventTapEnable|IOHIDManager|_OBJC_CLASS_[$]_NSEvent'
+# The selector, checked separately from the class. An Objective-C selector is a STRING in
+# `__TEXT,__objc_methname` and never appears in `nm` output, so the class check above is what
+# actually catches a monitor today — but the class is the general net and this is the specific one.
+# If a binary ever acquires a legitimate reason to name `NSEvent`, this is the check that still
+# means something, and the class rule is the one that would have to be relaxed.
+MONITORS='addGlobalMonitorForEvents|addLocalMonitorForEvents'
+
+# Shared by the daemon (§8.11, D5) and the menu (D27): the same invariant, asked of two binaries for
+# two reasons. The daemon must not read keystrokes because push-to-talk's whole claim is that it
+# needs no permission; the menu must not because a UI is the natural place to reach for a hotkey,
+# and the first `NSEvent` monitor is the moment macOS starts demanding Input Monitoring.
+check_keystrokes() {
+    local path="$1"
+    local what="$2"
+    local symbols text
+    if ! file "$path" | grep -q 'Mach-O'; then
+        echo "linkage: $path is not a Mach-O binary — the §8.11 check did not run" >&2
         exit 2
     fi
-    if ! daemon_symbols="$(nm "$DAEMON" 2>&1)"; then
-        printf '%s\n' "$daemon_symbols" >&2
-        fail "nm could not read $DAEMON — the §8.11 check did not run"
-        daemon_symbols=""
+    if ! symbols="$(nm "$path" 2>&1)"; then
+        printf '%s\n' "$symbols" >&2
+        fail "nm could not read $path — the §8.11 check did not run"
+        return
     fi
-    KEYSTROKES='CGEventTapCreate|CGEventTapEnable|IOHIDManager|_OBJC_CLASS_[$]_NSEvent'
-    hits="$(printf '%s\n' "$daemon_symbols" | grep -E "$KEYSTROKES" || true)"
+    local hits
+    hits="$(printf '%s\n' "$symbols" | grep -E "$KEYSTROKES" || true)"
     if [ -n "$hits" ]; then
         head -20 <<< "$hits" >&2
-        fail "$DAEMON can read keystrokes — the hold trigger must read modifier STATE (§8.11, D5)"
-    elif [ "$status" -eq 0 ]; then
+        fail "$path can read keystrokes — $what must read modifier STATE, never events (§8.11, D5)"
+        # Deliberately NOT returning here. The selector check below would otherwise be shadowed on
+        # every binary that trips the class check — that is, on every binary that could ever
+        # exercise it — and a branch nothing has been observed to run is not evidence of anything.
+        # Both run, both report.
+    fi
+    # `strings` rather than a section dump: `otool -s __TEXT __objc_methname` prints hex that has to
+    # be reassembled, and the one thing this check must not do is fail to run and report clean.
+    if ! text="$(strings -a "$path" 2>&1)"; then
+        printf '%s\n' "$text" >&2
+        fail "strings could not read $path — the event-monitor check did not run"
+        return
+    fi
+    hits="$(printf '%s\n' "$text" | grep -E "$MONITORS" || true)"
+    if [ -n "$hits" ]; then
+        head -20 <<< "$hits" >&2
+        fail "$path installs an event monitor — that is Input Monitoring, which dicta does not ask for"
+    fi
+}
+
+# 4. The daemon, against §8.11. A different question and a different binary: `Dicta` links
+# AVFoundation and CoreML by design, and what it must not contain is any way of reading a keystroke.
+if [ -n "$DAEMON" ]; then
+    before="$status"
+    check_keystrokes "$DAEMON" "the hold trigger"
+    if [ "$status" -eq "$before" ]; then
         echo "linkage: clean — $(basename "$DAEMON") reads modifier state, never a key stream"
+    fi
+fi
+
+# 5. The menu-bar UI, against invariants 8 and 11 (D27). It may link SwiftUI — that is the ONE
+# difference from `dictactl`'s rules — and it may not link the capture stack or read a key.
+if [ -n "$MENU" ]; then
+    before="$status"
+    if ! file "$MENU" | grep -q 'Mach-O'; then
+        echo "linkage: $MENU is not a Mach-O binary — the menu's checks did not run" >&2
+        exit 2
+    fi
+    if ! menu_loaded="$(otool -L "$MENU" 2>&1)"; then
+        printf '%s\n' "$menu_loaded" >&2
+        fail "otool could not read $MENU — the menu's load-command check did not run"
+        menu_loaded=""
+    fi
+    # AppKit is absent from the list on purpose: SwiftUI reaches it internally and a menu-bar app
+    # legitimately needs it (NSPasteboard is how D28's clipboard recovery is spelled). What the menu
+    # must not touch is the microphone and the models.
+    MENU_FORBIDDEN='AVFAudio|AVFoundation|CoreML|FluidAudio'
+    hits="$(printf '%s\n' "$menu_loaded" | tail -n +2 | grep -E "$MENU_FORBIDDEN" || true)"
+    if [ -n "$hits" ]; then
+        printf '%s\n' "$hits" >&2
+        fail "$MENU links the capture stack — the UI must never open the microphone (D11, §8.8)"
+    fi
+    if ! menu_undefined="$(nm -u "$MENU" 2>&1)"; then
+        printf '%s\n' "$menu_undefined" >&2
+        fail "nm -u could not read $MENU — the menu's undefined-symbol check did not run"
+        menu_undefined=""
+    fi
+    hits="$(printf '%s\n' "$menu_undefined" \
+        | grep -E "$MENU_FORBIDDEN|AVAudio|MLModel|MLMultiArray" || true)"
+    if [ -n "$hits" ]; then
+        head -20 <<< "$hits" >&2
+        fail "$MENU references capture or CoreML symbols (invariant 8, one binary further out)"
+    fi
+    if ! menu_symbols="$(nm "$MENU" 2>&1)"; then
+        printf '%s\n' "$menu_symbols" >&2
+        fail "nm could not read $MENU — the menu's dependency-edge check did not run"
+        menu_symbols=""
+    fi
+    hits="$(printf '%s\n' "$menu_symbols" | grep -E 'DictaRuntime' || true)"
+    if [ -n "$hits" ]; then
+        head -20 <<< "$hits" >&2
+        fail "$MENU carries DictaRuntime symbols — the UI is a socket client, not a second daemon"
+    fi
+    check_keystrokes "$MENU" "the UI"
+    if [ "$status" -eq "$before" ]; then
+        echo "linkage: clean — $(basename "$MENU") binds SwiftUI, no capture stack, no key stream"
     fi
 fi
 

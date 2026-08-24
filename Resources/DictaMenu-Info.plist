@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The menu-bar bundle (D27). A SECOND bundle, deliberately: the daemon's own Info.plist next door
+  exists solely as the TCC anchor of D11, and everything about it is arranged so that it is not an
+  application in any other sense. This one is the application, and it is a different binary with a
+  different identity so that the daemon's shape — and the microphone grant recorded against it —
+  does not move because dicta grew a menu.
+
+  Note what is ABSENT and must stay absent:
+
+    * NSMicrophoneUsageDescription. This bundle never opens the device, so it must never be in a
+      position to ask; a second binary opening the microphone would fracture the grant (D11,
+      invariant 8). `Scripts/linkage.sh` checks the built binary for the same claim.
+    * Any document type, URL scheme or service. The menu is a lamp and a receipt drawer, not an app
+      other software can hand work to.
+
+  CFBundleIdentifier is `dev.personal.dicta.menu` — a child of the daemon's identifier by spelling
+  and by nothing else. It must NOT be `dev.personal.dicta`: two bundles sharing an identifier is how
+  a TCC grant gets attributed to whichever one macOS saw last, which is the failure D11 exists to
+  prevent, arriving through a new door.
+-->
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>DictaMenu</string>
+    <!-- What a human sees. The bundle directory is `DictaMenu.app` with no space, because every
+         script that handles it runs under macOS's stock bash 3.2 and a space in a path is a class
+         of bug this project has already paid for elsewhere. -->
+    <key>CFBundleDisplayName</key>
+    <string>Dicta Menu</string>
+    <key>CFBundleExecutable</key>
+    <string>DictaMenu</string>
+    <key>CFBundleIdentifier</key>
+    <string>dev.personal.dicta.menu</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <!-- No dock icon and no ⌘-tab entry. A menu-bar item is the whole surface (D27), and a dock
+         tile would put a dictation one stray click away from stealing focus from the terminal it is
+         about to type into — the same reason the daemon carries this key. It also keeps D22 honest:
+         the less this bundle can be activated by accident, the less often agterm stops being
+         frontmost for reasons the user did not intend. -->
+    <key>LSUIElement</key>
+    <true/>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+</dict>
+</plist>

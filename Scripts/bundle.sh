@@ -16,8 +16,15 @@
 # produced mentions a cdhash or does not name the certificate leaf. A budget with no check drifts,
 # and this one drifts silently -- the symptom is a TCC prompt appearing again weeks later.
 #
-# Usage: bundle.sh            build, sign, verify -> ./Dicta.app
-#        bundle.sh --print-requirement   print the designated requirement of an existing Dicta.app
+# TWO bundles, not one (D27). The daemon is the TCC anchor described above; `DictaMenu.app` is the
+# menu-bar UI, which opens no microphone and asks for no permission. They are built and signed by
+# one script on purpose: the property that matters — an identity-based designated requirement — has
+# to hold for both, and a second script is how two things that must agree stop agreeing. The menu is
+# signed with the SAME identity and checked by the SAME assertions, and it is given NO entitlements
+# file, so it cannot claim `com.apple.security.device.audio-input` even by a copy-paste accident.
+#
+# Usage: bundle.sh                          build, sign, verify -> ./Dicta.app and ./DictaMenu.app
+#        bundle.sh --print-requirement [daemon|menu]   print an existing bundle's requirement
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -27,6 +34,10 @@ APP_NAME="Dicta"
 BUNDLE_ID="dev.personal.dicta"
 APP_DIR="$ROOT/$APP_NAME.app"
 BIN="$ROOT/.build/release/Dicta"
+MENU_APP_NAME="DictaMenu"
+MENU_BUNDLE_ID="dev.personal.dicta.menu"
+MENU_APP_DIR="$ROOT/$MENU_APP_NAME.app"
+MENU_BIN="$ROOT/.build/release/DictaMenu"
 KEYCHAIN="$HOME/Library/Keychains/dicta-codesign.keychain-db"
 IDENTITY_CN="Dicta Local Signing"
 
@@ -52,15 +63,25 @@ requirement() {
 # rebuild and a full re-sign of the bundle every TCC grant is anchored to.
 case "${1:-}" in
   --print-requirement)
-    if [[ "$#" -gt 1 ]]; then
-      echo "error: --print-requirement takes no further arguments" >&2
+    if [[ "$#" -gt 2 ]]; then
+      echo "error: --print-requirement takes at most one target (daemon|menu)" >&2
       exit 2
     fi
-    if [[ ! -d "$APP_DIR" ]]; then
-      echo "error: $APP_DIR does not exist -- run bundle.sh first" >&2
+    # Defaults to the daemon, because that is the bundle a TCC grant is recorded against and the
+    # question is almost always about it. The menu is named explicitly or not at all.
+    case "${2:-daemon}" in
+      daemon) TARGET_DIR="$APP_DIR" ;;
+      menu)   TARGET_DIR="$MENU_APP_DIR" ;;
+      *)
+        echo "error: unknown target '${2}' -- expected daemon or menu" >&2
+        exit 2
+        ;;
+    esac
+    if [[ ! -d "$TARGET_DIR" ]]; then
+      echo "error: $TARGET_DIR does not exist -- run bundle.sh first" >&2
       exit 1
     fi
-    requirement "$APP_DIR"
+    requirement "$TARGET_DIR"
     exit 0
     ;;
   '') ;;
@@ -80,18 +101,30 @@ if [[ ! -x "$BIN" ]]; then
   exit 1
 fi
 
-echo "==> assembling $APP_NAME.app"
-rm -rf "$APP_DIR"
-mkdir -p "$APP_DIR/Contents/MacOS"
-cp "$BIN" "$APP_DIR/Contents/MacOS/$APP_NAME"
-cp "$ROOT/Resources/Info.plist" "$APP_DIR/Contents/Info.plist"
+if [[ ! -x "$MENU_BIN" ]]; then
+  echo "error: binary not found at $MENU_BIN" >&2
+  exit 1
+fi
 
 # Which build is running is a question the record cannot answer, and "the daemon is old" is a
 # plausible cause of a symptom that otherwise looks like a bug. The signature seals Contents, so
 # this has to happen before codesign.
 PB=/usr/libexec/PlistBuddy
-"$PB" -c "Add :DictaBuildRevision string $GIT_DESC" "$APP_DIR/Contents/Info.plist" 2>/dev/null \
-  || "$PB" -c "Set :DictaBuildRevision $GIT_DESC" "$APP_DIR/Contents/Info.plist"
+
+# Lay out one bundle: $1 app dir, $2 executable name, $3 built binary, $4 Info.plist source.
+assemble() {
+  local app_dir="$1" exe="$2" binary="$3" plist="$4"
+  echo "==> assembling $(basename "$app_dir")"
+  rm -rf "$app_dir"
+  mkdir -p "$app_dir/Contents/MacOS"
+  cp "$binary" "$app_dir/Contents/MacOS/$exe"
+  cp "$plist" "$app_dir/Contents/Info.plist"
+  "$PB" -c "Add :DictaBuildRevision string $GIT_DESC" "$app_dir/Contents/Info.plist" 2>/dev/null \
+    || "$PB" -c "Set :DictaBuildRevision $GIT_DESC" "$app_dir/Contents/Info.plist"
+}
+
+assemble "$APP_DIR" "$APP_NAME" "$BIN" "$ROOT/Resources/Info.plist"
+assemble "$MENU_APP_DIR" "$MENU_APP_NAME" "$MENU_BIN" "$ROOT/Resources/DictaMenu-Info.plist"
 
 # setup-signing.sh is idempotent and non-interactive, so on a fresh machine the first build creates
 # the identity with no prompt and no password.
@@ -110,34 +143,55 @@ if [[ -z "$IDENTITY" ]]; then
   exit 1
 fi
 
-echo "==> codesign (identity=$IDENTITY_CN, identifier=$BUNDLE_ID)"
-codesign --force --sign "$IDENTITY" \
-  --identifier "$BUNDLE_ID" \
-  --entitlements "$ROOT/Resources/Dicta.entitlements" \
-  --keychain "$KEYCHAIN" \
-  "$APP_DIR"
+# Sign one bundle and assert the property the whole script exists for: $1 app dir, $2 identifier,
+# $3 entitlements path or the empty string.
+#
+# The menu passes the empty string, and that is a decision rather than an omission. Entitlements are
+# claims a binary makes about itself; handing the UI the daemon's file would have it claiming
+# `com.apple.security.device.audio-input`, which is precisely the second-binary-can-open-the-device
+# situation D11 forbids. The linkage check says it does not; this says it may not.
+sign_and_check() {
+  local app_dir="$1" identifier="$2" entitlements="$3"
+  echo "==> codesign (identity=$IDENTITY_CN, identifier=$identifier)"
+  if [[ -n "$entitlements" ]]; then
+    codesign --force --sign "$IDENTITY" \
+      --identifier "$identifier" \
+      --entitlements "$entitlements" \
+      --keychain "$KEYCHAIN" \
+      "$app_dir"
+  else
+    codesign --force --sign "$IDENTITY" \
+      --identifier "$identifier" \
+      --keychain "$KEYCHAIN" \
+      "$app_dir"
+  fi
 
-codesign --verify --verbose=2 "$APP_DIR"
+  codesign --verify --verbose=2 "$app_dir"
 
-# --- the check that makes the grant survivable, not merely intended -----------------------------
-REQ="$(requirement "$APP_DIR")"
-if [[ -z "$REQ" ]]; then
-  echo "error: the bundle has no designated requirement -- it is not signed" >&2
-  exit 1
-fi
-if [[ "$REQ" == *cdhash* ]]; then
-  echo "error: the designated requirement is pinned to a cdhash:" >&2
-  echo "       $REQ" >&2
-  echo "       that is an ad-hoc signature. Every rebuild would revoke the microphone grant." >&2
-  exit 1
-fi
-if [[ "$REQ" != *"identifier \"$BUNDLE_ID\""* || "$REQ" != *"certificate leaf"* ]]; then
-  echo "error: unexpected designated requirement:" >&2
-  echo "       $REQ" >&2
-  echo "       expected: identifier \"$BUNDLE_ID\" and certificate leaf = H\"…\"" >&2
-  exit 1
-fi
+  # --- the check that makes the grant survivable, not merely intended ---------------------------
+  local req
+  req="$(requirement "$app_dir")"
+  if [[ -z "$req" ]]; then
+    echo "error: $app_dir has no designated requirement -- it is not signed" >&2
+    exit 1
+  fi
+  if [[ "$req" == *cdhash* ]]; then
+    echo "error: the designated requirement is pinned to a cdhash:" >&2
+    echo "       $req" >&2
+    echo "       that is an ad-hoc signature. Every rebuild would revoke the microphone grant." >&2
+    exit 1
+  fi
+  if [[ "$req" != *"identifier \"$identifier\""* || "$req" != *"certificate leaf"* ]]; then
+    echo "error: unexpected designated requirement:" >&2
+    echo "       $req" >&2
+    echo "       expected: identifier \"$identifier\" and certificate leaf = H\"…\"" >&2
+    exit 1
+  fi
 
-echo "==> done: $APP_DIR  (revision=$GIT_DESC)"
-echo "    designated requirement, stable across rebuilds:"
-echo "    $REQ"
+  echo "==> done: $app_dir  (revision=$GIT_DESC)"
+  echo "    designated requirement, stable across rebuilds:"
+  echo "    $req"
+}
+
+sign_and_check "$APP_DIR" "$BUNDLE_ID" "$ROOT/Resources/Dicta.entitlements"
+sign_and_check "$MENU_APP_DIR" "$MENU_BUNDLE_ID" ""
