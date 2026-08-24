@@ -147,8 +147,20 @@ so macOS asks for no permission and no character the user types is observable by
 principle (F6, F7). An earlier revision of this spec recorded press-and-hold as impossible and made
 it D2's reason for a toggle. That was never measured, and when it was, it was wrong.
 
-The key is **right Control**, told from left Control by the device-dependent bit the keyboard
-reports (F6). A modifier on purpose: a letter key repeats while it is held, a modifier does not.
+The keys are **right Control and right Command**, each told from its left-hand twin by the
+device-dependent bit the keyboard reports (F6, F6a). Modifiers on purpose: a letter key repeats
+while it is held, a modifier does not.
+
+Two of them, because one of this user's keyboards does not have the other's key: **the laptop's
+built-in keyboard has no right Control at all** (F6a), so on the machine's own keyboard the whole
+gesture was not degraded but unreachable. They are one gesture and not two — whichever armed key
+goes down first owns the attempt until it is released, and every other armed key is furniture until
+then. The rule is not tidiness: a release that could come from a key the user is not holding would
+stop and **deliver** a dictation they are still speaking, into a pane they had not finished aiming.
+Right Command is not free of collisions and was chosen with them in view. `⌘V`, `⌘K` and `⌘T` are
+ordinary presses that D21's floor discards; `⌘Tab` is the one gesture that holds it past the floor,
+and held with the right hand inside agterm it costs an attempt with no text in it — never an
+injection somewhere else, because D22 read frontmost at the press.
 
 **D6 — Session identity comes from the keypress; the pane is resolved from live focus.**
 The installed agterm build does not export `$AGT_PANE` (F3), so the pane cannot come from the
@@ -242,10 +254,13 @@ watches being contradicted on screen would break property 2 more thoroughly than
 trying to describe.
 
 **D21 — A hold shorter than the floor delivers nothing.**
-The hold key is a real modifier, so any combination the user types with it — right Control plus
-anything — is indistinguishable from a very short dictation to a source that sees modifier state and
-nothing else (D5). Duration is the only thing that separates them, and the two populations do not
-overlap: an ordinary press measures 90–150 ms (F6), a dictation is a person speaking. A hold under
+A hold key is a real modifier, so any combination the user types with one — `⌃C`, `⌘V` — is
+indistinguishable from a very short dictation to a source that sees modifier state and nothing else
+(D5). Duration is the only thing that separates them, and the two populations do not overlap: an
+ordinary press measures 90–150 ms on the external keyboard (F6) and 86–195 ms on the built-in one
+(F6a), a dictation is a person speaking. The floor is **not** twice the longest press any more —
+F6a's 195 ms took that margin away — but 105 ms of clearance over the worst press yet seen, against
+a gesture measured in seconds, is separation and not a coincidence. A hold under
 the floor therefore ends in `abort` rather than `stop` — the microphone opens for a moment and the
 attempt dies with no text, no injection and no sound. The floor is **not** a delay before recording
 begins: waiting it out would spend 300 ms of F4's budget on every real dictation in order to defend
@@ -379,6 +394,48 @@ promising words that the layer below deliberately drops.
 **Nothing is journalled that never existed.** An attempt cancelled while `warming` has no buffer:
 the device never confirmed. It writes no text and no speech window, as before (D25).
 
+**D27 — The UI is a second client of the control socket, never a second face of the daemon.**
+dicta gets a menu-bar item. It lives in its own signed bundle, speaks the control socket like
+`dictactl` does, and the daemon cannot tell whether it is running.
+
+This reverses part of §13, which listed a menu bar as out of scope on D11's authority. D11 is about
+the microphone TCC grant — it attaches to a signed bundle identity, a bare executable would have it
+attributed to the launching terminal, and a second binary opening the device would fracture it.
+None of that is about pixels. The inference to "no menu bar" held while the bundle existed *only* as
+a TCC anchor; it never covered a second bundle that opens no microphone, which is the position
+`dictactl` has occupied since D12. A settings window and a dock icon stay out of scope.
+
+**Putting the menu inside the daemon was refused, for three measured reasons rather than a
+preference.** Invariant 11 is enforced by reading the built `Dicta` binary for `CGEventTapCreate`,
+`CGEventTapEnable`, `IOHIDManager` and `_OBJC_CLASS_$_NSEvent`, and a SwiftUI status item drags the
+last of those in unavoidably — the gate exists so macOS never starts demanding Input Monitoring for
+a tool that asks for no permission at all, and a menu is a bad reason to weaken it. F6 and F8a were
+measured in a process with **no `NSApplication`**, and D22's frontmost check rests on both;
+introducing one changes the shape those measurements describe. And the smallest daemon is the one
+whose grant is easiest to reason about.
+
+**The UI's absence changes no outcome.** Not installed, quit, crashed, never built: every dictation
+behaves identically. Nothing the daemon does for an attempt may wait on it, which is what makes the
+separation structural rather than a promise — the daemon has no reference to hold.
+
+**D28 — The UI never injects.**
+There is no "send this again" anywhere in it. Recovery of text that did not land is the clipboard,
+and the user pastes where they meant to. A target is captured by a trigger and by nothing else
+(D4, D6): a click carries no `$AGT_SESSION_ID`, so a UI that aimed text somewhere would be
+performing exactly the substitution D4 forbids, with a friendlier button on it.
+
+**The structural half, which is what makes this hold without vigilance:** the UI acts on `final` and
+only ever displays `recognised`. A row whose `final` is empty has nothing to give, so a cancelled
+attempt — which carries `recognised` with an empty `final` (D26) — offers nothing, with no rule for
+anyone to remember. `dictactl last` already answers off `final` for the same reason.
+
+**The limit of that, stated because it is easy to over-claim.** `final` separates attempts that
+produced text from attempts that did not. It says nothing about **where** the text went, so it does
+not distinguish `returned` (D29) from `injected` — both are full. That is safe here only because
+the previous paragraph leaves exactly one affordance, and copying text the user dictated is harmless
+wherever it went. Reason from the field, not from the outcome's name; an outcome needing different
+treatment needs a check on the outcome.
+
 **D29 — A caller can claim the next dictation's text instead of a pane getting it.**
 `dictactl dictate` blocks, the user dictates exactly as always, and the text is printed on **stdout**
 rather than typed anywhere. `PROMPT=$(dictactl dictate)` is the whole interface.
@@ -416,6 +473,19 @@ the same grounds `abort` does, and on one more: it neither begins an attempt nor
 **It is what lifts D24's refusal.** That rule refuses to start in front of an open picker because
 the words would land in the pane behind it. With a caller waiting they have somewhere else to go, so
 the refusal has nothing left to protect — the exception is D24 answered rather than overridden.
+
+**D30 — The UI has no Start. Stop and Abort are allowed, and the asymmetry is the point.**
+A live attempt already owns a target, captured by the trigger that began it and never substituted
+(D4), so ending it from a window decides nothing about where the words go. Starting one from a
+window would decide exactly that, and has nothing to decide it with.
+
+D22 makes the same point from the other side: the hold key does nothing unless agterm is frontmost,
+and a focused dicta panel is not agterm. So the panel is silent ground by construction — **the UI is
+where you go between dictations, not during one.** That is accepted rather than worked around; the
+menu-bar glyph, which needs no focus, is what carries the during.
+
+The glyph obeys D13 in full: it lights when capture confirms it is running, never at the keypress.
+It is driven by the same transitions as the agterm indicator, so the two cannot disagree.
 
 ---
 
@@ -500,7 +570,39 @@ Every press lasted **90–150 ms** (140, 110, 90, 150, 120, …). A 300 ms floor
 them.
 
 Not established by that run: the reading was never exercised with a *different* application
-frontmost, and neither Caps Lock nor Fn appeared at all, so neither is a candidate key yet.
+frontmost, and neither Caps Lock nor Fn appeared at all, so neither is a candidate key yet. F6a
+answers the second half for the other keyboard, in the opposite direction.
+
+**F6a — the laptop's built-in keyboard has no right Control key, and reports right Command `0x10`
+and right Option `0x40` like the external one.** Measured 2026-08-24 with the same kind of throwaway
+probe, on the built-in keyboard this time, because F6 was taken against the external one and D5's
+key is the one key the built-in keyboard does not have. What the probe saw, pressed in order:
+
+| key | flags word | device bit |
+|---|---|---|
+| right Command | `0x00100110` | `0x10` |
+| right Option | `0x00080140` | `0x40` |
+| right Shift | `0x00020104` | `0x04` |
+| Fn / Globe | `0x00800100` | `0x800000` |
+| left Control | `0x00040101` | `0x01` |
+
+Three things came out of it, and only the first was the question asked. **Fn does appear on this
+keyboard**, which F6 recorded as not appearing at all — so that finding was about the external
+keyboard and not about macOS, and this spec had been carrying it as though it were general. It is
+still not a candidate: `Fn`+arrows is Home/End and `Fn`+F-keys is every function row, so the key is
+held during ordinary editing, and macOS gives it a system action of its own. Right Shift is a
+candidate by bit and refused by use — a run of capitals holds it past D21's floor. And every sample
+after the first press carried `0x100` (`NX_NONCOALSESCEDMASK`) whether or not any key was down,
+which is the shape of noise that a watch matching a whole word rather than a bit would read as a
+key.
+
+Press durations on this keyboard, from the same run: 86, 88, 98, 118, 126, 148, 192, 195 ms — the
+armed keys themselves at 126 (right Command) and 118 (right Option). D21's 300 ms floor clears all
+of them, and the longest is what took away the "twice the longest press" margin F6 recorded.
+
+The absence of right Control is the user's own report of their hardware, corroborated only
+negatively here: `0x2000` never appeared in the run, and nothing was pressed that could have set
+it.
 
 **F7 — The hold loop costs about 0.03% of one core.** Measured 2026-08-23 as CPU time consumed over
 a fixed wall-clock window: 1.3 ms per 5 s at a 16 ms poll interval, 2.7 ms per 5 s at 8 ms — roughly
@@ -557,6 +659,64 @@ measured the two disagreeing: with Finder frontmost and no Finder window open, i
 application as the owner of the topmost layer-0 window. It answers a question next to D22's, not
 D22's.
 
+**F9 — A menu-bar glyph that changes only its FILL is not legible without being looked at, and the
+system's own microphone indicator cannot stand in for it.** Observed 2026-08-24 by the user against
+the installed build, which is the only instrument that could have produced it: nothing automatic can
+score whether a person notices something.
+
+Three findings, and the order matters because each one narrows what the item has to do.
+
+1. **The panel's live half is seen by nobody.** The timer, the target line and Stop/Abort are
+   drawn only while the panel is open, and during a dictation the panel is closed — the user's
+   focus is in the pane they are dictating into, which is what makes the dictation possible at all.
+   So the state a UI exists to show was reachable only by interrupting the activity it describes.
+2. **`mic` → `mic.fill` is below the threshold of peripheral vision.** Both are the same silhouette
+   at the same width, and peripheral vision reads shape and movement rather than fill. The user's
+   own words: the state is distinguishable, but only on purpose, and nothing about it takes
+   attention by itself. This is a measurement of the same kind as F8a — the thing looked plausible
+   and was not doing its job — and it invalidates the premise `docs/ui-proposal.md` §5.2 rested on,
+   that a passive always-visible glyph is 90% of this UI.
+3. **macOS's own microphone indicator is ambiguous by design, and that is what makes this dicta's
+   job.** It reports that *some* process holds the device, not which. With anything else on the
+   machine recording — a call, a meeting, `acta` — it is lit for a reason unrelated to the attempt,
+   and dictating under it is indistinguishable from not. Disambiguating that is the one thing only
+   dicta's own item can do, and the failure in (2) is worst exactly there.
+
+The answer taken is a **running clock beside the glyph while the microphone is open**, chosen over a
+pulsing glyph and over a mere change of silhouette. Its legibility comes from a property the other
+two lack: the item's WIDTH changes, which moves every icon to its left, and a menu bar reflowing is
+a change peripheral vision reads without being asked to. It costs no animation, which matters in a
+strip the user looks at all day, and it puts the timer — including D15's cap warning — where it can
+be seen without opening anything.
+
+**Whether the width change carries in practice was H22 (b), and it was scored on 2026-08-24 by the
+same user, and PASSED**: the strip is noticed while working, without deciding to look at it. The
+finding is therefore closed rather than merely answered, and the item stays as a regression check —
+what it guards against fails silently, and no assertion can reach it.
+
+**F9b — a watcher that attached was told nothing until the daemon's next transition.** Measured
+2026-08-24 with the smallest instrument available: `dictactl watch` against a healthy idle daemon
+printed not one byte for as long as it was left running. The daemon publishes on transitions, so
+after a restart the menu-bar strip went on reporting the daemon as unreachable over a connection
+that had been live for minutes — a lie that sustains itself, because nobody dictates at a strip
+saying dicta is dead and only a dictation would have corrected it. It also pinned the reconnect
+backoff at its ceiling, since the client resets that counter on a received event: 5 351 ms to
+recover from a crash, against ~550 ms after the fix.
+
+Nothing was added to the wire. The handshake `Response` already carries the snapshot, filled by the
+function `status` uses so that a UI's first frame and its second cannot disagree; the client was
+reading it and discarding it, and now delivers it as the stream's first `update` with no `sequence`
+— which is already this protocol's word for "not a transition". This is what the last row but one of
+§7 rests on, and it was false when that row was written.
+
+**F9a — the menu app opened no connection to the daemon until its panel was first opened.**
+Measured the same day, with `lsof`, and it is a defect this observation flushed out rather than a
+property: `MenuBarExtra` builds its content view lazily, so a `.task` on the panel runs when
+somebody clicks the item and never otherwise. A freshly launched `DictaMenu` held **0** unix
+sockets; after moving the subscription to the label — the one view that always exists — it holds
+**1**, and the daemon shows two descriptors on `control.sock`. Every test of the glyph had passed,
+because anyone testing a panel opens the panel.
+
 ---
 
 ## 5. Target identity
@@ -602,7 +762,7 @@ Requirements that follow:
 
 | trigger | idle | during an attempt |
 |---|---|---|
-| **right Control, held** | start, and record while it is down | release → clean → inject |
+| **right Control or right Command, held** | start, and record while it is down | release → clean → inject |
 | `⌃⌥D` | start | stop → clean → inject |
 | `⌃⌥⇧D` | start | stop → raw → inject |
 | `⌃⌥X` | — | abort |
@@ -642,12 +802,40 @@ Rules that fall out of the table and must hold regardless of how it is read:
 
 ### Feedback
 
-| state | indicator | sound |
-|---|---|---|
-| listening | `active --blink`, red | `Pop` |
-| working | `active`, amber | — |
-| done | `completed --auto-reset` | `Tink` |
-| empty, faulted or refused | `blocked` + notification with the reason | `Basso` |
+| state | indicator | sound | menu bar (D27) |
+|---|---|---|---|
+| listening | `active --blink`, red | `Pop` | red glyph **and a running clock**, amber inside D15's last minute |
+| working | `active`, amber | — | amber glyph, no clock |
+| done | `completed --auto-reset` | `Tink` | back to the quiet glyph |
+| empty, faulted or refused | `blocked` + notification with the reason | `Basso` | back to the quiet glyph; the reason is in the panel and in the record, not in the strip |
+
+**The menu-bar item cannot disagree with the indicator, and that is structural rather than
+careful.** Both are driven by the same transition in the same daemon: the indicator by the effects
+`Daemon.apply` performs, the item by the snapshot that same transition publishes on the `watch`
+stream (D27). There is no second source for it to drift from — the UI computes no state of its own,
+it draws one.
+
+**One way to lie is left, and it belongs to the UI alone: a snapshot outliving the connection it
+arrived on.** The dangerous case is the daemon dying mid-recording, where keeping the last known
+state on screen leaves a red glyph and a running clock over a microphone that is not open — the UI
+confidently wrong about the one thing it exists to report. It is refused rather than avoided: the
+strip and the clock are both derived from the LINK first and the snapshot second, so a link that is
+down draws nothing about the daemon's state. §7 carries the row and the checklist names the
+assertion; the convention there is deliberate — test names are cited in one file, so a rename has
+one place to rot rather than two.
+
+Three consequences worth stating rather than leaving to be inferred:
+
+- **D13 reaches the strip in full.** The glyph lights on `recording` and the clock starts there,
+  never on the keypress — and the clock is absent through `warming` for the same reason the sound
+  is, because a clock is an announcement and a user who speaks to one that started early loses the
+  first syllable every time (invariant 4).
+- **The clock exists because the glyph alone was not legible (F9)**, and the strip is where it
+  belongs rather than the panel: during a dictation the panel is closed, because the user is looking
+  at the pane they are dictating into.
+- **None of this column is required for a dictation.** The menu app is a second client of the
+  socket; with it absent, quit or crashed, every row of this table's first three columns behaves
+  identically (D27). The indicator, not the strip, is the feedback dicta is answerable for.
 
 ---
 
@@ -684,6 +872,10 @@ Every row states: no injection unless said otherwise, a visible reason, and what
 | the active session cannot be read from the tree when the hold key goes down | — | nothing starts; notify, because the key did mean something and produced nothing |
 | the hold trigger is not armed, or its source reads nothing | — | the chords are unaffected and remain the whole interface. **This failure is silent by construction and that is stated rather than hidden**: `CGEventSource.flagsState` returns a word of flags and has no error channel, so "no modifier is down" and "this is not working" are the same answer. What exists instead is a startup line naming the armed key, and `--no-hold` to turn it off deliberately |
 | the user aborts after speaking | — | nothing is injected and nothing is announced as delivered; the words reach the record and only the record (D26) |
+| a watcher goes away mid-stream | — | the daemon drops it and keeps serving; **no dictation outcome changes**. A UI is an observer, and an observer that vanishes is not an event the thing it was observing has to notice (D27) |
+| the watcher cap is reached | — | the new watcher is refused by an ordinary short response, **never by a dropped connection** — a client reads a close as a dead daemon, which would make a healthy refusal read as a crash. The watchers already attached are untouched and **no dictation outcome changes** |
+| the daemon stops or restarts under a live watcher | — | the stream is ENDED with a reason rather than dropped, so a clean shutdown is not reported as a crash; the watcher reconnects on a bounded backoff and the strip returns to truth without anybody opening the panel. **No dictation outcome changes**, because there was no attempt in flight that the UI's connection had any part in |
+| the daemon dies while a watcher is showing a recording | — | the stream breaks rather than ending, which is the honest difference from the row above. The UI **drops the last snapshot** rather than keeping it on screen: a red glyph and a running clock over a microphone that is not open is the UI confidently wrong about the one thing it exists to report, and it is the only way this UI can lie on its own. The dictation was lost with the daemon; nothing about that outcome is the watcher's doing |
 
 A failing filter must never cost the user their words; that is why **replaced** is its fallback
 rather than an error.
@@ -703,15 +895,24 @@ Each must hold on **every** path, and each is worth a test that fails if it stop
 5. **A duplicated stop never delivers twice.**
 6. **A capture fault never injects** (D16) — including the duration cap (D15).
 7. **A capture failure is never reported as silence.**
-8. **The keypress client never opens the microphone** (D11).
+8. **Neither the keypress client nor the menu-bar UI ever opens the microphone** (D11, D27). The
+   TCC grant belongs to the daemon's signed bundle alone, and a second binary opening the device
+   would fracture it. **No behavioural assertion can reach this** — it is a property of what a
+   binary is LINKED against, so `Scripts/linkage.sh` is the only thing that can fail on it, and
+   `Scripts/test.sh` runs it first for that reason.
 9. **Recording state is released only after capture has actually been drained** — otherwise the next
    chord can start a second attempt while the first is still stopping, which with a real audio engine
    is two starts racing over one input device.
 10. **Recognised text, once produced, always reaches the record** before any injection is attempted,
     so a delivery failure cannot lose it.
-11. **The hold trigger reads modifier state and nothing else** — no key codes, no characters, no
-    event tap. This is what lets D5 hold without a permission, and it is a property of which API is
-    called, so no behavioural assertion can reach it.
+11. **The hold trigger reads modifier state, and no bundle dicta ships reads a key stream**
+    — no key codes, no characters, no event tap, in the daemon or in the menu-bar UI. This is what
+    lets D5 hold without a permission, and adding a UI is exactly when it would be lost by accident:
+    a status item that watched for a shortcut would put an Input Monitoring prompt in front of a
+    user this project promised would never see one. Like invariant
+    8 it is a property of which API is called, so no behavioural assertion can reach it and
+    `Scripts/linkage.sh` is the only thing that can fail on it — by name, on `CGEventTapCreate`,
+    `CGEventTapEnable`, `IOHIDManager` and `_OBJC_CLASS_$_NSEvent`.
 12. **A hold under D21's floor never injects.**
 13. **The hold trigger never starts an attempt while another application is frontmost** (D22).
 
@@ -808,7 +1009,9 @@ leaves no record entry carrying text and injects nothing; (c) holding the key wh
 application is frontmost does nothing observable at all — no sound, no indicator, no record entry;
 (d) a dictation begun by holding the key and ended with `⌃⌥⇧D` injects raw text, and the key release
 that follows it is silent; (e) holding the key while one of the user's own commands has agterm's
-native picker open types **nothing** into the session behind it and says why (D24).
+native picker open types **nothing** into the session behind it and says why (D24); (f) the same as
+(a) and (b) on the **laptop's built-in keyboard** with right Command, which is the only armed key it
+has (F6a), and with the external keyboard unplugged so the pass cannot come from the other one.
 
 Steps 1–3 need no decision from the user. Step 4 does. Step 6 chose right Control and push-to-talk
 only, with the chords kept as they are — that was the user's call on 2026-08-23.
@@ -830,6 +1033,13 @@ Each with the observation that counts as a pass:
   fault, and no text is injected.
 - **Daemon lifecycle.** It survives logout/login; a crash never leaves an indicator claiming a
   recording that is not happening.
+- **The menu-bar item is legible without being looked at** (D27, F9). Not "the glyph is correct" —
+  a glyph checked on purpose cannot be told from one that is failing, since both end up red. The
+  pass is noticing it change while working on something else, including while another application
+  holds the microphone and the system's own indicator is lit for a reason of its own.
+- **The panel is a recovery path and not only a display** (D28). After a dictation that went
+  nowhere, the words are on the clipboard without a terminal; after one that was cancelled, they are
+  legible and there is nothing to copy, which is the same rule seen from its other side.
 
 ---
 
@@ -844,7 +1054,9 @@ provided the behaviour and budgets still hold.
   compilation.
 - The daemon is a `LSUIElement` `.app` bundle signed with a stable local identity, started by a user
   LaunchAgent. The bundle exists only as the TCC anchor of D11 — no dock icon, no menu bar, no
-  windows.
+  windows. **That sentence describes the daemon and stays exactly true after D27**: the menu-bar item
+  is a *second* bundle, with its own identity, which opens no microphone and asks for no permission.
+  The daemon links no AppKit UI and holds no reference to it.
 - The socket transport is a separate module from the runtime so that the keypress client (D12) does
   not link the capture stack. Note this is a *different* argument from `acta`'s isolated protocol
   target, which exists because a foreign binary decodes its schema — that reasoning does not apply
@@ -859,6 +1071,11 @@ provided the behaviour and budgets still hold.
 ## 13. Deliberately not in scope
 
 Streaming recognition and live partial text (D1, D13). Silence-based auto-stop (D2). Multi-line
-injection (D8). A settings window, a menu bar, or a dock icon (D11). Any injection target other than
-agterm. Cloud recognition. `acta`'s crash-safety machinery for audio (D14). Automatic retry of a
-failed injection (§7).
+injection (D8). A settings window or a dock icon — the daemon has neither, and neither does the
+menu-bar bundle (D11, D27). Any injection target other than agterm, and any injection at all from
+the UI (D28). Cloud recognition. `acta`'s crash-safety machinery for audio (D14). Automatic retry of
+a failed injection (§7).
+
+**A menu bar was on this list and is not any more (D27).** It was here on D11's authority, which is
+about the microphone grant rather than about windows; the reasoning and what survives of it are in
+D27, and what survives is that the *daemon* still has no menu bar, no dock icon and no windows.

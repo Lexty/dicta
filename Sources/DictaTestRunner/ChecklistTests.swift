@@ -281,4 +281,30 @@ struct ChecklistTests {
             #expect(defined, "the checklist refers to \(item) but never defines it")
         }
     }
+
+    @Test("every human item has a number of its own, and the numbers have no holes")
+    func humanItemNumbersAreUnique() {
+        // Written after two items were both called H14 — push-to-talk's laptop-keyboard gesture and
+        // the menu-bar glyph, added on the same day by two sessions that could not see each other's
+        // files. Nothing caught it: the citations above only spot-check H1–H3, and a duplicate
+        // reads perfectly well on the page. The cost is not cosmetic. The numbers are how a person
+        // reports what they scored, and "H14 passed" against two different items is a pass recorded
+        // for whichever one the reader had in mind.
+        var numbers: [Int] = []
+        for line in Self.checklist.split(separator: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("- **H") else { continue }
+            let digits = trimmed.dropFirst("- **H".count).prefix { $0.isNumber }
+            guard let number = Int(digits) else { continue }
+            numbers.append(number)
+        }
+        #expect(numbers.count >= 20, "the human items could not be parsed off the checklist")
+        let duplicates = Set(numbers.filter { number in numbers.filter { $0 == number }.count > 1 })
+        #expect(duplicates.isEmpty,
+                "two human items share a number: \(duplicates.sorted().map { "H\($0)" })")
+        // Contiguous from 1, so an item cannot be quietly dropped and leave a number nobody can
+        // look up in a report written before it went.
+        #expect(Set(numbers) == Set(1 ... (numbers.max() ?? 0)),
+                "the human items skip a number: \(numbers.sorted())")
+    }
 }

@@ -71,6 +71,20 @@ first. `Scripts/coverage.sh` holds `DictaCore` to a floor of 80% (measured 99.33
 The plan covered steps 1–3 of SPEC.md §10. Steps 4 (the filter) and 5 (the §7 audit) are the next
 work, and neither is begun: the `Filter` seam is `NoFilter`, and nothing invokes a subprocess.
 
+**The menu-bar UI is built — `docs/plans/20260823-dicta-menu-ui.md`, Tier 0 and Tier 1 of
+`docs/ui-proposal.md`, all ten tasks.** A second signed bundle, `DictaMenu.app`, under a LaunchAgent
+of its own: the glyph with a running clock, the panel with its header, banners and footer, the live
+target line, Stop/Abort, and `Recent Dictations` with copy-to-clipboard. The daemon gained exactly
+one thing for it, `watch`, and cannot tell whether a UI is running. Tier 2 — expanding a row to show
+`recognised` against `final` and the rules that fired, and D9b's filter field — waits for step 4,
+because a settings panel with one row in it is worse than none.
+
+What is left of it is what only a person can score, and it is in `docs/manual-checklist.md` as
+**H15–H22**: that the glyph tracks the agterm indicator rather than leading it, that the strip is
+noticed without being looked at, that the banners appear on a machine with no models and with the
+microphone denied, that a dictation which went nowhere reaches the clipboard from the panel, and
+that `Stop and type` lands in the pane the chord was pressed in.
+
 ## Commands
 
 - Build: `swift build` / `swift build -c release`
@@ -80,6 +94,13 @@ work, and neither is begun: the `Filter` seam is `NoFilter`, and nothing invokes
   mechanical checks (Cyrillic, tabs, line length, trailing whitespace, script permissions) always.
   Each check was probed with a file that should trip it; two of them were silently passing until
   that probe, which is the same lesson as D18 in a different costume.
+- Watch the daemon's state as a stream: `dictactl watch` — one JSON object per transition, plus one
+  the instant it attaches. The menu app is the other client of it; this is how to see what the menu
+  is being told, and it costs the keypress path nothing measurable.
+- The menu bar: installed by `Scripts/install.sh` alongside the daemon, and restarted on its own
+  with `launchctl kickstart -k gui/$UID/dev.personal.dicta.menu`. It is **optional** — the daemon
+  neither starts it nor notices it, and `launchctl bootout gui/$UID/dev.personal.dicta.menu` leaves
+  every dictation working exactly as before.
 - Disable push-to-talk for a run: `Dicta --no-hold` (or `bash Scripts/run.sh --no-hold`). The
   keymap chords are unaffected. Useful when two daemons would otherwise both watch the same key.
 - Run the daemon in the foreground: `bash Scripts/run.sh` — the development path, with no bundle and
@@ -174,6 +195,131 @@ testing.linker` to the `DictaTests` target — otherwise the failing test cannot
   it. The lesson is D18's in another costume — a measurement is only about the path it actually ran
   through, which is also why the 2026-08-18 entry was wrong: it attributed the whole interval to the
   one component nobody had timed separately.
+- **The menu-bar bundle runs under its own LaunchAgent, and the daemon's designated requirement did
+  not move when it was added (2026-08-23, D27).** Both facts were checked rather than assumed,
+  because both fail silently:
+  - `DictaMenu.app` bootstrapped into `gui/$UID` reaches `state = running` and LaunchServices reports
+    it as `LSDisplayName = "Dicta Menu"`, `CFBundleIdentifier = dev.personal.dicta.menu`. **The
+    status item appears and its panel opens** — confirmed by the user against a running agent on
+    2026-08-23, which is the half no command here could establish. So a `MenuBarExtra` under a user
+    LaunchAgent works, and D27's shape is viable rather than merely plausible.
+  - Seen in the same screenshot and worth recording, because it is the rule from
+    `docs/ui-vocabulary.md` meeting reality: dicta's `mic` and acta's `waveform` sit adjacent in the
+    menu bar and are distinguishable at a glance. Two tools from one family in one strip is the
+    situation the "one glyph each, by shape not position" rule was written for.
+  - The daemon's requirement after `bundle.sh` learned to build two bundles is
+    `identifier "dev.personal.dicta" and certificate leaf = H"3dcb99…"` — **byte-identical to the
+    installed `~/Applications/Dicta.app`**, which is what the microphone grant is recorded against.
+    The menu's is the same leaf under `dev.personal.dicta.menu`: one certificate, two identities.
+  - Measured while writing the menu's linkage row, and it decided how strict that row could be: a
+    trivial SwiftUI `MenuBarExtra` binary references **neither** `_OBJC_CLASS_$_NSEvent` nor AppKit
+    in its load commands — SwiftUI reaches AppKit internally — while a binary calling
+    `NSEvent.addGlobalMonitorForEvents` shows `U _OBJC_CLASS_$_NSEvent` in `nm -u` **and** the
+    selector `addGlobalMonitorForEventsMatchingMask:handler:` in `strings`. So the UI is held to the
+    daemon's full four-symbol rule rather than a weakened one. Both checks were watched failing
+    against a deliberately-monitoring probe, and the three capture-stack checks against
+    `DictaTestRunner`.
+- **A `watch` client costs the keypress path nothing measurable (2026-08-23, D27).** 120 warm
+  attempts through `Scripts/measure.sh` against the installed LaunchAgent build, in two blocks of
+  six runs of ten, with and without `dictactl watch` attached:
+
+  | | median | mean | p90 | worst |
+  |---|---|---|---|---|
+  | no watcher | 119.1 | 120.1 | 130.8 | **193.8** |
+  | one watcher | 116.7 | 115.8 | 125.2 | 141.2 |
+
+  **Read this as "below the noise floor", not as "watching makes it faster".** Publishing a snapshot
+  cannot speed a chord up; the block with a watcher came out slightly better on every aggregate, and
+  the single worst attempt of the whole session (193.8 ms) was in the block with NO watcher. What
+  the numbers establish is that the cost of a lock, a copy and a signal per transition does not rise
+  above the jitter of a real machine — which is what makes publishing on the transition path
+  allowed. 198 events reached the watcher across the second block, so the stream was carrying the
+  whole run rather than being idle through it.
+  Consistent with F4's own finding that §10 (a) is not met: both blocks contain attempts over the
+  150 ms budget, with and without a watcher, so the criterion's failure is not the UI's doing.
+- **The whole menu-bar UI, measured against the installed pair (2026-08-24, Task 9).** The rule
+  these were taken under is the one F4 was rewritten to state: a figure without its endpoint and
+  its instrument is not a measurement. Two of them found defects, and both are recorded with what
+  the number was **before** the fix, because a measurement that only ever saw the fixed build cannot
+  be re-run as a regression check.
+  - **The keypress path does not notice the menu.** `Scripts/measure.sh`, 120 warm attempts, two
+    blocks of six runs of ten, alternating in one sitting — the menu running with its watcher
+    attached, then `launchctl bootout` on the menu and no watcher at all.
+
+    | | median | mean | p90 | p95 | worst | over 150 ms |
+    |---|---|---|---|---|---|---|
+    | menu running | 116.0 | 115.4 | 128.1 | 131.1 | 168.3 | 2 of 60 |
+    | menu stopped | 108.6 | 122.2 | 190.3 | 193.8 | 256.3 | 12 of 60 |
+
+    **Read this as "below the noise floor", and read the tails as the machine rather than as the
+    UI.** The block WITHOUT the menu came out worse on every aggregate except the median, which is
+    the opposite of what a cost would look like, and the per-run medians span **16 ms in both
+    blocks** (107–123 and 99–115) — so the 7 ms between the two block medians is inside the spread
+    of either one taken alone. Both medians are under F4's 122 ms on `4c2ac7c`, so nothing
+    regressed; the worst attempts are worse than F4's 158 ms, and the honest reason is that this
+    machine was running several agent sessions at the time and F4's was not. §10 (a) still fails, in
+    both blocks, exactly as F4 says — the criterion's failure is not the UI's doing.
+  - **The bounded reader is bounded, shown at two sizes rather than asserted at one.** The record
+    grew 44% during the measurement above (120 aborted attempts, each one an entry — D26 writes the
+    speech down), which made the comparison free:
+
+    | record | `tail(5)` | bytes it touched | `all()` | ratio |
+    |---|---|---|---|---|
+    | 197 409 bytes, 629 lines | 0.142 ms | 16 384 | 5.84 ms | 41× |
+    | 284 267 bytes | 0.163 ms | 16 384 | 8.41 ms | 52× |
+
+    `all()` tracks the file and `tail(5)` does not, which is the property Task 5 bought and the
+    ratio will go on widening for as long as dicta is useful. Release build, 200 iterations,
+    medians. `SessionNames.names` — the target line's own lookup — is 0.127 ms over a 58 KB tree of
+    33 sessions, and it is off the keypress path entirely: it runs only while the panel is open with
+    a live attempt.
+    Note what this makes unreachable rather than fixed: `recent == []` renders "Nothing yet."
+    whether the record is empty or merely unread, and at 0.16 ms behind a read that starts at app
+    launch there is no frame in which the wrong one can be seen. A flag to tell them apart would be
+    a branch nothing can reach, so there is not one.
+  - **A daemon restart is noticed and recovered from without the panel ever being opened.**
+    `launchctl bootout` then `bootstrap`, four cycles, polled with `lsof` on the menu's own
+    descriptors — an instrument that costs 36 ms per sample and therefore bounds the resolution of
+    everything in this bullet. The menu drops its socket within ~60 ms and comes back in
+    **534, 557, 577, 608 ms**, which is `Backoff.first` plus the daemon's start. The menu's pid
+    never changes, so none of this is a crash and a relaunch.
+    **A `kill -9` is a different number and the difference is launchd's, not dicta's**: launchd
+    respawns the daemon within milliseconds, but repeated respawns are throttled to about ten
+    seconds, so a crash during a burst of restarts leaves ~12 s with no daemon to connect to. The
+    menu is truthful throughout it; there is simply nothing there.
+  - **F9b — a watcher that attached was told NOTHING until the daemon's next transition, and the
+    menu-bar strip lied for as long as that took.** Found by the bullet above and confirmed with the
+    smallest possible instrument: `timeout 4 dictactl watch` against a healthy idle daemon printed
+    **not one byte**. The daemon publishes on transitions, so after a restart the strip went on
+    saying "dicta is not answering" over a connection that had been live for minutes — and that lie
+    sustains itself, because nobody dictates at a strip that says dicta is dead, and only a
+    dictation would have corrected it. It also pinned the reconnect backoff at its 5 s ceiling for
+    ever, since `failures` is reset by a received event: measured **5 351 ms** to reconnect after a
+    crash, against ~550 ms once the fix landed.
+    **Nothing had to be added to the wire.** The handshake `Response` already carries the snapshot,
+    filled by the same function `status` uses so the UI's first frame and its second cannot disagree
+    — `ControlClient.watch` was reading it and throwing it away. It now delivers it as the stream's
+    first `.update`, with no `sequence`, which is already this protocol's word for "not a
+    transition". `test: a watcher is told the state it attached to, before anything has
+    transitioned` is the assertion; every other test in that suite makes something happen and then
+    looks, which is exactly why none of them could see this.
+    The checklist's **H18** claimed the glyph "returns to grey on its own" — it did not, and the
+    item was written before anything had been scored. That is the general hazard of a checklist
+    written alongside the code it audits, and the reason these items say what to *observe* rather
+    than what to expect.
+  - **The menu costs nothing while nothing is happening.** 0.00 s of CPU accumulated over 60 s idle
+    with the panel closed, because the second hand runs only when something is counting — a
+    recording, or an open panel. 67 MB RSS against the daemon's 58.6 MB, which is what a SwiftUI
+    process costs and is not worth optimising.
+  - **Not measured, and needing a person rather than a script.** Said out loud because Task 9's
+    instruction was to record the boring ones too, and an unmeasured item silently omitted reads as
+    a measured one. The panel's open-to-drawn latency **as perceived** — everything under it is
+    timed above, but whether a frame is ever seen unpopulated is **H16**. How long the hold trigger
+    stays silent after the panel closes (D22) — it needs somebody to close a panel and hold a key,
+    and it is **H19**. Logout and login with both LaunchAgents — **H10** and **H22 (a)**, and the
+    race worth watching for there is the menu winning the start and painting "not running" before
+    the daemon has bound its socket; the reconnect measured above is what should clear it within a
+    second, but that is a prediction and not an observation.
 - **F2 — `claude -p` costs 8.6–10.5 s of fixed startup** per invocation. It cannot be the filter,
   which is why v1 ships the seam empty (D9c).
 - **Recognition, measured on this machine (M3 Pro) with a throwaway probe in Task 10, since no unit
@@ -224,11 +370,25 @@ testing.linker` to the `DictaTests` target — otherwise the failing test cannot
 ## Structure
 
 - `Sources/DictaCore/` — **pure, no I/O**: the lifecycle state machine, the sanitiser, the
-  replacement engine, the record schema, the wire types, `Paths`. Anything worth asserting is here.
+  replacement engine, the record schema, the wire types, `Paths`. Anything worth asserting is here,
+  **including everything the menu-bar UI decides** — `Presentation` (which glyph, which tint, which
+  sentence), `MenuModel` (which banner, whether the daemon is gone rather than idle, what the
+  menu-bar item draws), `DictationRow` (what a row shows and what may be copied), `SessionNames` and
+  `AgtermTool`. That is not UI in the wrong module: `DictaMenu` is an executable target and SwiftPM
+  **cannot import one**, so a decision written there would be unreachable from the test runner. The
+  SwiftUI files turn `Tint.red` into a colour and do nothing else (D19, D27).
 - `Sources/DictaIPC/` — the Unix-socket transport, **both halves in one module** so the two ends'
   framing cannot drift. Split from `DictaRuntime` for one concrete reason: `dictactl` needs the
   client half, and `DictaRuntime` is where AVFoundation and CoreML land — without the split every
   keypress would drag the capture stack through dyld.
+- `Sources/DictaRecord/` — reading §9's record off disk, **bounded**. The same split as `DictaIPC`
+  in its second instance rather than a new principle: the menu app needs the reader and
+  `DictaRuntime` links FluidAudio. `RecordReader.tail` walks backwards in 16 KB chunks until it has
+  seen the wanted number of distinct attempt ids, which makes the cost independent of a file that
+  grows for ever — 0.16 ms against `all()`'s 8.4 ms on a 284 KB record, and the gap widens with use.
+  Reading backwards is also what makes §9's superseding rule free: from the end, the first line seen
+  for an id is the last one written. **It bounds READING and is not a licence to bound the FILE** —
+  the header of that file says why, and names the three dependents append-only now has.
 - `Sources/DictaRuntime/` — everything that touches the world: `Agterm` (subprocesses),
   `AudioCapture` (AVAudioEngine), `ParakeetTranscriber` (FluidAudio/CoreML), the daemon, the record
   writer, and the seams (`Capture`, `Transcriber`, `Filter`, `Injector`, `Notifier`, `Clock`). The
@@ -244,6 +404,11 @@ testing.linker` to the `DictaTests` target — otherwise the failing test cannot
 - `Sources/dictactl/` — the client the keymap invokes. **DictaCore + DictaIPC and nothing else**,
   and it never opens the microphone: the TCC grant belongs to the daemon's signed bundle, and a
   second binary opening the device would fracture it (D11, D12, invariant 8).
+- `Sources/DictaMenu/` — the menu-bar UI (D27). **`DictaCore` + `DictaIPC` + `DictaRecord` plus
+  SwiftUI, and nothing else** — `dictactl`'s dependency budget, one target wider. It opens no
+  microphone, loads no model, and links no `DictaRuntime`, which is invariants 8 and 11 and is
+  asserted by `Scripts/linkage.sh` rather than by any test. Wiring only: a socket, a thread and a
+  `@Published`.
 - `Sources/DictaTestRunner/` — where the tests actually are.
 - `Tests/DictaTests/` — a compile-only stub. Never put an assertion here (see D18 above).
 
@@ -508,17 +673,34 @@ tool on this platform wants Input Monitoring or Accessibility. Reach for `CGEven
 `NSEvent.addGlobalMonitorForEvents` "just to know which key" and the user gets a permission dialog
 for a promise this project made. `Scripts/linkage.sh` fails by name if that happens.
 
-Three more rules that are not obvious from the code:
+More rules that are not obvious from the code:
 
 - **The key is a *side*, and that is load-bearing.** Right Control is `0x2000`, left Control is
-  `0x1` — the device-dependent bits, measured on this user's external keyboard (F6). Matching the
-  ordinary `.maskControl` instead would open the microphone on every `⌃C` and `⌃R` typed in a
-  terminal, which is all day long.
-- **A hold under 300 ms aborts and does not deliver** (D21). Right Control is a real modifier, so a
-  combination typed with it is indistinguishable from a very short dictation to a source that sees
-  only state. Duration is the whole separation, and it is a wide one: an ordinary press measured
-  90-150 ms, speaking does not. The floor is NOT a delay before recording starts — waiting would
-  spend it out of F4's budget on every real dictation.
+  `0x1`; right Command is `0x10`, left Command is `0x8` — the device-dependent bits, measured on
+  this user's external keyboard (F6) and, for the Command pair and right Option `0x40`, on the
+  built-in one (F6a). Matching the ordinary `.maskControl` instead would open the microphone on
+  every `⌃C` and `⌃R` typed in a terminal, which is all day long.
+- **TWO keys are armed, and they are one gesture** (F6a, 2026-08-24). **The laptop's built-in
+  keyboard has no right Control key**, so D5's key existed on the external keyboard and nowhere
+  else, and on the machine's own keyboard push-to-talk was not degraded but absent. `HoldWatch` in
+  `DictaCore` multiplexes the watches: **whichever armed key goes down first owns the attempt until
+  it is released**, and every edge of every other key is swallowed. Two traps live in that, and both
+  are asserted. Report the non-owner's release and the other key, pressed idly mid-dictation, STOPS
+  AND DELIVERS while the user is still speaking. Skip sampling the watches whose edges are being
+  swallowed and their state goes stale, so a key pressed during someone else's hold fires a `down`
+  minutes later, at whatever is frontmost then — every watch is sampled on every call, and only the
+  reporting is filtered. Right Command was chosen over right Shift (a run of capitals holds it past
+  the floor) and over Fn (`Fn`+arrows is Home/End, and macOS gives the key an action of its own;
+  it does appear in the flags on this keyboard, which is F6's claim to the contrary corrected).
+  `--hold-key <name>` re-arms without a rebuild and REPLACES the pair rather than adding to it.
+- **A hold under 300 ms aborts and does not deliver** (D21). Both keys are real modifiers, so a
+  combination typed with one is indistinguishable from a very short dictation to a source that sees
+  only state. Duration is the whole separation: an ordinary press measured 90-150 ms on the external
+  keyboard and 86-195 ms on the built-in one, speaking does not. **The margin is no longer "twice
+  the longest press"** — F6a's 195 ms took that, leaving 105 ms — and the one everyday gesture that
+  clears the floor on purpose is `⌘Tab` held with the right hand, which costs an attempt with no
+  text in it and never an injection (D22 read frontmost at the press). The floor is NOT a delay
+  before recording starts — waiting would spend it out of F4's budget on every real dictation.
 - **`SystemFrontmost` holds an observer that looks unused and is the only reason any of this
   works.** `NSWorkspace.frontmostApplication` reads a per-process cache that is only refreshed if
   something in the process has subscribed to the workspace notification centre. With no observer it
@@ -573,11 +755,78 @@ Two real `Thread`s — one polling at 16 ms, one sending — for the reason at t
 below about the control socket: the sender blocks for the length of a whole dictation, and Darwin's
 non-overcommit pool does not grow when its threads block.
 
+## The menu bar, and why the daemon does not know it exists
+
+**A second signed bundle, `DictaMenu.app`, under a LaunchAgent of its own (D27).** It is `dictactl`
+with a face: a second client of the same control socket, linking `DictaCore`, `DictaIPC`,
+`DictaRecord` and SwiftUI. `Scripts/bundle.sh` builds both bundles and `Scripts/install.sh` installs
+both agents; one certificate, two identities, and the daemon's designated requirement did not move
+when the second arrived — which is the property the microphone grant rests on.
+
+**The daemon cannot tell whether a UI is running, and nothing about a dictation depends on it.** It
+holds no reference to the menu, spawns nothing, and checks for nothing. With the menu absent, quit
+or crashed, every dictation behaves identically — measured, not assumed: 120 warm attempts in two
+alternating blocks put the difference below the run-to-run noise floor. That is what makes the strip
+a *display* of dicta rather than a part of it, and it is why a UI bug can never cost a dictation.
+
+More that is not obvious from the code:
+
+- **`watch` is a second connection SHAPE, not a sixth verb.** Every other command is one frame in,
+  one frame out, and every read timeout is sized as "how long may one answer take". A watcher
+  outlives the commands it observes, so it needed a timeout invented rather than reused
+  (`ControlTimeouts.watchIdle`), a cap, and a rule for ending. It is the third entry in
+  `Command.isServedConcurrently`, and the test that list encodes is "does this verb begin an attempt
+  or end one" — a watcher does neither, and holding the handler lock for its lifetime would not
+  delay a chord, it would stop the daemon serving any at all.
+- **A dropped connection is never how a stream ends.** `ControlClient` reads a close as
+  `closedByPeer` and reports that the daemon died, so a watcher would announce a crash every time
+  the daemon shut down cleanly. A shutdown sends `WatchEvent.end` with a reason and the panel says
+  "dicta stopped" in amber; the watcher cap is refused with an ordinary short `Response` for the
+  same reason.
+- **Attaching is its own first event, and it was not, which is F9b.** The daemon publishes on
+  transitions, so a watcher that attached to an idle daemon was told nothing until somebody
+  dictated: after a restart the strip went on saying the daemon was unreachable over a connection
+  that had been live for minutes, and nobody dictates at a strip that says dicta is dead. The
+  handshake `Response` already carried the snapshot — `ControlClient.watch` was discarding it — and
+  now delivers it as the stream's first `update`, with no `sequence`, which is already this
+  protocol's word for "not a transition".
+- **The subscription starts on the LABEL, never on the panel.** `MenuBarExtra` builds its content
+  lazily, so a `.task` on the panel runs when somebody clicks the item and never otherwise (F9a: a
+  freshly launched menu held zero sockets). The label is the one view that always exists.
+- **The menu-bar item carries a running clock while the microphone is open**, because a glyph that
+  changes only its fill is not legible without being looked at (F9). The clock changes the item's
+  width, which moves every icon to its left, and that is the change peripheral vision reads. D13
+  reaches it in full: the clock starts when capture confirms, never at the keypress, and is absent
+  through `warming`.
+- **The second hand runs only while something is counting** — a recording, or an open panel.
+  Otherwise the menu accrues no CPU at all over a minute, which is the same argument that stopped
+  the UI polling `status` at 1 Hz.
+- **The UI never injects, and that is structural rather than remembered** (D28). Recovery is the
+  clipboard, loaded from `final` and never from `recognised`, so a row that produced no `final` has
+  **no copy button at all** rather than a disabled one — there is no branch that could point the
+  affordance at the wrong field. There is no Start either: a click carries no session to aim at
+  (D30), which is also why Stop and Abort are absent when idle rather than greyed out.
+- **A row's reason is §9's own `error`, verbatim** — one event, one wording. Two exceptions found by
+  reading the real record rather than by reasoning: an empty string, and a "reason" that is only the
+  outcome's own raw value, which is what 870 of 902 entries on this machine actually contain.
+- **The live target line resolves the session's NAME itself**, out of its own `agtermctl tree
+  --json`, only while an attempt is live and only once per session id. The daemon is not asked to
+  carry it: that would put a subprocess on the transition path, which F4 vetoes. `SessionNames` is
+  therefore a second, deliberately narrower decoder of a tree `Agterm` already parses — safe because
+  it decides nothing and falls back to the session id, where `Agterm`'s answer aims keystrokes and
+  must fail closed. `test: the name reader and the target resolver read the same tree` runs both
+  over one fixture so they cannot drift.
+- **`docs/ui-vocabulary.md` is the written form of what acta and dicta share**, and it is a COPY in
+  each repository because they share no package. When it disagrees with `Presentation.swift` and
+  `MenuModel.swift`, those are what ship and the document is what is wrong.
+
 ## Not verified automatically (needs a human)
 
-Push-to-talk adds two items and they are the ones most likely to be skipped: **H11** scores step 6's
-four criteria in a real pane, and **H12** exists because F8 measured `NSWorkspace` from a child of
-the user's terminal and *not* from a LaunchAgent. If that call returns nil under launchd, D22 stops
+Push-to-talk adds three items and they are the ones most likely to be skipped: **H11** scores step
+6's criteria (a)-(e) in a real pane, **H14** scores (f) — the same gesture on right Command with the
+external keyboard UNPLUGGED, since with it attached a pass proves nothing about the laptop — and
+**H12** exists because F8 measured `NSWorkspace` from a child of the user's terminal and *not* from
+a LaunchAgent. If that call returns nil under launchd, D22 stops
 holding and the key dictates from inside Safari — the same shape of gap that made F4's old number
 describe a build with a fake microphone in it.
 

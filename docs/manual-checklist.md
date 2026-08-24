@@ -33,10 +33,10 @@ Each invariant must hold on **every** path. "Checked by" names the assertion tha
 | 5 | A duplicated stop never delivers twice. | `test: a duplicated stop is silent and never delivers twice`, `test: draining + stop: quiet no-op, never a second delivery`, `test: processing + stop: quiet no-op`, `test: injecting + stop: quiet no-op`, `test: a stop naming a spent attempt is a silent no-op` |
 | 6 | A capture fault never injects | `test: a capture fault discards and never injects, in every state it can reach`, `test: a fault while recording discards, injects nothing, and is worded as hardware`, `test: ten minutes of recording ends the attempt, injects nothing, and says why`, `test: a cap firing while the text is being processed still records the text it produced`, `test: a cap firing while the recogniser is still running does not lose the text it returns` |
 | 7 | A capture failure is never reported as silence. | `test: no capture fault can be read as silence`, `test: a fault is never reported as silence`, `test: a fault while stopping is a fault, not silence`, `test: a fault while stopping wins over the samples already in hand`, `test: an engine that stopped by itself is a fault, even with a full buffer`, `test: a capture fault is recorded as a fault and never as empty` |
-| 8 | The keypress client never opens the microphone | **`Scripts/linkage.sh`**, run first by `Scripts/test.sh`. No swift-testing assertion can reach this one: it is a property of the linked `dictactl` binary, and the test runner deliberately links everything the client must not. Three assertions — load commands, undefined symbols, and DictaRuntime's own mangled names — probed by running the script against `DictaTestRunner`, where all three fire. |
+| 8 | Neither the keypress client nor the menu-bar UI ever opens the microphone | **`Scripts/linkage.sh`**, run first by `Scripts/test.sh`, plus `test: linkage.sh scores the menu, and forbids it the capture stack`, which asserts the script still HAS the menu's row — the script is the only thing that can fail on the invariant, so a row silently dropped from it would take the invariant with it. No swift-testing assertion can reach the invariant itself: it is a property of what the linked `dictactl` and `DictaMenu` binaries are built against, and the test runner deliberately links everything both must not. Three assertions per binary — load commands, undefined symbols, and DictaRuntime's own mangled names — probed by running the script against `DictaTestRunner`, where all three fire. The menu is held to the same three even though it legitimately links SwiftUI, which is the one difference between its row and `dictactl`'s. |
 | 9 | Recording state is released only after capture has actually been drained | `test: draining + start: rejected, not queued behind the attempt that is still stopping`, `test: a start chord while the first attempt is still draining is refused, not queued`, `test: a second start chord while recording is refused, and opens no second device` |
 | 10 | Recognised text, once produced, always reaches the record | `test: the entry is on disk before the first keystroke is attempted`, `test: a delivery failure supersedes the saved line rather than adding an attempt`, `test: a failing append still delivers the text, then says recovery is unavailable`, `test: every attempt leaves exactly one entry, whatever ended it`, `test: a cap firing while the recogniser is still running does not lose the text it returns`, `test: an abort while the recogniser is running keeps the text but never delivers it` |
-| 11 | The hold trigger reads modifier state and nothing else | **`Scripts/linkage.sh`**, run first by `Scripts/test.sh`. The second invariant no assertion can reach, and for the same reason as 8: it is a property of WHICH API the built binary calls, not of what it does. `nm` on `Dicta` must name no `CGEventTapCreate`, no `CGEventTapEnable`, no `IOHIDManager` and no `_OBJC_CLASS_$_NSEvent` — the four shapes of "read a keystroke", every one of which would make macOS demand Input Monitoring or Accessibility (D5, F6). Probed by adding a `CGEvent.tapCreate` call to `SystemModifiers.flags()` and watching the check fail on `U _CGEventTapCreate`, then reverting. |
+| 11 | The hold trigger reads modifier state, and no bundle dicta ships reads a key stream | **`Scripts/linkage.sh`**, run first by `Scripts/test.sh`, plus `test: linkage.sh scores the menu, and forbids it the capture stack`. The second invariant no assertion can reach, and for the same reason as 8: it is a property of WHICH API the built binary calls, not of what it does. `nm` on `Dicta` **and on `DictaMenu`** must name no `CGEventTapCreate`, no `CGEventTapEnable`, no `IOHIDManager` and no `_OBJC_CLASS_$_NSEvent` — the four shapes of "read a keystroke", every one of which would make macOS demand Input Monitoring or Accessibility (D5, F6). The menu is the binary where this would be lost by accident, since a status item watching for a shortcut is an ordinary thing to write; the check was probed there against a deliberately-monitoring build, which shows `U _OBJC_CLASS_$_NSEvent` and the selector `addGlobalMonitorForEventsMatchingMask:handler:`, and on the daemon by adding a `CGEvent.tapCreate` call to `SystemModifiers.flags()` and watching the check fail on `U _CGEventTapCreate`, then reverting both. |
 | 12 | A hold under D21's floor never injects | `test: a hold under the floor discards rather than delivering`, `test: a hold under the floor aborts and never stops`, `test: the floor separates the two populations it was measured against, and only those`, `test: a gesture that never received an attempt id can never end one` |
 | 13 | The hold trigger never starts an attempt while another application is frontmost | `test: the hold key does nothing at all while another application is frontmost`, `test: focus moving to another application mid-hold does not stop the delivery` |
 
@@ -80,6 +80,10 @@ external filter, which this plan deliberately does not build (D9c): the `Filter`
 | the active session cannot be read from the tree when the hold key goes down | `test: a session that cannot be resolved starts nothing and is said out loud`; that the lookup happens once, in the daemon, and only when asked for: `test: a start asking for focus resolves both halves itself, out of one lookup`, `test: only an explicit focus flag resolves from focus, never a missing session`, `test: the focused target carries the active session's own active pane, from one read`, `test: a focused target whose pane cannot be named is refused, exactly as a chord's would be`. The readings that produce the refusal: `test: a tree with no active workspace refuses rather than picking one`, `test: a workspace whose sessions are all inactive refuses rather than picking one`, `test: two sessions claiming to be active is a refusal, never a choice`, `test: the active session is read from the active workspace and not from every workspace`, `test: a refusal from agterm is a refusal here, not an empty tree` |
 | the hold trigger is not armed, or its source reads nothing | Nothing automatic, and the row itself says why: `CGEventSource.flagsState` has no error channel, so "no modifier is down" and "this is not working" are one answer. Human item **H12** scores that the trigger is armed at all on the installed daemon; `test: a daemon that cannot be reached is reported rather than swallowed` covers the half that does have an error channel |
 | the user aborts after speaking | `test: an abort while recording is written down and typed nowhere` is the whole of D26 in one place: the words reach the record, `final` stays empty, nothing is injected and the indicator ends blocked. The other end of the same rule, when the cancel lands while the recogniser is already running: `test: an abort while the recogniser is running keeps the text but never delivers it`. That no later reader treats those words as deliverable: `test: dictactl last does not offer a cancelled dictation as text to deliver`. That the buffer is kept rather than thrown away, and that no second drain races the first: `test: abort while recording keeps the audio for the record and injects nothing`, `test: abort while draining does not issue a second drain for the same buffer`, `test: recording + abort: cancels, and the audio is kept for the record`, `test: draining + abort: cancels, and does not race the drain already in flight`. That an attempt which never had audio journals nothing: `test: an attempt abandoned before audio existed carries no speech window, and that is honest` |
+| a watcher goes away mid-stream | `test: a watcher that goes away is dropped, and the daemon keeps serving` is the daemon surviving it; `test: a watcher on the far end does not change what an attempt does` is the half the row actually claims — that no OUTCOME moves. The two are separate on purpose: a daemon that kept serving while quietly changing what a dictation did would pass the first and fail the invariant the row exists for |
+| the watcher cap is reached | `test: past the cap a watcher is REFUSED with a response, never by a dropped connection`, and `test: the watcher cap exists and is small`. The wording of the first is the finding: `ControlClient` reads a closed connection as `daemonCrashed`, so refusing by hanging up would make a healthy daemon that is answering correctly report itself as dead in the one window the user would look at |
+| the daemon stops or restarts under a live watcher | `test: a daemon shutting down ENDS the stream rather than dropping it` is why an orderly `launchctl bootout` reads amber and says stopped instead of red and crashed; `test: the backoff grows and is bounded` is the reconnect that follows. End to end, on the installed pair, is **H18** — and that the strip comes back **without the panel being opened** is **H22**, which is a separate item because that path was broken and passing until it was measured (F9a) |
+| the daemon dies while a watcher is showing a recording | `test: a lost connection does not keep drawing a live microphone` is the whole of it, and it is the only assertion in this audit about a mistake the UI could make by itself rather than one it could inherit. Its two halves are asserted separately because they fail separately: the glyph stops claiming a live microphone, and `speakingSeconds` goes nil so the clock stops counting a dictation that ended when the daemon did. That the same rule governs the strip and not only the panel: `test: the menu bar shows a clock only while the microphone is open`, whose last case is exactly this one |
 
 Two rows are the honest gaps, and both are named above rather than papered over: the OS wiring of the
 capture faults (**H3**) and the client's own desktop notification (**H1**).
@@ -199,7 +203,7 @@ counts as a pass, so two people scoring it agree.
   and **nothing else, with nothing re-run** — the user can name `misfire` as the rule that did it.
   Fail: needing to re-dictate, to bisect the file, or to guess, which means the record is not
   carrying enough to diagnose with.
-- **H11 — step 6: push-to-talk, all four criteria, in a real pane.** With the daemon installed and
+- **H11 — step 6: push-to-talk, criteria (a)-(e), in a real pane.** With the daemon installed and
   running, in a session running **Claude Code**: (a) hold right Control, speak a sentence with a
   pause in the middle, let go. Pass: the text arrives in that session's input line, unsubmitted, and
   no chord was pressed. (b) Type `⌃C` and a few other right-Control combinations at ordinary speed.
@@ -234,12 +238,29 @@ counts as a pass, so two people scoring it agree.
   user's prompt, which is what would happen if the client wrote its reasons to stdout (D29).
   What is left for a person is the half that needs a voice: that real speech reaches the query field
   and that **nothing is typed into the terminal** at any point.
+- **H14 — step 6 (f): the gesture on the laptop's own keyboard.** F6a measured which bits the
+  built-in keyboard reports and nothing more; that right Command actually dictates through the whole
+  pipeline is a different claim, and this is the item that scores it. **Unplug the external keyboard
+  first** — with it attached, right Control is still available and a pass proves nothing about the
+  laptop. Then, in a session running Claude Code: (a) hold right **Command**, speak a sentence, let
+  go. Pass: the text arrives in that session's input line, unsubmitted. (b) Type `⌘V`, `⌘K` and a
+  few other right-Command combinations at ordinary speed. Pass: `dictactl last` still shows the
+  dictation from (a) — nothing recorded, nothing typed, no sound. Fail: an entry carrying text,
+  which means D21's floor no longer clears this keyboard's presses; F6a measured 126 ms for this
+  key against a 300 ms floor, so re-measure with a probe rather than raising the floor by feel.
+  (c) With agterm frontmost, hold right Control — the key this keyboard does not have — by pressing
+  where it would be on an external one. Pass: nothing, obviously, and it is worth doing once so the
+  absence is observed rather than assumed.
+  **Known and deliberately not a failure:** `⌘Tab` held with the RIGHT hand inside agterm opens the
+  microphone for the length of the app switch and produces an attempt with no text. Nothing is typed
+  anywhere. If that turns out to be a daily nuisance rather than a curiosity, the answer is
+  `--hold-key rightOption` in the LaunchAgent, not a change to the floor.
 - **H12 — the frontmost reading TRACKS, rather than merely answering.** Scored 2026-08-23 and it
   **FAILED**, which is the whole reason this item was written the way it was; F8a records the
   measurement and the fix is the activation observer in `SystemFrontmost`. It stays as a regression
   check, because nothing automatic can reach it.
   After `bash Scripts/install.sh`, read the daemon's log for `push-to-talk is armed on the right
-  Control key`. Then switch applications — agterm, a browser, Finder, agterm — and, at each stop,
+  Control key and the right Command key`. Then switch applications — agterm, a browser, Finder, agterm — and, at each stop,
   hold right Control for two seconds. Pass: it dictates in agterm and does nothing at all in the
   other two, **every time round**, including after the daemon has been running for hours.
   **The method is the item.** Do not score this by holding the key only in agterm, and do not score
@@ -252,3 +273,93 @@ counts as a pass, so two people scoring it agree.
   anyone starting it, and a chord works immediately. Then kill it mid-recording (`kill -9` while
   the indicator is red) and restart it. Pass: the indicator that was claiming a recording is put
   out at startup, so nothing is left saying dicta is listening when it is not (§7).
+- **H15 — the glyph tracks the indicator and never leads it.** With the menu app installed, watch
+  the menu-bar microphone while dictating: press the chord, speak, press again. Pass: the glyph is
+  grey and **carries no clock** until the **agterm indicator turns red**; then it is red with a
+  running `0:07` beside it, for exactly as long as the indicator is; amber glyph while the text is
+  recognised and typed, and the clock is gone by then; then grey. Fail, and this is the one that
+  matters: the glyph goes red, or the clock appears, at the KEYPRESS. That is D13 and invariant 4
+  broken in the UI — a user who believes the microphone is open before it is loses the first
+  syllable of every dictation, and a running clock is a more convincing liar than a fill, which is
+  exactly why the clock is held to the same instant.
+  **The method is the item.** Score it by watching the two together in one glance. A glyph checked
+  on its own cannot be told from a correct one, because both end up red.
+- **H16 — the panel opens without a blank frame.** Click the menu-bar icon repeatedly, on a cold
+  daemon and on a warm one. Pass: the header is populated in the first drawn frame every time.
+  Fail: a flash of an empty or "Connecting…" panel that then fills in — that is the synchronous
+  seeding lost, and it reads as a broken app rather than a loading one.
+- **H17 — the fault banners appear, and their buttons fix what they name.** Two runs. (a) Deny the
+  microphone in System Settings and restart the daemon. Pass: a red banner naming the microphone,
+  with a button that opens the Privacy & Security pane at Microphone — not the top of Settings.
+  (b) Move the model cache aside (`~/Library/Application Support/FluidAudio/Models`) and restart.
+  Pass: a red banner naming the models, with a button that starts the fetch. Fail in either: the
+  panel says "Ready" over a daemon that would refuse the next chord.
+- **H18 — a daemon that is not running is not drawn as an idle one, and comes back on its own.**
+  **The second half of this item was FALSE when it was written, and that is why it is worded as an
+  observation rather than an expectation** (F9b, 2026-08-24): a watcher that attached was told
+  nothing until the daemon's next transition, so the strip went on reporting an unreachable daemon
+  over a live connection until somebody dictated. It stays as a regression check for exactly that.
+  `launchctl bootout gui/$UID/dev.personal.dicta`. Pass: within a second the glyph changes to the
+  struck-through microphone and the panel offers to start dicta; the wording says stopped, never
+  crashed. Restart from that button, **and then do not touch anything** — in particular do not open
+  the panel and do not dictate, since either would hide the failure by causing the event that was
+  missing. Pass: the glyph returns to grey by itself within about a second (measured 534–608 ms
+  over four cycles). Fail: it returns only after you dictate, or only after you open the panel.
+- **H19 — the panel silences the hold trigger while it is open, and only while it is open.** Open
+  the panel, hold right Control. Pass: nothing happens — the panel has focus, so agterm is not
+  frontmost and D22 refuses. Close it, hold again. Pass: it dictates normally. This is **expected
+  behaviour, not a defect** (D30): the UI is where you go between dictations. Fail: the trigger
+  stays dead after the panel closes, which would mean D22's frontmost check has been left stale.
+- **H20 — a dictation that went nowhere is recoverable from the panel, with no terminal.** This is
+  the whole of job 2 and the only reason the drawer exists. Make one fail on purpose: start a
+  dictation in a session, speak a sentence, close that session's pane while still speaking, then
+  press stop. Pass: a notification says the target is gone, and the panel's top row is red, labelled
+  `target gone`, showing the sentence you said, with a copy button beside it that puts exactly that
+  text on the clipboard — paste it somewhere and compare it word for word. Then run
+  `dictactl last` and check the two agree. Fail, and it is the failure worth looking for: the row
+  is there but the copy button is missing, which means `final` was empty and the text you can see
+  is `recognised` — recoverable by eye and not by clipboard, which is not recovery.
+  **Score the pair below in the same run, because they are the confusion this row is built around.**
+  (a) Abort a dictation mid-sentence (`dictactl abort`, or the panel's `Abort`). Pass: the row shows
+  what you said, in italic, labelled `cancelled · recognised only`, and has **no copy button** —
+  D26 wrote the speech down and D28 refuses to hand back words that were deliberately not
+  delivered. (b) Let a `dictate` call complete (`dictactl dictate` from a shell, speak, let it
+  print). Pass: that row is **green**, labelled `returned to caller`, and **does** have a copy
+  button. Fail: the two drawn alike. They look alike from the outcome's name and are opposites in
+  the one field that decides — `final` — which is exactly the mistake this item is here to catch.
+- **H21 — `Stop and type` from the panel lands where the chord was pressed, not where focus is
+  now.** D4, through the one door a click could open. Start a dictation with the chord in session A,
+  speak, then click into a **different** session B, and only then open the panel and press
+  `Stop and type`. Pass: the text arrives in **A**'s input line, unsubmitted; the target line above
+  the button read A's name and pane the whole time. Fail: it arrives in B, which is the forbidden
+  substitution reached through a button rather than through a re-resolution.
+  Second half, and it needs the timing to be deliberate: start a dictation, let it end on its own
+  (the release of a held key, or a second chord) **while the panel is open**, then press
+  `Stop and type` on the controls before they disappear. Pass: nothing at all happens — no sound, no
+  keystroke, no new entry in `dictactl last`. The click names a spent attempt and §6 makes that a
+  silent no-op. Fail: a second dictation starts, or a newer attempt in another session is stopped —
+  either would mean the button is not naming the attempt it is looking at.
+- **H22 — the strip is honest without anyone opening the panel, which is the normal case.** Written
+  after the finding that produced the menu-bar clock: during a dictation the user's eyes are in the
+  pane being dictated into, so the panel's copy of the timer is seen by nobody, and the item itself
+  is the whole instrument.
+  (a) Log out and back in, or `launchctl kickstart -k gui/$UID/dev.personal.dicta.menu`. Then, **without
+  ever clicking the menu-bar item**, dictate with the chord. Pass: the clock appears beside a red
+  microphone and counts, and both go when the text lands. Fail: the item never changes — which was
+  the state of the build on 2026-08-24, when the watch stream was opened by the panel's own `.task`
+  and therefore by the first person to open the panel and by nobody else. `lsof -p <menu pid> | grep
+  -c unix` returning **0** on a freshly launched menu is the same failure, checkable without a
+  dictation.
+  (b) **Scored 2026-08-24 and PASSED**, by the user who raised the finding that produced the clock:
+  the strip is noticed while working, without deciding to look at it. That closes F9 — the width
+  change carries where the fill change did not — and the item stays as a regression check, because
+  the failure it guards against is silent and only a person can see it.
+  Watch the strip out of the corner of your eye while working normally, for a few dictations.
+  Pass: you notice the item change without having decided to look at it — the icons to its left
+  shift as the clock appears and goes, which is the change peripheral vision actually reads. Fail:
+  you only ever notice it when you deliberately look, which is the finding this item exists to close
+  and means the width change is not carrying.
+  (c) With **another** application holding the microphone (a call, a recorder), dictate. Pass: the
+  system's own microphone indicator is lit throughout and tells you nothing, while dicta's clock
+  appears and goes with the attempt. That disambiguation is the one job the system indicator cannot
+  do, and it is the reason this item is not redundant with it.
