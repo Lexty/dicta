@@ -320,6 +320,37 @@ testing.linker` to the `DictaTests` target — otherwise the failing test cannot
     race worth watching for there is the menu winning the start and painting "not running" before
     the daemon has bound its socket; the reconnect measured above is what should clear it within a
     second, but that is a prediction and not an observation.
+- **F10 — a Bluetooth headset as the default input breaks capture, and the pre-built engine turns
+  one bad attempt into a permanent one (2026-08-25, not yet fixed).** The user reported dicta had
+  stopped responding. The record named it: six `capture-fault` entries, every one of them
+  `-10868` — `kAudioUnitErr_FormatNotSupported`, thrown by
+  `AUGraphParser::InitializeActiveNodesInInputChain` — and every one inside the window when AirPods
+  Max were the default input.
+  - **The formats disagree, and that IS the error.** Measured with a throwaway probe while the
+    failure was live: the HAL reported the default input at **24 000 Hz**, and
+    `AVAudioEngine.inputNode.outputFormat(forBus: 0)` in a **freshly launched process** reported
+    **48 000 Hz** at the same moment. A tap installed at the format the node claims cannot be
+    initialised against the device that is actually there.
+  - **Why a headset is different from a slow device.** The AirPods run at 48 kHz as an output and
+    switch to 24 kHz when something opens their microphone, so an engine built BEFORE the chord
+    describes the device as it was, not as `start()` finds it. `InputDeviceIdentity` cannot see
+    that: it samples the device id and the nominal rate before the start, and on both sides of the
+    flip they match. This is the one cost of `4c2ac7c` that its own measurements could not show,
+    because they were taken on a USB microphone that never changes rate.
+  - **It repeats rather than passing, which is why it read as "dicta is broken".** The attempt that
+    meets the flip fails; the next one 1.9 s later succeeds (record 812 → 813), because the rebuild
+    that follows a failure happens while the input is still open. The device then drops back to
+    48 kHz and the chord after that fails again. Six attempts in 40 s, one of them fine.
+  - **Three candidate fixes, none of them chosen, and the reason is honesty about the instrument.**
+    Retry once with a freshly built engine when `start()` fails with a format error, nothing having
+    been recorded at that point; build the converter from the HAL's nominal rate rather than from
+    the format the node claims; or pin the current default input on the input unit with
+    `kAudioOutputUnitProperty_CurrentDevice`, which a probe showed starting and capturing 16 384
+    frames. Which of them actually holds can only be measured with a Bluetooth headset selected as
+    the input — with the USB microphone back, the failure cannot be reproduced at all, and a fix
+    verified only against a machine that no longer fails is F4's lesson in a new costume.
+  - The workaround until then is a wired or built-in input. Nothing else about the daemon was wrong:
+    it was running, answering `idle`, holding the microphone grant, and the models were warm.
 - **F2 — `claude -p` costs 8.6–10.5 s of fixed startup** per invocation. It cannot be the filter,
   which is why v1 ships the seam empty (D9c).
 - **Recognition, measured on this machine (M3 Pro) with a throwaway probe in Task 10, since no unit
