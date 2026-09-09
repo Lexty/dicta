@@ -2,9 +2,9 @@
 # Build Dicta.app with SwiftPM under Command Line Tools only (there is no full Xcode here, so
 # `xcodebuild` is not an option -- see CLAUDE.md), then sign it with the local identity.
 #
-# The bundle is not an application in any user-facing sense: no icon, no dock tile, no menu bar, no
-# windows (D11, §12, §13). It exists so the microphone TCC grant has a stable anchor. Everything
-# below serves that one purpose:
+# The bundle is not an application in any user-facing sense: no dock tile, no menu bar, no windows
+# (D11, §12, §13). It exists so the microphone TCC grant has a stable anchor. Everything below
+# serves that one purpose:
 #
 #   * the identifier passed to codesign is `dev.personal.dicta`, the same string as `Paths.bundleID`,
 #     so the grant, the socket and the record all sit under one identity;
@@ -111,13 +111,27 @@ fi
 # this has to happen before codesign.
 PB=/usr/libexec/PlistBuddy
 
+# The icon both bundles carry. It is committed rather than generated here: `Scripts/make-icon.sh`
+# rebuilds it from `Resources/icon-source.png` when the artwork changes, and a build that regenerated
+# it would put an image toolchain on the path between a source edit and a running daemon.
+ICON="$ROOT/Resources/AppIcon.icns"
+if [[ ! -f "$ICON" ]]; then
+  echo "error: $ICON is missing -- run Scripts/make-icon.sh" >&2
+  exit 1
+fi
+
 # Lay out one bundle: $1 app dir, $2 executable name, $3 built binary, $4 Info.plist source.
+#
+# The icon goes in unconditionally, and both plists name it. A bundle whose CFBundleIconFile points
+# at a file that is not there does not fail to build and does not warn: it renders as a blank sheet
+# of paper, which is indistinguishable from having no icon at all and is how this would rot.
 assemble() {
   local app_dir="$1" exe="$2" binary="$3" plist="$4"
   echo "==> assembling $(basename "$app_dir")"
   rm -rf "$app_dir"
-  mkdir -p "$app_dir/Contents/MacOS"
+  mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
   cp "$binary" "$app_dir/Contents/MacOS/$exe"
+  cp "$ICON" "$app_dir/Contents/Resources/AppIcon.icns"
   cp "$plist" "$app_dir/Contents/Info.plist"
   "$PB" -c "Add :DictaBuildRevision string $GIT_DESC" "$app_dir/Contents/Info.plist" 2>/dev/null \
     || "$PB" -c "Set :DictaBuildRevision $GIT_DESC" "$app_dir/Contents/Info.plist"

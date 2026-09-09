@@ -1053,8 +1053,8 @@ provided the behaviour and budgets still hold.
   warmed at daemon start, including one dummy inference so the first real dictation does not pay ANE
   compilation.
 - The daemon is a `LSUIElement` `.app` bundle signed with a stable local identity, started by a user
-  LaunchAgent. The bundle exists only as the TCC anchor of D11 — no dock icon, no menu bar, no
-  windows. **That sentence describes the daemon and stays exactly true after D27**: the menu-bar item
+  LaunchAgent. The bundle exists only as the TCC anchor of D11 — no dock tile, no menu bar, no
+  windows. It does carry an icon, which is not the same object: see §13. **That sentence describes the daemon and stays exactly true after D27**: the menu-bar item
   is a *second* bundle, with its own identity, which opens no microphone and asks for no permission.
   The daemon links no AppKit UI and holds no reference to it.
 - The socket transport is a separate module from the runtime so that the keypress client (D12) does
@@ -1071,10 +1071,20 @@ provided the behaviour and budgets still hold.
 ## 13. Deliberately not in scope
 
 Streaming recognition and live partial text (D1, D13). Silence-based auto-stop (D2). Multi-line
-injection (D8). A settings window or a dock icon — the daemon has neither, and neither does the
+injection (D8). A settings window or a dock TILE — the daemon has neither, and neither does the
 menu-bar bundle (D11, D27). Any injection target other than agterm, and any injection at all from
 the UI (D28). Cloud recognition. `acta`'s crash-safety machinery for audio (D14). Automatic retry of
 a failed injection (§7).
+
+**"A dock icon" on this list means a dock TILE, and both bundles now carry ARTWORK.** The two were
+one phrase for as long as dicta had neither, and separating them is what the icon required. What is
+out of scope is the tile: a clickable thing in the dock that takes focus away from the terminal
+dicta is about to type into, and that under D22 would silence the hold key by making agterm stop
+being frontmost. `LSUIElement` still forbids it in both bundles, and a test asserts the key. The
+artwork is a different object: macOS lists the daemon in System Settings → Privacy & Security →
+Microphone whether or not it wants to be an application, and that list is the one screen a user of
+dicta has to visit. The alternative there was not "no icon" but a blank sheet of paper beside a
+request for their microphone.
 
 **A menu bar was on this list and is not any more (D27).** It was here on D11's authority, which is
 about the microphone grant rather than about windows; the reasoning and what survives of it are in

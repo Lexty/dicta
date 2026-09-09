@@ -4,8 +4,15 @@
   The daemon's bundle. It exists for exactly one reason: the microphone TCC grant attaches to a
   signed bundle identity, and a bare executable would have the grant attributed to whatever terminal
   launched it (D11). Everything here is either what makes that grant possible or what keeps the
-  bundle from becoming an application in any other sense (§12, §13): no icon file, no main nib, no
-  document types, no URL schemes.
+  bundle from becoming an application in any other sense (§12, §13): no main nib, no document
+  types, no URL schemes.
+
+  The icon is the one thing here that serves neither purpose, and it is not a contradiction of §13.
+  What §13 rules out is a DOCK icon — a tile that can be clicked, that takes focus from the terminal
+  dicta is about to type into. LSUIElement below still forbids that. This key is the artwork macOS
+  shows where the bundle is named whether it wants to be an application or not: System Settings →
+  Privacy & Security → Microphone, which is the one screen a user of dicta actually has to visit,
+  and where the alternative is a blank sheet of paper beside a request for the microphone.
 
   CFBundleIdentifier is the anchor. It is the same string as `Paths.bundleID`, which names the
   Application Support directory the socket and the record live in — one identity, one directory, one
@@ -24,6 +31,11 @@
     <string>dev.personal.dicta</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <!-- `AppIcon.icns`, copied in by bundle.sh from Resources/. Both bundles carry the SAME icon:
+         the daemon and the menu are one tool in two processes, and the Privacy list and Finder are
+         not the place to explain that. -->
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleShortVersionString</key>
     <string>0.1.0</string>
     <key>CFBundleVersion</key>

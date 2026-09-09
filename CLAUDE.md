@@ -115,6 +115,9 @@ that `Stop and type` lands in the pane the chord was pressed in.
   line, once per attempt, because the interval being measured ends at the last keystroke.
 - Build and sign the bundle: `bash Scripts/bundle.sh` → `./Dicta.app`; `bash Scripts/bundle.sh
   --print-requirement` prints the designated requirement of an existing one.
+- Rebuild the icon: `bash Scripts/make-icon.sh` — cuts the squircle out of `Resources/icon-source.png`
+  and writes `Resources/AppIcon.icns`. Run it only when the artwork changes; the icns is committed
+  and `bundle.sh` never regenerates it.
 - Install everything: `bash Scripts/install.sh` — `dictactl` to `~/.local/bin`, the signed bundle to
   `~/Applications/Dicta.app`, the LaunchAgent to `~/Library/LaunchAgents/dev.personal.dicta.plist`,
   then bootout/bootstrap/kickstart. It never touches `~/.config/agterm/keymap.conf`.
@@ -699,6 +702,18 @@ Distilled from SPEC.md §3. Each one is a mistake already made, or one the spec 
   the decision inside the lock, return it as a value, and `guard` on it outside.
 - **Do not copy acta's crash-safety machinery** (D14). Losing an utterance costs one keypress, not a
   meeting: no segmentation, no disk journal, no recovery pass. Audio stays in RAM.
+- **"No dock icon" means no dock TILE, and both bundles carry artwork** (§13). The two were one
+  phrase for as long as dicta had neither, and they are different objects. What is refused is the
+  tile: `LSUIElement` in both plists, because a clickable thing in the dock takes focus from the
+  terminal dicta is about to type into and, under D22, silences the hold key by making agterm stop
+  being frontmost. The artwork is refused nowhere — macOS lists the daemon in System Settings →
+  Privacy & Security → Microphone whether it wants to be an application or not, and that is the one
+  screen a user of dicta has to visit. The alternative there was never "no icon" but a blank sheet
+  of paper beside a request for their microphone. `Scripts/icon.swift` cuts the shape on the drawn
+  outline rather than on a rounded rectangle of its own, and insets it to Apple's 824-on-1024 grid;
+  both bundles get the SAME file, since the daemon and the menu are one tool in two processes. It is
+  not the menu-bar glyph — that is an SF Symbol per state in `Presentation`, and a menu bar renders
+  a template symbol rather than artwork.
 - **The installed daemon runs from the signed bundle, never from a bare executable** (D11). That is
   why `Scripts/install.sh` no longer copies `Dicta` into `~/.local/bin`: a bare copy runs perfectly
   well and takes its microphone grant under whatever terminal launched it, so the bundle would exist

@@ -72,7 +72,41 @@ struct BundleTests {
         // §13 lists a dock icon and a menu bar as deliberately out of scope. Without this key the
         // bundle is an ordinary app, and a stray click on it takes focus away from the terminal.
         #expect(info["LSUIElement"] as? Bool == true)
-        #expect(info["CFBundleIconFile"] == nil, "the bundle is not meant to have artwork")
+    }
+
+    @Test("both bundles name one icon, and the file they name is really there")
+    func iconIsPresentAndShared() throws {
+        // The artwork is not a contradiction of the key above. §13 rules out a DOCK icon — a tile
+        // that can be clicked and take focus from the terminal dicta is about to type into — and
+        // LSUIElement still forbids exactly that. What this names is what macOS draws where the
+        // bundle is listed anyway: System Settings → Privacy & Security → Microphone, the one
+        // screen a user of dicta has to visit, where the alternative is a blank sheet of paper
+        // beside a request for their microphone.
+        let daemon = try Self.plist(at: "Resources/Info.plist")
+        let menu = try Self.plist(at: "Resources/DictaMenu-Info.plist")
+        #expect(daemon["CFBundleIconFile"] as? String == "AppIcon")
+        #expect(menu["CFBundleIconFile"] as? String == daemon["CFBundleIconFile"] as? String)
+
+        // A CFBundleIconFile pointing at a file that is not in the bundle does not fail to build
+        // and does not warn — it renders as a blank sheet of paper, which looks exactly like having
+        // no icon at all. So the file is asserted to exist, to be an icns rather than whatever was
+        // dropped there under that name, and to be copied in by the one function that lays out both
+        // bundles.
+        let icon = Self.repositoryRoot.appendingPathComponent("Resources/AppIcon.icns")
+        let data = try Data(contentsOf: icon)
+        #expect(data.count > 1024, "AppIcon.icns is too small to hold ten representations")
+        #expect(data.prefix(4) == Data("icns".utf8), "AppIcon.icns is not an icns file")
+
+        let script = try Self.text(at: "Scripts/bundle.sh")
+        #expect(script.contains("cp \"$ICON\" \"$app_dir/Contents/Resources/AppIcon.icns\""))
+        // The build must not depend on an image toolchain: the icns is committed, and make-icon.sh
+        // regenerates it from the source image only when the artwork itself changes. What is
+        // forbidden is the CALL — bundle.sh names the script in the sentence it prints when the
+        // icon is missing, which is the whole point of naming it.
+        #expect(!script.contains("bash \"$ROOT/Scripts/make-icon.sh\""),
+                "bundle.sh must not regenerate the icon")
+        #expect(script.contains("run Scripts/make-icon.sh"),
+                "a missing icon must name the script that rebuilds it")
     }
 
     @Test("the microphone usage description says what it is for and where the audio goes")

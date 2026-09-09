@@ -35,6 +35,13 @@
     <string>dev.personal.dicta.menu</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <!-- The daemon's icon, byte for byte, from the same Resources/AppIcon.icns. This is where it is
+         actually looked at — the daemon is met in the Privacy list, the menu in Finder — and two
+         drawings for one tool would be a distinction with nothing behind it. It is NOT the menu-bar
+         glyph: that is an SF Symbol chosen per state in `Presentation`, and a menu bar renders a
+         template symbol rather than artwork. -->
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleShortVersionString</key>
     <string>0.1.0</string>
     <key>CFBundleVersion</key>

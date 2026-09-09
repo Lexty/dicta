@@ -60,6 +60,16 @@ struct MenuBundleTests {
         #expect(info["LSUIElement"] as? Bool == true)
     }
 
+    @Test("the menu wears the daemon's icon rather than one of its own")
+    func menuSharesTheDaemonIcon() throws {
+        let info = try BundleTests.plist(at: "Resources/DictaMenu-Info.plist")
+        // One tool in two processes. The daemon is met in the Privacy list and the menu in Finder,
+        // and a second drawing would be a distinction with nothing behind it. This is NOT the
+        // menu-bar glyph: that is an SF Symbol picked per state in `Presentation`, since a menu bar
+        // renders a template symbol and not artwork.
+        #expect(info["CFBundleIconFile"] as? String == "AppIcon")
+    }
+
     @Test("the executable key names what bundle.sh copies in")
     func menuExecutableName() throws {
         let info = try BundleTests.plist(at: "Resources/DictaMenu-Info.plist")

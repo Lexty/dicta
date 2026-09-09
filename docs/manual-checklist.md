@@ -363,3 +363,18 @@ counts as a pass, so two people scoring it agree.
   system's own microphone indicator is lit throughout and tells you nothing, while dicta's clock
   appears and goes with the attempt. That disambiguation is the one job the system indicator cannot
   do, and it is the reason this item is not redundant with it.
+- **H23 — the icon is drawn where the icon is actually met, which is not the dock.** Both bundles
+  carry `AppIcon.icns` and neither has a dock tile, so every place it can be seen is a list macOS
+  builds for its own reasons. `NSWorkspace.icon(forFile:)` was asked directly on 2026-09-09 and
+  returned the artwork for both bundles, byte-identical — but LaunchServices answering a program is
+  not the same as a person seeing it, and the icon cache is exactly the layer that lies.
+  (a) Open **System Settings → Privacy & Security → Microphone**. Pass: `Dicta` is listed with the
+  waveform icon beside its toggle. Fail: a blank sheet of paper — which means the cache is stale
+  (`killall Dock`, or log out and in) or that the installed bundle predates the icon.
+  (b) Open `~/Applications` in Finder. Pass: `Dicta.app` and `DictaMenu.app` both show the icon, at
+  the same size as their neighbours rather than visibly larger — the artwork is inset to Apple's
+  824-on-1024 grid precisely so it does not tower over the applications around it.
+  (c) The negative half, and the one worth being deliberate about: dictate, and while it runs check
+  the dock. Pass: nothing appeared there. §13 rules out a dock TILE, not artwork, and `LSUIElement`
+  is what enforces it — an icon in the dock would mean the flag was lost, and a stray click on that
+  tile takes focus from the terminal dicta is about to type into.
