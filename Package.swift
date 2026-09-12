@@ -64,26 +64,50 @@ func developerDir() -> String {
     return "/Library/Developer/CommandLineTools"
 }
 
-/// Flags that expose swift-testing (Testing.framework, the TestingMacros plugin) in the
-/// Command-Line-Tools layout. With a full Xcode installed the paths differ and SwiftPM finds
-/// everything by itself — then this adds nothing, which is why it is guarded by a file check
-/// rather than by a platform check.
+/// Flags that expose swift-testing (Testing.framework, its interop dylib, the TestingMacros
+/// plugin) to the runner. The same three pieces ship in two layouts under different roots, and
+/// which one is live is whatever `xcode-select` points at -- so this probes for the framework
+/// rather than deciding by platform, and lists both rather than assuming the machine it was
+/// written on.
+///
+/// Observed 2026-08-25, when a full Xcode appeared on a machine that had only ever had the Tools:
+/// the Tools-only guard fell through, the runner still COMPILED and LINKED, and every test then
+/// died in dyld on `@rpath/Testing.framework` before reaching a single assertion. A miss here is
+/// silent at build time and fatal at run time, which is the same shape of trap as D18 -- a gate
+/// that looks like it ran and did not.
 func swiftTestingSettings() -> (swift: [SwiftSetting], linker: [LinkerSetting]) {
     let dev = developerDir()
-    let frameworks = "\(dev)/Library/Developer/Frameworks"
-    let libDir = "\(dev)/Library/Developer/usr/lib"
-    let pluginDir = "\(dev)/usr/lib/swift/host/plugins/testing"
+    // First layout whose Testing.framework is really on disk wins. Neither root exists under the
+    // other's developer directory, so the order is documentation rather than precedence.
+    let layouts = [
+        // Command Line Tools: everything hangs off `Library/Developer`, plugin in the Tools' own
+        // swift host directory.
+        (
+            frameworks: "\(dev)/Library/Developer/Frameworks",
+            lib: "\(dev)/Library/Developer/usr/lib",
+            plugin: "\(dev)/usr/lib/swift/host/plugins/testing"
+        ),
+        // Full Xcode: the framework and the dylib move inside the macOS platform, and the macro
+        // plugin into the toolchain -- which is why one `dev` substitution is not enough.
+        (
+            frameworks: "\(dev)/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+            lib: "\(dev)/Platforms/MacOSX.platform/Developer/usr/lib",
+            plugin: "\(dev)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing"
+        ),
+    ]
 
-    guard FileManager.default.fileExists(atPath: "\(frameworks)/Testing.framework") else {
+    guard let layout = layouts.first(where: {
+        FileManager.default.fileExists(atPath: "\($0.frameworks)/Testing.framework")
+    }) else {
         return ([], [])
     }
     return (
-        [.unsafeFlags(["-F", frameworks, "-plugin-path", pluginDir])],
+        [.unsafeFlags(["-F", layout.frameworks, "-plugin-path", layout.plugin])],
         [.unsafeFlags([
-            "-F", frameworks,
-            "-L", libDir,
-            "-Xlinker", "-rpath", "-Xlinker", frameworks,
-            "-Xlinker", "-rpath", "-Xlinker", libDir,
+            "-F", layout.frameworks,
+            "-L", layout.lib,
+            "-Xlinker", "-rpath", "-Xlinker", layout.frameworks,
+            "-Xlinker", "-rpath", "-Xlinker", layout.lib,
         ])]
     )
 }

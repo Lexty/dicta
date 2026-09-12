@@ -157,13 +157,38 @@ as passing while never having run. Two guards keep that from happening by accide
 To reproduce the table, temporarily add `swiftSettings: testing.swift, linkerSettings:
 testing.linker` to the `DictaTests` target — otherwise the failing test cannot even be compiled.
 
-## Environment facts (verified 2026-08-14, not assumed)
+## Environment facts (verified 2026-08-14, toolchain re-verified 2026-08-25)
 
-- Swift 6.3.2 (`swiftlang-6.3.2.1.108`), target `arm64-apple-macosx26.0`. macOS 26.6 (25G72).
-- **Command Line Tools only, no full Xcode**: `xcode-select -p` →
-  `/Library/Developer/CommandLineTools` (CLTools_Executables 26.5.0.0); `xcodebuild` exists on PATH
-  but refuses to run, saying it requires Xcode. This is the root of D18 and of
-  `swiftTestingSettings()` in `Package.swift`.
+- macOS 26.6 (25G72), target `arm64-apple-macosx26.0`.
+- **Both toolchains are present, and which one is live is whatever `xcode-select` points at.** As
+  of 2026-08-25 that is a full **Xcode 26.6** (17F113) at `/Applications/Xcode.app/Contents/
+  Developer`, Swift 6.3.3 (`swiftlang-6.3.3.1.3`); the Command Line Tools are still installed
+  beside it at `/Library/Developer/CommandLineTools`, Swift 6.3.2 (`swiftlang-6.3.2.1.108`), and
+  `DEVELOPER_DIR=/Library/Developer/CommandLineTools` selects them for one command. Until
+  2026-08-25 the Tools were the only thing here and `xcodebuild` refused to run — the sentence this
+  replaces said so, and Xcode arriving underneath it is what made the next bullet cost an
+  afternoon.
+- **Neither toolchain is assumed by the build.** `swiftTestingSettings()` in `Package.swift` probes
+  for `Testing.framework` and carries BOTH layouts, because the framework, its interop dylib and
+  the macro plugin sit under three different roots in each:
+
+  | | Command Line Tools | full Xcode |
+  |---|---|---|
+  | `Testing.framework` | `$DEV/Library/Developer/Frameworks` | `$DEV/Platforms/MacOSX.platform/Developer/Library/Frameworks` |
+  | `lib_TestingInterop.dylib` | `$DEV/Library/Developer/usr/lib` | `$DEV/Platforms/MacOSX.platform/Developer/usr/lib` |
+  | `libTestingMacros.dylib` | `$DEV/usr/lib/swift/host/plugins/testing` | `$DEV/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing` |
+
+  When the guard knew only the left column and Xcode became active, the runner still **compiled and
+  linked** — SwiftPM finds the module on its own — and then died in dyld on
+  `@rpath/Testing.framework` before reaching a single assertion. Silent at build time, fatal at run
+  time: D18's shape exactly, a gate that looks like it ran and did not. `bash Scripts/test.sh` is
+  scored under both by setting `DEVELOPER_DIR`, and both give the same run — 583 tests in 34
+  suites, re-scored 2026-09-12.
+- **`xctest` now exists** at `/Applications/Xcode.app/Contents/Developer/usr/bin/xctest`, so D18's
+  cause is absent while Xcode is selected. This changes nothing: `Tests/DictaTests` is still denied
+  the swift-testing flags and still holds no assertion, `swift test` still gates nothing, and the
+  runner stays the gate — it is the one command that works under either toolchain, which is the
+  whole point of the paragraph above.
 - `agtermctl` is on PATH at `/opt/homebrew/bin/agtermctl`; `agtermctl tree --json` answers with
   `{"ok":true,"result":{"tree":{"workspaces":[...{"surfaces":[{"kind":"left","id":"surface:…"}]}]}}}`
   — surfaces carry `kind` and `id`, which is what pane resolution reads (§5).
