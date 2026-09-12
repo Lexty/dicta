@@ -1,4 +1,7 @@
-# CLAUDE.md — dicta
+# Working on dicta
+
+Canonical for every contributor, human or agent. `CLAUDE.md` points here and adds only Claude Code
+specifics; Codex, and anything else, reads this file.
 
 Voice dictation into **agterm**'s input line: hold the right Control key, speak, let go, the text
 appears where you were typing. Primarily for dictating prompts to Claude Code and instructions to agents
