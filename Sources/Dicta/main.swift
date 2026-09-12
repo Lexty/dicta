@@ -240,7 +240,7 @@ if armHoldTrigger {
 // The startup self-check, and then the warm-up, on a thread of their own.
 //
 // A thread rather than a `Task`: the load blocks (see `Blocking` in DictaRuntime), and blocking a
-// cooperative thread on Darwin's non-overcommit pool is the deadlock CLAUDE.md records about the
+// cooperative thread on Darwin's non-overcommit pool is the deadlock AGENTS.md records about the
 // control socket. It is also why this does not hold up the socket -- a chord arriving mid-load
 // waits for it inside `ParakeetTranscriber` and then recognises, rather than losing the utterance.
 // Missing models go through `prepare()` like any other load failure rather than being caught here

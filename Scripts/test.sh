@@ -3,7 +3,7 @@
 #
 # `swift test` is NOT a gate in a Command-Line-Tools-only environment (D18): it compiles the bundle
 # but cannot execute it, so a failing test still exits 0. This runner drives swift-testing through
-# its own entry point and exits non-zero on failure. Verified by experiment — see CLAUDE.md.
+# its own entry point and exits non-zero on failure. Verified by experiment — see AGENTS.md.
 #
 # Arguments are passed straight through to swift-testing, so a single suite can be run with
 #   bash Scripts/test.sh --filter "sanitiser"

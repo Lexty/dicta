@@ -541,7 +541,7 @@ struct ControlSocketTests {
         }
 
         // A real thread, not a cooperative one: `ControlClient.send` blocks, and so does the
-        // handler it is waiting on (CLAUDE.md's non-overcommit pool).
+        // handler it is waiting on (AGENTS.md's non-overcommit pool).
         let path = fixture.path
         let occupier = Thread { _ = try? ControlClient.send(Request(cmd: .stop), to: path) }
         occupier.name = "dicta.test.occupier"

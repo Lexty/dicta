@@ -357,7 +357,7 @@ public final class ParakeetEngine: RecognitionEngine, @unchecked Sendable {
 ///
 /// **The caller must not be a Swift-concurrency cooperative thread.** On Darwin the cooperative
 /// pool is non-overcommit and does not grow when its threads block, so blocking one of them while
-/// waiting for a `Task` on the same pool is a deadlock -- the exact failure CLAUDE.md records about
+/// waiting for a `Task` on the same pool is a deadlock -- the exact failure AGENTS.md records about
 /// the control socket. dicta's callers are real `Thread`s (the socket serves each connection on
 /// one, and capture reports on the audio thread), which is what makes this safe rather than merely
 /// lucky.

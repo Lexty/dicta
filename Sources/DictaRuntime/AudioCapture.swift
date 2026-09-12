@@ -275,7 +275,7 @@ public final class AudioCapture: Capture, @unchecked Sendable {
     /// device.** Measured with a probe reading `kAudioDevicePropertyDeviceIsRunningSomewhere` on
     /// the default input -- `inputNode`, `installTap` and `prepare()` all leave it `false`, and
     /// only `start()` flips it to `true`. A prepared engine therefore lights no microphone
-    /// indicator, which is the trade this project refuses to make (CLAUDE.md, F4). Holding a
+    /// indicator, which is the trade this project refuses to make (AGENTS.md, F4). Holding a
     /// *started* engine warm between attempts remains refused, and this is not that.
     ///
     /// Single use. A second `start()` on a STOPPED engine measured 104 ms against 41 ms on a fresh

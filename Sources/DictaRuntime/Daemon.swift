@@ -758,7 +758,7 @@ public final class Daemon: @unchecked Sendable {
     ///
     /// A real `Thread`, for the reason the whole of this project uses them: `transcribe` blocks on
     /// a semaphore bridging FluidAudio's actor, and blocking a cooperative thread on Darwin's
-    /// non-overcommit pool is the deadlock CLAUDE.md records about the control socket. It also
+    /// non-overcommit pool is the deadlock AGENTS.md records about the control socket. It also
     /// keeps `abort` fast, which is the one verb served concurrently precisely so that a cancel is
     /// decided at once (§6).
     ///

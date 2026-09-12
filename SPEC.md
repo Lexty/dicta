@@ -18,7 +18,7 @@ append-only record and the Tier 0 replacement dictionary all exist and are teste
 ships as a pass-through and nothing invokes a subprocess (D9c). What steps 1–3 still owe is the part
 only a person can score — the chords in a real pane, the TCC prompt, §10's criteria (a)–(d) and the
 deliberate misfire — listed with its pass condition in `docs/manual-checklist.md`. Build and
-operating instructions are in `README.md`; `CLAUDE.md` is the operating manual.
+operating instructions are in `README.md`; `AGENTS.md` is the operating manual.
 
 An earlier step-1 skeleton was built, measured, verified end to end, then deliberately deleted; it
 survives in git as commit `3dda6cb` and is cited below only where it produced a measurement.

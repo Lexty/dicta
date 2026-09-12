@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build Dicta.app with SwiftPM under Command Line Tools only (there is no full Xcode here, so
-# `xcodebuild` is not an option -- see CLAUDE.md), then sign it with the local identity.
+# `xcodebuild` is not an option -- see AGENTS.md), then sign it with the local identity.
 #
 # The bundle is not an application in any user-facing sense: no dock tile, no menu bar, no windows
 # (D11, §12, §13). It exists so the microphone TCC grant has a stable anchor. Everything below

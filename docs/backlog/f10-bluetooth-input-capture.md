@@ -5,7 +5,7 @@ added: 2026-09-12
 ---
 # a Bluetooth headset as the default input breaks capture, and the pre-built engine makes it stick
 
-F10 in `CLAUDE.md` describes the failure and three candidate fixes; none is chosen. With AirPods Max
+F10 in `AGENTS.md` describes the failure and three candidate fixes; none is chosen. With AirPods Max
 as the default input, `start()` fails with `-10868` because the engine was built while the headset
 ran at 48 kHz and the device is at 24 kHz by the time capture opens it. `InputDeviceIdentity` samples
 before the flip, so it cannot see it. It repeats rather than passing: one attempt in six succeeds.
@@ -16,7 +16,7 @@ input, not by reasoning:
 1. retry once with a freshly built engine when `start()` fails with a format error;
 2. build the converter from the HAL's nominal rate instead of the node's claimed format;
 3. pin the current default input on the input unit with `kAudioOutputUnitProperty_CurrentDevice`
-   (a probe already started and captured 16 384 frames that way, `CLAUDE.md` F10).
+   (a probe already started and captured 16 384 frames that way, `AGENTS.md` F10).
 
 Each candidate must be scored on:
 

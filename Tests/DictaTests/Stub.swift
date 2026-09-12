@@ -2,7 +2,7 @@
 //
 // Under Command Line Tools only, `swift test` COMPILES this bundle but does not EXECUTE it — there
 // is no `xctest` host utility — so a failing test here still exits 0 (D18). That is not folklore:
-// it was measured in Task 1, and the observed exit codes are in CLAUDE.md.
+// it was measured in Task 1, and the observed exit codes are in AGENTS.md.
 //
 // Two guards, because the comment alone is not one:
 //   • this target is denied the swift-testing flags in Package.swift, so `import Testing` does not

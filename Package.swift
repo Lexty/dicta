@@ -33,7 +33,7 @@ import Foundation
 // Why the runner exists at all (D18): under Command Line Tools only, `swift test` BUILDS the test
 // bundle but does not EXECUTE it — there is no `xctest` host utility — so a failing test still
 // exits 0 and the command is worthless as a gate. The runner drives swift-testing through its own
-// entry point and exits non-zero. This was verified by observation, not assumed; see CLAUDE.md.
+// entry point and exits non-zero. This was verified by observation, not assumed; see AGENTS.md.
 //
 // Note the absence of a separate wire-protocol target. The sibling project `acta` isolates one
 // because a foreign binary decodes its schema; here `dictactl` ships from this repository and is
@@ -187,7 +187,7 @@ let package = Package(
         // Compile-only, and deliberately WITHOUT `testing.swift` / `testing.linker`. Denying this
         // target the swift-testing flags means `import Testing` here does not compile, so the trap
         // D18 describes — an assertion that reports as passing while never having run — cannot be
-        // walked into by accident. Verified both ways during Task 1; see CLAUDE.md.
+        // walked into by accident. Verified both ways during Task 1; see AGENTS.md.
         .testTarget(
             name: "DictaTests",
             dependencies: ["DictaCore"],

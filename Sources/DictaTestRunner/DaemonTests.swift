@@ -1822,7 +1822,7 @@ struct DaemonTests {
         // proves the DECISION is atomic, but it proves it against a pure value, which cannot race
         // by construction. What makes the shipping daemon safe is the server serialising handlers
         // and the state lock behind them -- and this component has a recorded history of exactly
-        // this kind of bug (CLAUDE.md's non-overcommit pool starvation).
+        // this kind of bug (AGENTS.md's non-overcommit pool starvation).
         let harness = Harness()
         try harness.daemon.start()
         defer { harness.daemon.stop() }

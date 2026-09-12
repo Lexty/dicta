@@ -14,7 +14,7 @@ half-written prompt. Every path through dicta ends in one sanitiser, and what it
 single line.
 
 `SPEC.md` is the normative document — every decision below is cited there as D*, every measurement
-as F*, and the invariants as §8. `CLAUDE.md` is the operating manual for working *on* dicta;
+as F*, and the invariants as §8. `AGENTS.md` is the operating manual for working *on* dicta;
 this file is for using it.
 
 **Status: steps 1–3 of SPEC.md §10 are implemented.** The external filter (step 4) is not: the seam

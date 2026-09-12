@@ -278,7 +278,7 @@ struct RecordTests {
     @Test("concurrent writers interleave whole lines and lose none")
     func concurrentWritersDoNotTearEachOther() throws {
         // `O_APPEND` plus one `write` per entry is the whole mechanism. A real `Thread` per writer
-        // rather than `DispatchQueue.global()`, for the reason CLAUDE.md records: these block on
+        // rather than `DispatchQueue.global()`, for the reason AGENTS.md records: these block on
         // file I/O, and the non-overcommit pool does not grow when its threads block.
         let scratch = Scratch()
         // A value, so the thread bodies capture nothing that is not `Sendable`.

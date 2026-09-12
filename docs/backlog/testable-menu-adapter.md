@@ -23,7 +23,7 @@ Three defects were found here by reading, and none has a reproducing test yet:
   last, with no generation. Two reads that finish out of order let an older result overwrite a
   newer one.
 - **A read error is drawn as an empty record.** `try? RecordReader.tail` turns any failure into `[]`,
-  which renders as "Nothing yet." `CLAUDE.md` calls the empty/unread confusion unreachable, but
+  which renders as "Nothing yet." `AGENTS.md` calls the empty/unread confusion unreachable, but
   that argument covers the moment before the first read completes, not a read that failed.
 
 Fix: extract an importable UI adapter with injected dependencies (socket client, record reader,

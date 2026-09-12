@@ -227,7 +227,7 @@ public struct SystemClock: Clock, Sendable {
 
     /// One thread per scheduled item, waiting on a semaphore so `cancel` wakes it immediately.
     ///
-    /// A real `Thread` rather than `DispatchQueue.global().asyncAfter`, for the reason CLAUDE.md
+    /// A real `Thread` rather than `DispatchQueue.global().asyncAfter`, for the reason AGENTS.md
     /// records about the control socket: on Darwin, Swift concurrency's executor runs on the same
     /// non-overcommit pool that `DispatchQueue.global()` draws from, and that pool does not grow
     /// when its threads block. A watchdog whose firing waits behind a blocked cooperative thread is
