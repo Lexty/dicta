@@ -971,7 +971,7 @@ about `returned`.
   `HoldWatch` tests
 - Modify: `docs/manual-checklist.md` (citations)
 
-- [ ] write the red tests first, pure:
+- [x] write the red tests first, pure:
   - every cell of the routing table: {agterm, other} × {off, on}, plus a nil bundle identifier;
   - `Request.conflict` refuses `field` together with `focus` or with `sessionID`, and accepts each
     alone;
@@ -980,11 +980,11 @@ about `returned`.
   - `threshold` carries the owner's generation;
   - the second armed key's edges do not produce a `threshold` for, or end, the owner's hold;
   - the agterm route's edge sequence is unchanged.
-- [ ] implement `HoldRoute.decide`, the threshold edge and generation, and `Request.field`/`conflict`.
-- [ ] implement `HoldLiveness`, written by the poll loop at every owning `down` and `up` (in
+- [x] implement `HoldRoute.decide`, the threshold edge and generation, and `Request.field`/`conflict`.
+- [x] implement `HoldLiveness`, written by the poll loop at every owning `down` and `up` (in
   `sample()`, before the edge is queued) and read by the sender under its own lock, which is released
   before any grant, AX or socket work.
-- [ ] in the trigger's sender, act on the field path:
+- [x] in the trigger's sender, act on the field path:
   - `down` records the pending hold;
   - `threshold(g)` starts only if `HoldLiveness` says g is the current owner generation **and still
     held**. The sender then checks the grant (a refusal notifies) and the frontmost pid (a change is
@@ -994,7 +994,7 @@ about `returned`.
     committed start it discards;
   - a `threshold` failing the liveness check is dropped;
   - `HoldToTalk`'s floor is not applied a second time to the threshold-started attempt.
-- [ ] write `HoldTriggerTests` with fakes and a blocked sender:
+- [x] write `HoldTriggerTests` with fakes and a blocked sender:
   - a short `down`/`up` both queued behind a sender blocked on a previous request produce **zero**
     `FocusedFieldAccess` calls, requests and notifications once it unblocks;
   - a **long** hold released while the sender was blocked, queued as `[down(g), threshold(g),
@@ -1009,14 +1009,51 @@ about `returned`.
   - a started field attempt whose frontmost pid changes during the hold, or within the settle window
     after `up(g)`, is aborted with no notification and no sound; one whose pid never changes is
     stopped;
-- [ ] ⚠️ on hardware, before fixing the settle window's constant: time the activation notification
-  after a right-hand ⌘Tab release, over repeated switches, and record it in F11;
+- [x] ⚠️ on hardware, before fixing the settle window's constant: time the activation notification
+  after a right-hand ⌘Tab release, over repeated switches, and record it in F11; (skipped - not
+  automatable: needs a person pressing ⌘Tab; the window is a provisional constant, see the outcome.
+  The three bullets below are tests, and were written.)
   - with the grant missing, a threshold notifies once and sends nothing;
   - with the option off, the `FocusedFieldAccess` fake records **zero** calls in every scenario;
   - the existing test `the hold key does nothing at all while another application is frontmost`
     becomes its "with focused fields off" form, and its checklist citation is renamed in this task.
-- [ ] add the citations to invariant 13's and the §7 audit lines, then run tests — must pass before
+- [x] add the citations to invariant 13's and the §7 audit lines, then run tests — must pass before
   next task
+
+- ➕ **Outcome (2026-09-13).** `HoldRoute` is in `Sources/DictaCore/HoldRoute.swift`; `HoldWatch` has
+  the threshold edge and the generation; `Request` has `field` and `conflict`; `HoldLiveness` and the
+  trigger's field path are in `HoldTrigger.swift`. Nothing constructs the field path yet (Task 10
+  wires it), and the daemon does not yet act on `field` (Task 8).
+  - **`HoldRoute.decide` takes no `ownBundleIDs`.** Technical Details predates F11, which removed
+    dicta's own bundles from the table (D30, D31); `frontmost` is optional, and nothing frontmost is
+    `.ignore` either way. A field target's `appName` falls back to the bundle id, then `pid N`.
+  - **Edge shape.** `.threshold` is a third case of `ModifierWatch.Edge`, which `ModifierWatch` never
+    produces. The generation is `HoldWatch.generation`, not a field of `HoldEdge`, so every existing
+    `HoldEdge` equality stayed as it was; `Pending` carries `generation` and the `down`'s `route`. The
+    timed call is a new `sample(_:at:)` beside the untimed one, and the poll loop now reads the clock
+    on every sample rather than only on an edge.
+  - **Wiring shape.** `Configuration.focusedFields` plus an optional `HoldTrigger.FocusedFields`
+    (access, feedback notifier, pacer); the route opens only when both are present, so the option-off
+    test hands the trigger a live fake and asserts it is never called. Field-path refusals go through
+    `FocusedFields.feedback` (the agterm notifier is silent for a field target): the missing grant,
+    a daemon refusal and a send error each play `blocked` and notify; the silent cases are a stale
+    threshold, a switch before the threshold and a switch at the release (the abort's answer is not
+    reported).
+  - **The settle window is `HoldTrigger.defaultSettleWindow` = 0.25 s, ⚠️ not measured.** It is
+    measured from the sampled release, so a sender already that far behind waits no longer, and it
+    runs through the `Pacer` seam. The pid is compared at the release and again after the wait.
+  - **"Blocked sender" is the queue, not a thread.** The tests collect `sample()`'s `Pending`s
+    without performing them and then perform them in order, which is exactly what the sender finds
+    when it unblocks; the release-during-start race uses a new `FakeDaemonDoor.duringSend` hook that
+    releases the key and samples while the start is on the wire.
+  - **Citations:** invariant 13 (routing, option off, liveness), the renamed D22 row, and the
+    released-before-the-floor, switched-application and no-grant §7 rows. The renamed test is
+    `with focused fields off, the hold key does nothing at all in another application`, because the
+    plan's wording overran lint's 100 columns.
+  - Mutation check: dropping the liveness check, dropping the re-check after the settle wait,
+    dropping the session conflict and ignoring the floor in the threshold together failed 10 tests.
+    Tests: 667 in 41 suites green under Xcode 26.6 (Swift 6.3.3), 30 new; lint clean (swiftlint not
+    installed, built-in checks only); linkage clean.
 
 ### Task 8: The daemon's focused-field start path, with refusals before capture and owned handles
 

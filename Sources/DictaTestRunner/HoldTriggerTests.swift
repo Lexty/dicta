@@ -228,6 +228,108 @@ struct HoldWatchTests {
         #expect(pressed == HoldEdge(key: .rightCommand, edge: .down))
         #expect(watch.sample(noise) == HoldEdge(key: .rightCommand, edge: .up))
     }
+
+    // MARK: the threshold edge (D31)
+
+    static let start = Date(timeIntervalSince1970: 1_766_000_000)
+
+    static func at(_ seconds: TimeInterval) -> Date { start.addingTimeInterval(seconds) }
+
+    @Test("an armed hold emits its threshold once, from sampled time")
+    func theThresholdIsEmittedOnce() {
+        var watch = HoldWatch(keys: Self.watched, floor: 0.3)
+        #expect(watch.sample(0, at: Self.at(0)) == nil)
+        #expect(watch.sample(Self.rightControl, at: Self.at(0.01))
+            == HoldEdge(key: .rightControl, edge: .down))
+        watch.armThreshold()
+        // Under the floor by the SAMPLE's time, whenever anything else runs.
+        #expect(watch.sample(Self.rightControl, at: Self.at(0.2)) == nil)
+        #expect(watch.sample(Self.rightControl, at: Self.at(0.32))
+            == HoldEdge(key: .rightControl, edge: .threshold))
+        // Once: a hold of minutes is one threshold, not one per sample.
+        #expect(watch.sample(Self.rightControl, at: Self.at(0.5)) == nil)
+        #expect(watch.sample(Self.rightControl, at: Self.at(90)) == nil)
+        #expect(watch.sample(0, at: Self.at(91)) == HoldEdge(key: .rightControl, edge: .up))
+    }
+
+    @Test("an unarmed hold never emits a threshold, however long it is held")
+    func noThresholdUnlessArmed() {
+        // The agterm route never arms, and this is what keeps its edges exactly what they were.
+        var watch = HoldWatch(keys: Self.watched, floor: 0.3)
+        #expect(watch.sample(0, at: Self.at(0)) == nil)
+        #expect(watch.sample(Self.rightControl, at: Self.at(0)) != nil)
+        for tick in stride(from: 0.016, through: 5, by: 0.016) {
+            #expect(watch.sample(Self.rightControl, at: Self.at(tick)) == nil)
+        }
+    }
+
+    @Test("no threshold between a sampled down and up shorter than the floor")
+    func noThresholdUnderTheFloor() {
+        // A right-hand shortcut (F11: 138-162 ms) released before the floor: only the pair.
+        var watch = HoldWatch(keys: Self.watched, floor: 0.3)
+        #expect(watch.sample(0, at: Self.at(0)) == nil)
+        #expect(watch.sample(Self.rightCommand, at: Self.at(0)) != nil)
+        watch.armThreshold()
+        #expect(watch.sample(Self.rightCommand, at: Self.at(0.15)) == nil)
+        #expect(watch.sample(0, at: Self.at(0.16)) == HoldEdge(key: .rightCommand, edge: .up))
+        // And a release first seen by a sample past the floor is still the release: the key is
+        // no longer down, so there is nothing for a threshold to say.
+        #expect(watch.sample(Self.rightCommand, at: Self.at(1)) != nil)
+        watch.armThreshold()
+        #expect(watch.sample(0, at: Self.at(2)) == HoldEdge(key: .rightCommand, edge: .up))
+        #expect(watch.sample(0, at: Self.at(3)) == nil)
+    }
+
+    @Test("the threshold carries the owner's generation, and each owning press is a new one")
+    func generationsNameTheHold() {
+        var watch = HoldWatch(keys: Self.watched, floor: 0.3)
+        #expect(watch.sample(0, at: Self.at(0)) == nil)
+        #expect(watch.sample(Self.rightControl, at: Self.at(0))?.edge == .down)
+        let first = watch.generation
+        watch.armThreshold()
+        #expect(watch.sample(Self.rightControl, at: Self.at(0.4))?.edge == .threshold)
+        #expect(watch.generation == first)
+        #expect(watch.sample(0, at: Self.at(1))?.edge == .up)
+        #expect(watch.generation == first)
+        #expect(watch.sample(Self.rightCommand, at: Self.at(2))?.edge == .down)
+        #expect(watch.generation == first + 1)
+    }
+
+    @Test("the second armed key neither produces a threshold for the owner's hold nor ends it")
+    func theSecondKeyLeavesTheThresholdAlone() {
+        var watch = HoldWatch(keys: Self.watched, floor: 0.3)
+        #expect(watch.sample(0, at: Self.at(0)) == nil)
+        #expect(watch.sample(Self.rightControl, at: Self.at(0))?.edge == .down)
+        let owner = watch.generation
+        watch.armThreshold()
+        // The other key goes down and up under the floor: no edge, no new generation.
+        #expect(watch.sample(Self.rightControl | Self.rightCommand, at: Self.at(0.1)) == nil)
+        #expect(watch.sample(Self.rightControl, at: Self.at(0.2)) == nil)
+        #expect(watch.generation == owner)
+        // The owner's threshold is still the owner's, timed from the owner's press.
+        #expect(watch.sample(Self.rightControl | Self.rightCommand, at: Self.at(0.31))
+            == HoldEdge(key: .rightControl, edge: .threshold))
+        // The owner lets go while the other is held: the owner's up, and no threshold for the other
+        // key however long it stays down.
+        #expect(watch.sample(Self.rightCommand, at: Self.at(0.5))
+            == HoldEdge(key: .rightControl, edge: .up))
+        watch.armThreshold()
+        #expect(watch.sample(Self.rightCommand, at: Self.at(5)) == nil)
+    }
+
+    @Test("the agterm route's edges are the same pair, timed or not")
+    func theAgtermEdgesAreUnchanged() {
+        // Byte for byte: the same samples through the untimed and the timed call give the same
+        // edges when nothing arms a threshold.
+        let samples: [UInt64] = [0, Self.rightControl, Self.rightControl,
+                                 Self.rightControl | Self.rightCommand, Self.rightCommand, 0,
+                                 Self.rightCommand, 0]
+        var untimed = HoldWatch(keys: Self.watched)
+        var timed = HoldWatch(keys: Self.watched, floor: 0.3)
+        for (index, flags) in samples.enumerated() {
+            #expect(untimed.sample(flags) == timed.sample(flags, at: Self.at(Double(index))))
+        }
+    }
 }
 
 @Suite("hold gesture")
@@ -513,7 +615,7 @@ struct HoldTriggerTests {
         #expect(rig.notifier.signals.isEmpty)
     }
 
-    @Test("the hold key does nothing at all while another application is frontmost")
+    @Test("with focused fields off, the hold key does nothing at all in another application")
     func notFrontmostIsSilent() {
         // Invariant 13 and D22. Silent is the assertion, not merely "does not dictate": a
         // notification here would fire on every right-Control combination typed in a browser.
@@ -704,5 +806,329 @@ struct HoldTriggerTests {
         rig.daemon.setError(Unreachable())
         rig.hold(for: 2)
         #expect(rig.notifier.messages.count == 1)
+    }
+}
+
+@Suite("hold trigger, focused fields")
+struct FocusedFieldTriggerTests {
+    static let code = FrontmostFacts(bundleID: "com.microsoft.VSCode", pid: 4_242, name: "Code")
+    static let safari = FrontmostFacts(bundleID: "com.apple.Safari", pid: 717, name: "Safari")
+    static let agterm = FrontmostFacts(bundleID: HoldTrigger.agtermBundleIdentifier, pid: 99,
+                                       name: "agterm")
+    static let target = FieldTarget(bundleID: "com.microsoft.VSCode", appName: "Code", pid: 4_242)
+    static let settle: TimeInterval = 0.25
+
+    /// A trigger with the focused-field path wired to fakes, and VS Code frontmost.
+    struct Rig {
+        let trigger: HoldTrigger
+        let modifiers = FakeModifiers()
+        let frontmost = FakeFrontmost()
+        let notifier = FakeNotifier()
+        let feedback = FakeNotifier()
+        let access: FakeFocusedFieldAccess
+        let daemon = FakeDaemonDoor()
+        let clock = FakeClock()
+        let pacer: FakePacer
+
+        init(enabled: Bool = true, trusted: Bool = true) {
+            access = FakeFocusedFieldAccess(trusted: trusted)
+            pacer = FakePacer(clock: clock)
+            frontmost.activate(FocusedFieldTriggerTests.code)
+            let daemon = daemon
+            trigger = HoldTrigger(
+                configuration: HoldTrigger.Configuration(
+                    floor: 0.3, focusedFields: enabled,
+                    settleWindow: FocusedFieldTriggerTests.settle),
+                modifiers: modifiers,
+                frontmost: frontmost,
+                notifier: notifier,
+                clock: clock,
+                fields: HoldTrigger.FocusedFields(access: access, feedback: feedback, pacer: pacer),
+                send: { try daemon.send($0) }
+            )
+            _ = trigger.sample()
+        }
+
+        /// Sample the keyboard as it now is, and return the edge without performing it: the queue.
+        func sample() -> HoldTrigger.Pending? { trigger.sample() }
+
+        func press(_ key: HoldKey = .rightControl) -> HoldTrigger.Pending? {
+            modifiers.press(key)
+            return trigger.sample()
+        }
+
+        func release(_ key: HoldKey = .rightControl) -> HoldTrigger.Pending? {
+            modifiers.release(key)
+            return trigger.sample()
+        }
+
+        /// Time passes on the poll loop's clock, and the loop samples once.
+        func wait(_ seconds: TimeInterval) -> HoldTrigger.Pending? {
+            clock.advance(by: seconds)
+            return trigger.sample()
+        }
+
+        func perform(_ edges: [HoldTrigger.Pending?]) {
+            for edge in edges.compactMap({ $0 }) { trigger.perform(edge) }
+        }
+
+        /// A whole hold, performed as it is sampled.
+        func hold(_ key: HoldKey = .rightControl, for seconds: TimeInterval) {
+            perform([press(key)])
+            var elapsed = 0.0
+            while elapsed + 0.016 < seconds {
+                clock.advance(by: 0.016)
+                elapsed += 0.016
+                perform([trigger.sample()])
+            }
+            clock.advance(by: seconds - elapsed)
+            perform([release(key)])
+        }
+
+        var silent: Bool { notifier.signals.isEmpty && feedback.signals.isEmpty }
+    }
+
+    @Test("a hold elsewhere starts at the threshold, into its field, and stops on release")
+    func theFieldGesture() throws {
+        let rig = Rig()
+        let down = try #require(rig.press())
+        #expect(down.route == .focusedFieldAfterFloor(Self.target))
+        rig.perform([down])
+        // Nothing at the press: no request, and no accessibility call.
+        #expect(rig.daemon.requests.isEmpty)
+        #expect(rig.access.callLog.isEmpty)
+        #expect(rig.wait(0.2) == nil)
+        let threshold = try #require(rig.wait(0.12))
+        #expect(threshold.edge == .threshold)
+        #expect(threshold.generation == down.generation)
+        rig.perform([threshold])
+        #expect(rig.daemon.verbs == [.start])
+        let start = rig.daemon.requests[0]
+        #expect(start.field == Self.target)
+        #expect(start.focus == nil)
+        #expect(start.sessionID == nil)
+        #expect(start.conflict == nil)
+        #expect(rig.access.callLog == [.isTrusted])
+        rig.clock.advance(by: 2)
+        rig.perform([rig.release()])
+        #expect(rig.daemon.verbs == [.start, .stop])
+        #expect(rig.daemon.requests[1].mode == .clean)
+        #expect(rig.daemon.requests[1].attempt == 1)
+        #expect(rig.pacer.pauses == [Self.settle])
+        #expect(rig.silent)
+    }
+
+    @Test("a short hold queued behind a blocked sender costs nothing on the focused-field path")
+    func aShortQueuedHoldCostsNothing() {
+        // The sender is busy with a previous request, so the edges pile up; what it finds when it
+        // unblocks is a `down` and an `up` 150 ms apart by the poll loop's clock -- a right-hand
+        // shortcut (F11: 138-162 ms) -- however late it reads them.
+        let rig = Rig()
+        let queued = [rig.press(.rightCommand), rig.wait(0.15), rig.release(.rightCommand)]
+        #expect(queued.compactMap { $0?.edge } == [.down, .up])
+        rig.clock.advance(by: 5)
+        rig.perform(queued)
+        #expect(rig.access.callLog.isEmpty)
+        #expect(rig.daemon.requests.isEmpty)
+        #expect(rig.silent)
+    }
+
+    @Test("a long hold released while the sender was blocked starts nothing")
+    func aLongQueuedHoldStartsNothing() {
+        let rig = Rig()
+        let queued = [rig.press(), rig.wait(0.35), rig.wait(1), rig.release()]
+        #expect(queued.compactMap { $0?.edge } == [.down, .threshold, .up])
+        rig.perform(queued)
+        #expect(rig.access.callLog.isEmpty)
+        #expect(rig.daemon.requests.isEmpty)
+        #expect(rig.silent)
+    }
+
+    @Test("a stale threshold is dropped, and only the held generation's threshold starts")
+    func aStaleThresholdIsDropped() throws {
+        let rig = Rig()
+        var queued = [rig.press(), rig.wait(0.35), rig.release()]
+        let next = try #require(rig.press(.rightCommand))
+        queued.append(next)
+        #expect(queued.compactMap { $0?.edge } == [.down, .threshold, .up, .down])
+        #expect(queued[1]?.generation != next.generation)
+        rig.perform(queued)
+        #expect(rig.access.callLog.isEmpty)
+        #expect(rig.daemon.requests.isEmpty)
+        let threshold = try #require(rig.wait(0.35))
+        #expect(threshold.edge == .threshold)
+        #expect(threshold.generation == next.generation)
+        rig.perform([threshold])
+        #expect(rig.daemon.verbs == [.start])
+        #expect(rig.silent)
+    }
+
+    @Test("a release the poller records before the sender's liveness check discards the threshold")
+    func releaseBeforeTheLivenessCheck() {
+        let rig = Rig()
+        rig.perform([rig.press()])
+        let threshold = rig.wait(0.35)
+        // The key comes up and the poll loop sees it before the sender reaches the threshold.
+        let up = rig.release()
+        rig.perform([threshold, up])
+        #expect(rig.access.callLog.isEmpty)
+        #expect(rig.daemon.requests.isEmpty)
+        #expect(rig.silent)
+    }
+
+    @Test("a release landing after the liveness check stops the start rather than aborting it")
+    func releaseAfterTheLivenessCheck() {
+        let rig = Rig()
+        rig.perform([rig.press()])
+        let threshold = rig.wait(0.35)
+        // The start is on the wire when the key comes up: the poll loop queues the `up` while the
+        // sender is still waiting for the answer.
+        let released = Box<HoldTrigger.Pending>()
+        let modifiers = rig.modifiers
+        let trigger = rig.trigger
+        rig.daemon.duringSend { request in
+            guard request.cmd == .start else { return }
+            modifiers.release(.rightControl)
+            released.value = trigger.sample()
+        }
+        rig.perform([threshold])
+        rig.daemon.duringSend(nil)
+        #expect(released.value?.edge == .up)
+        // Released a few milliseconds after the threshold: D21's floor was already passed, and is
+        // not applied again, so this is a stop.
+        rig.perform([released.value])
+        #expect(rig.daemon.verbs == [.start, .stop])
+        #expect(rig.silent)
+    }
+
+    @Test("a field attempt whose application switched during the hold is aborted silently")
+    func aSwitchDuringTheHoldAborts() {
+        let rig = Rig()
+        rig.perform([rig.press(), rig.wait(0.35)])
+        rig.clock.advance(by: 1)
+        rig.frontmost.activate(Self.safari)
+        rig.perform([rig.release()])
+        #expect(rig.daemon.verbs == [.start, .abort])
+        #expect(rig.daemon.requests[1].attempt == 1)
+        // Already switched at the release: nothing to wait for.
+        #expect(rig.pacer.pauses.isEmpty)
+        #expect(rig.silent)
+    }
+
+    @Test("a field attempt whose application switched within the settle window is aborted silently")
+    func aSwitchInsideTheSettleWindowAborts() {
+        // `⌘Tab` activates the chosen application when `⌘` comes up, just after the release.
+        let rig = Rig()
+        rig.perform([rig.press(.rightCommand), rig.wait(0.6)])
+        rig.frontmost.script([Self.code, Self.safari])
+        rig.daemon.queue(Response(kind: .rejected, state: .idle, message: "nothing to abort"))
+        rig.perform([rig.release(.rightCommand)])
+        #expect(rig.daemon.verbs == [.start, .abort])
+        #expect(rig.pacer.pauses == [Self.settle])
+        // Even a refused abort is not said: the gesture meant nothing.
+        #expect(rig.silent)
+    }
+
+    @Test("a field attempt whose application never changed is stopped after the settle window")
+    func noSwitchStops() {
+        let rig = Rig()
+        rig.perform([rig.press(), rig.wait(0.35)])
+        let up = rig.release()
+        // The sender reaches the release 100 ms after it was sampled.
+        rig.clock.advance(by: 0.1)
+        rig.perform([up])
+        #expect(rig.daemon.verbs == [.start, .stop])
+        #expect(rig.pacer.pauses.count == 1)
+        #expect(abs((rig.pacer.pauses.first ?? 0) - (Self.settle - 0.1)) < 0.000_1)
+        // A sender already behind by more than the window waits no longer at all.
+        let late = Rig()
+        late.perform([late.press(), late.wait(0.35)])
+        let lateUp = late.release()
+        late.clock.advance(by: 3)
+        late.perform([lateUp])
+        #expect(late.daemon.verbs == [.start, .stop])
+        #expect(late.pacer.pauses.isEmpty)
+    }
+
+    @Test("with the grant missing, a threshold refuses once, audibly, and sends nothing")
+    func noGrantRefusesAtTheThreshold() {
+        let rig = Rig(trusted: false)
+        rig.hold(for: 3)
+        #expect(rig.daemon.requests.isEmpty)
+        #expect(rig.access.callLog == [.isTrusted])
+        #expect(rig.feedback.announcements == [.blocked])
+        #expect(rig.feedback.messages.count == 1)
+        #expect(rig.feedback.messages.first?.contains("Accessibility") == true)
+        #expect(rig.notifier.signals.isEmpty)
+    }
+
+    @Test("a threshold after the user switched away sends nothing and says nothing")
+    func switchedAwayBeforeTheThreshold() {
+        let rig = Rig()
+        rig.perform([rig.press()])
+        rig.frontmost.activate(Self.safari)
+        rig.perform([rig.wait(0.35)])
+        rig.clock.advance(by: 1)
+        rig.perform([rig.release()])
+        #expect(rig.daemon.requests.isEmpty)
+        #expect(rig.silent)
+    }
+
+    @Test("a refused field start is said through system feedback and the release is silent")
+    func aRefusedFieldStart() {
+        let rig = Rig()
+        rig.daemon.queue(Response(kind: .rejected, state: .idle,
+                                  message: "Secure Input is on, so dicta will not type"))
+        rig.hold(for: 2)
+        #expect(rig.daemon.verbs == [.start])
+        #expect(rig.feedback.announcements == [.blocked])
+        #expect(rig.feedback.messages == ["Secure Input is on, so dicta will not type"])
+        #expect(rig.notifier.signals.isEmpty)
+    }
+
+    @Test("agterm frontmost with focused fields on still starts on key-down")
+    func agtermKeepsItsPath() {
+        let rig = Rig()
+        rig.frontmost.activate(Self.agterm)
+        rig.perform([rig.press()])
+        #expect(rig.daemon.verbs == [.start])
+        #expect(rig.daemon.requests[0].focus == true)
+        #expect(rig.daemon.requests[0].field == nil)
+        rig.clock.advance(by: 0.12)
+        rig.perform([rig.release()])
+        // D21 on the agterm path is unchanged: under the floor it is an abort.
+        #expect(rig.daemon.verbs == [.start, .abort])
+        #expect(rig.access.callLog.isEmpty)
+        #expect(rig.pacer.pauses.isEmpty)
+    }
+
+    @Test("with focused fields off, the accessibility fake records zero calls in every scenario")
+    func optionOffMakesNoAccessibilityCall() {
+        let rig = Rig(enabled: false)
+        // Another application: long, short, and both keys.
+        rig.hold(for: 3)
+        rig.hold(.rightCommand, for: 0.15)
+        rig.perform([rig.press(), rig.wait(0.5), rig.press(.rightCommand), rig.wait(1),
+                     rig.release(.rightCommand), rig.release()])
+        #expect(rig.daemon.requests.isEmpty)
+        // And agterm, whose path the option never touched.
+        rig.frontmost.activate(Self.agterm)
+        rig.hold(for: 2)
+        rig.hold(.rightCommand, for: 0.1)
+        #expect(rig.daemon.verbs == [.start, .stop, .start, .abort])
+        #expect(rig.access.callLog.isEmpty)
+        #expect(rig.pacer.pauses.isEmpty)
+        #expect(rig.silent)
+    }
+}
+
+/// A value a `@Sendable` hook can hand back to the test that installed it.
+final class Box<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Value?
+
+    var value: Value? {
+        get { lock.withLock { stored } }
+        set { lock.withLock { stored = newValue } }
     }
 }

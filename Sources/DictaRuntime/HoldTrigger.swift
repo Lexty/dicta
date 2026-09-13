@@ -117,6 +117,43 @@ public final class SystemFrontmost: FrontmostApplication, @unchecked Sendable {
     public var current: FrontmostFacts? { lock.withLock { facts } }
 }
 
+/// Which hold is physically down right now, as the poll loop last saw it (D31).
+///
+/// The sender's queue is history, not liveness. A long hold released while the sender was blocked
+/// sits in the queue as `[down(g), threshold(g), up(g)]`, and when the sender reaches the threshold
+/// it has not yet seen the `up` behind it -- so a check against its own idea of the hold would pass
+/// and start a dictation for a key that is no longer down. This snapshot is written by the poll
+/// loop at every owning `down` and `up`, before the edge is queued, and is what the threshold asks.
+///
+/// Its lock is its own and is held only across a copy: the sender reads it and lets go before any
+/// grant check, accessibility call or socket round trip.
+final class HoldLiveness: @unchecked Sendable {
+    private let lock = NSLock()
+    private var owner: HoldKey?
+    private var generation: UInt64 = 0
+    private var held = false
+
+    func pressed(_ key: HoldKey, generation: UInt64) {
+        lock.withLock {
+            owner = key
+            self.generation = generation
+            held = true
+        }
+    }
+
+    func released(generation: UInt64) {
+        lock.withLock {
+            guard self.generation == generation else { return }
+            held = false
+        }
+    }
+
+    /// Whether `generation` is the current owner's hold and its key is still down.
+    func isHeld(generation: UInt64) -> Bool {
+        lock.withLock { held && owner != nil && self.generation == generation }
+    }
+}
+
 /// The loop that turns a held key into a dictation.
 public final class HoldTrigger: @unchecked Sendable {
     public struct Configuration: Sendable {
@@ -156,21 +193,59 @@ public final class HoldTrigger: @unchecked Sendable {
         public var agtermBundleIdentifier: String
         /// dicta's own control socket -- the same one `dictactl` connects to.
         public var socketPath: String
+        /// `--focused-fields` (D31). Off, a hold outside agterm is D22's silent no-op and the
+        /// trigger makes no accessibility call, whatever it was handed.
+        public var focusedFields: Bool
+        /// How long after the release a field attempt waits for the application to change before it
+        /// is stopped rather than silently aborted (D31). `⌘Tab` activates the chosen application
+        /// when `⌘` is released, so the switch lands just after the `up`.
+        public var settleWindow: TimeInterval
 
         public init(keys: [HoldKey] = [.rightControl, .rightCommand],
                     floor: TimeInterval = HoldToTalk.defaultFloor,
                     pollInterval: TimeInterval = 0.016,
                     agtermBundleIdentifier: String = HoldTrigger.agtermBundleIdentifier,
-                    socketPath: String = Paths.current.socket.path) {
+                    socketPath: String = Paths.current.socket.path,
+                    focusedFields: Bool = false,
+                    settleWindow: TimeInterval = HoldTrigger.defaultSettleWindow) {
             self.keys = keys
             self.floor = floor
             self.pollInterval = pollInterval
             self.agtermBundleIdentifier = agtermBundleIdentifier
             self.socketPath = socketPath
+            self.focusedFields = focusedFields
+            self.settleWindow = settleWindow
         }
     }
 
     public static let agtermBundleIdentifier = "com.umputun.agterm"
+
+    /// ⚠️ Not measured. F11 did not time the activation notification after a right-hand `⌘Tab`
+    /// release, and nobody has since; this is a provisional value, generous against the tens of
+    /// milliseconds an activation usually takes, and it is paid only by a field attempt's stop.
+    /// Too short lets a switch through as a stop aimed at the application the user left -- D32's
+    /// re-validation refuses that as `target-gone`, so the cost is a notification rather than
+    /// misplaced text.
+    public static let defaultSettleWindow: TimeInterval = 0.25
+
+    /// What the focused-field path needs beyond the agterm path (D31). Handed over only when
+    /// `--focused-fields` is on; nothing here is touched while it is off.
+    public struct FocusedFields: Sendable {
+        /// The grant check at the threshold. The trigger reads nothing else through it.
+        public var access: any FocusedFieldAccess
+        /// Where a field-path refusal is said: a field has no indicator, and agterm's notifier
+        /// stays silent for a field target, so this is sounds and notifications (D13).
+        public var feedback: any Notifier
+        /// The settle window's wait, on the sender thread.
+        public var pacer: any Pacer
+
+        public init(access: any FocusedFieldAccess, feedback: any Notifier,
+                    pacer: any Pacer = ThreadPacer()) {
+            self.access = access
+            self.feedback = feedback
+            self.pacer = pacer
+        }
+    }
 
     /// One unit of work for the sender thread: an edge, and what was true of the world at the
     /// instant it happened.
@@ -188,6 +263,10 @@ public final class HoldTrigger: @unchecked Sendable {
         /// was decided on; `nil` on an `up`, and when nothing was frontmost. The focused-field
         /// route (D31) builds its target from it.
         public var frontmost: FrontmostFacts?
+        /// Which hold this edge belongs to (`HoldWatch.generation`).
+        public var generation: UInt64
+        /// Where the hold goes, decided at the `down` from `frontmost`; `nil` on every other edge.
+        public var route: HoldRoute?
     }
 
     public typealias Sender = @Sendable (Request) throws -> Response
@@ -198,9 +277,30 @@ public final class HoldTrigger: @unchecked Sendable {
     private let notifier: any Notifier
     private let clock: any Clock
     private let send: Sender
+    private let fields: FocusedFields?
 
     private var watch: HoldWatch
     private var gesture: HoldToTalk
+    private let liveness = HoldLiveness()
+
+    /// The focused-field hold the sender is handling, if any. Touched only by the sender, like
+    /// `gesture`.
+    private struct FieldHold {
+        enum Phase {
+            /// Down, and waiting for its threshold.
+            case pending
+            /// The daemon accepted the start and named this attempt.
+            case started(AttemptID)
+            /// Nothing began, or nothing will: the release must be silent.
+            case abandoned
+        }
+
+        var generation: UInt64
+        var target: FieldTarget
+        var phase: Phase
+    }
+
+    private var fieldHold: FieldHold?
 
     private let lock = NSCondition()
     private var queue: [Pending] = []
@@ -213,14 +313,16 @@ public final class HoldTrigger: @unchecked Sendable {
                 frontmost: any FrontmostApplication = SystemFrontmost(),
                 notifier: any Notifier,
                 clock: any Clock = SystemClock(),
+                fields: FocusedFields? = nil,
                 send: @escaping Sender = { try ControlClient.send($0) }) {
         self.configuration = configuration
         self.modifiers = modifiers
         self.frontmost = frontmost
         self.notifier = notifier
         self.clock = clock
+        self.fields = fields
         self.send = send
-        self.watch = HoldWatch(keys: configuration.keys)
+        self.watch = HoldWatch(keys: configuration.keys, floor: configuration.floor)
         self.gesture = HoldToTalk(floor: configuration.floor)
     }
 
@@ -278,15 +380,39 @@ public final class HoldTrigger: @unchecked Sendable {
     /// test can drive a gesture a step at a time: the alternative is asserting about a keyboard by
     /// waiting in real seconds, which is how a suite becomes flaky and then becomes ignored.
     public func sample() -> Pending? {
-        guard let held = watch.sample(modifiers.flags()) else { return nil }
-        // Read at the edge and not in the sender: whether agterm was frontmost is a fact about the
-        // keypress, and the sender can be several seconds behind it.
-        // One read, so the bundle id D22 compares and the pid D31 targets are one activation's.
-        let facts = held.edge == .down ? frontmost.current : nil
-        let isAgterm = facts?.bundleID == configuration.agtermBundleIdentifier
-        return Pending(edge: held.edge, key: held.key, at: clock.now, wasFrontmost: isAgterm,
-                       frontmost: facts)
+        // Sampled time, taken with the flags: the threshold edge measures the hold by when the
+        // keyboard was looked at, never by when the sender got round to it (D31).
+        let now = clock.now
+        guard let held = watch.sample(modifiers.flags(), at: now) else { return nil }
+        let generation = watch.generation
+        switch held.edge {
+        case .down:
+            // Read at the edge and not in the sender: whether agterm was frontmost is a fact about
+            // the keypress, and the sender can be several seconds behind it.
+            // One read, so the bundle id D22 compares and the pid D31 targets are one activation's.
+            let facts = frontmost.current
+            let route = HoldRoute.decide(frontmost: facts,
+                                         agtermBundleID: configuration.agtermBundleIdentifier,
+                                         focusedFieldsEnabled: fieldsEnabled)
+            if case .focusedFieldAfterFloor = route { watch.armThreshold() }
+            // Liveness before the edge is queued: no sender sees an edge the snapshot has not.
+            liveness.pressed(held.key, generation: generation)
+            return Pending(edge: .down, key: held.key, at: now,
+                           wasFrontmost: facts?.bundleID == configuration.agtermBundleIdentifier,
+                           frontmost: facts, generation: generation, route: route)
+        case .up:
+            liveness.released(generation: generation)
+            return Pending(edge: .up, key: held.key, at: now, wasFrontmost: false, frontmost: nil,
+                           generation: generation, route: nil)
+        case .threshold:
+            return Pending(edge: .threshold, key: held.key, at: now, wasFrontmost: false,
+                           frontmost: nil, generation: generation, route: nil)
+        }
     }
+
+    /// The option is on AND the trigger was given what the field path needs. Either alone leaves
+    /// the route closed, so a trigger built without accessibility can never be routed into it.
+    private var fieldsEnabled: Bool { configuration.focusedFields && fields != nil }
 
     // MARK: - the sender
 
@@ -307,17 +433,34 @@ public final class HoldTrigger: @unchecked Sendable {
     public func perform(_ pending: Pending) {
         switch pending.edge {
         case .down:
-            begin(pending)
+            switch pending.route {
+            case .agterm:
+                begin(pending)
+            case let .focusedFieldAfterFloor(target):
+                // Nothing is sent and nothing is read: a combination released before the floor must
+                // cost nothing at all (D21, D31). The threshold decides.
+                fieldHold = FieldHold(generation: pending.generation, target: target,
+                                      phase: .pending)
+            case .ignore, nil:
+                // D22, and silent on purpose: with the option off the key means nothing outside
+                // agterm, and §6's rule is that a no-op makes no sound. A notification here would
+                // fire every time the user pressed a combination with one of the armed keys in
+                // their browser -- and with right Command among them (F6a) that is every `⌘V` and
+                // every `⌘W` they type all day.
+                return
+            }
+        case .threshold:
+            beginField(pending)
         case .up:
-            end(pending)
+            if let hold = fieldHold, hold.generation == pending.generation {
+                endField(hold, releasedAt: pending.at)
+            } else {
+                end(pending)
+            }
         }
     }
 
     private func begin(_ pending: Pending) {
-        // D22, and silent on purpose: the key means nothing outside agterm, and §6's rule is that a
-        // no-op makes no sound. A notification here would fire every time the user pressed a
-        // combination with one of the armed keys in their browser -- and with right Command among
-        // them (F6a) that is every `⌘V` and every `⌘W` they type all day.
         guard pending.wasFrontmost else { return }
         guard case .start = gesture.down(at: pending.at) else { return }
 
@@ -373,5 +516,98 @@ public final class HoldTrigger: @unchecked Sendable {
         } catch {
             notifier.notify("dicta could not finish the dictation: \(error)", for: nil)
         }
+    }
+
+    // MARK: - the focused-field path (D31)
+
+    /// A live threshold, in D31's order: liveness, then the grant, then the frontmost pid, then the
+    /// start. Everything after the liveness check runs with no lock held.
+    private func beginField(_ pending: Pending) {
+        guard var hold = fieldHold, hold.generation == pending.generation,
+              case .pending = hold.phase else { return }
+        // Queue order is history, not liveness. A threshold whose key the poll loop has already
+        // seen come up -- or whose generation a newer press replaced -- is dropped, and costs no
+        // accessibility call, no request and no notification.
+        guard liveness.isHeld(generation: pending.generation), let fields else {
+            abandonField()
+            return
+        }
+        let target = Target.focusedField(hold.target)
+        // No grant, and posting would be discarded with no error (F11): refused here, before the
+        // daemon is asked for anything, so the microphone never opens. `Basso` as well as the
+        // notification, because a Focus mode suppresses the notification (F11).
+        guard fields.access.isTrusted else {
+            abandonField()
+            fields.feedback.announce(.blocked, for: target)
+            fields.feedback.notify("dicta cannot type into \(hold.target.appName) without the "
+                                   + "Accessibility grant: allow Dicta in System Settings > "
+                                   + "Privacy & Security > Accessibility", for: target)
+            return
+        }
+        // The user switched away during the hold: silent, like D22, because whatever they were
+        // aiming at is no longer in front of them.
+        guard frontmost.current?.pid == hold.target.pid else {
+            abandonField()
+            return
+        }
+        do {
+            let response = try send(Request(cmd: .start, field: hold.target))
+            guard response.kind == .accepted, let attempt = response.attempt else {
+                abandonField()
+                if response.kind == .rejected, let message = response.message {
+                    fields.feedback.announce(.blocked, for: target)
+                    fields.feedback.notify(message, for: target)
+                }
+                return
+            }
+            // `HoldToTalk` is not consulted: the floor was passed by sampled time before this
+            // threshold existed, and applying it again from here would abort a hold released just
+            // after a slow start.
+            hold.phase = .started(attempt)
+            fieldHold = hold
+        } catch {
+            abandonField()
+            fields.feedback.announce(.blocked, for: target)
+            fields.feedback.notify("dicta could not start a dictation: \(error)", for: target)
+        }
+    }
+
+    private func abandonField() {
+        fieldHold?.phase = .abandoned
+    }
+
+    /// The release of a focused-field hold: stop, or abort silently if the hold switched the
+    /// application.
+    private func endField(_ hold: FieldHold, releasedAt: Date) {
+        fieldHold = nil
+        // Released before the floor, or refused at the threshold: nothing was started, so nothing
+        // is said.
+        guard case let .started(attempt) = hold.phase, let fields else { return }
+        if switchedApplication(from: hold.target.pid, releasedAt: releasedAt, pacer: fields.pacer) {
+            // The user's decision, 2026-09-13: like D21's floor, no text, no sound and no
+            // notification -- and the answer is not reported either, since a refusal here would be
+            // a sound for a gesture that meant nothing.
+            _ = try? send(Request(cmd: .abort, attempt: attempt))
+            return
+        }
+        do {
+            let response = try send(Request(cmd: .stop, mode: .clean, attempt: attempt))
+            if response.kind == .rejected, let message = response.message {
+                fields.feedback.notify(message, for: .focusedField(hold.target))
+            }
+        } catch {
+            fields.feedback.notify("dicta could not finish the dictation: \(error)",
+                                   for: .focusedField(hold.target))
+        }
+    }
+
+    /// Whether the frontmost application is no longer `pid`, now or by the end of the settle window
+    /// measured from the SAMPLED release -- so a sender already behind by more than the window
+    /// waits no longer.
+    private func switchedApplication(from pid: Int32, releasedAt: Date, pacer: any Pacer) -> Bool {
+        if frontmost.current?.pid != pid { return true }
+        let remaining = configuration.settleWindow - clock.now.timeIntervalSince(releasedAt)
+        if remaining > 0 { pacer.pause(remaining) }
+        return frontmost.current?.pid != pid
     }
 }

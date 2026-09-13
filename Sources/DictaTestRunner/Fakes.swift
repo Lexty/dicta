@@ -524,6 +524,7 @@ public final class FakeDaemonDoor: @unchecked Sendable {
     private var answers: [Response] = []
     private var error: (any Error)?
     private var nextAttempt: AttemptID = 1
+    private var onSend: (@Sendable (Request) -> Void)?
 
     public init() {}
 
@@ -536,9 +537,19 @@ public final class FakeDaemonDoor: @unchecked Sendable {
     /// The next answer, ahead of the default. Consumed once.
     public func queue(_ response: Response) { lock.withLock { answers.append(response) } }
 
+    /// Runs inside every send, after the request is recorded and outside the lock: a round trip
+    /// that takes long enough for the key to come up while it is on the wire.
+    public func duringSend(_ body: (@Sendable (Request) -> Void)?) {
+        lock.withLock { onSend = body }
+    }
+
     public func send(_ request: Request) throws -> Response {
-        try lock.withLock {
+        let hook = lock.withLock { () -> (@Sendable (Request) -> Void)? in
             sent.append(request)
+            return onSend
+        }
+        hook?(request)
+        return try lock.withLock {
             if let error { throw error }
             if !answers.isEmpty { return answers.removeFirst() }
             switch request.cmd {

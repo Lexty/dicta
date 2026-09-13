@@ -352,6 +352,10 @@ public struct Request: Codable, Sendable, Equatable {
     /// Reading text back is not injection, so the sanitiser does not apply to it (§9), and the two
     /// fields differing is the whole way a replacement misfire is diagnosed.
     public var verbatim: Bool?
+    /// Start into this application's focused field (D31). Sent by the hold trigger once a hold in
+    /// another application has outlasted the floor, and by nothing else; the daemon reads the
+    /// element itself and refuses before capture when it is not an eligible field of this pid.
+    public var field: FieldTarget?
 
     public init(
         cmd: Command,
@@ -361,7 +365,8 @@ public struct Request: Codable, Sendable, Equatable {
         attempt: AttemptID? = nil,
         focus: Bool? = nil,
         timeout: Double? = nil,
-        verbatim: Bool? = nil
+        verbatim: Bool? = nil,
+        field: FieldTarget? = nil
     ) {
         self.cmd = cmd
         self.focus = focus
@@ -371,6 +376,35 @@ public struct Request: Codable, Sendable, Equatable {
         self.mode = mode
         self.attempt = attempt
         self.verbatim = verbatim
+        self.field = field
+    }
+
+    /// Why this request names two targets at once, or `nil` when it names at most one.
+    ///
+    /// A field target together with a session or with `focus` is two different places to type, and
+    /// choosing one of them would be D4's substitution decided by field order. So it is refused,
+    /// whichever half the caller meant. An empty `sessionID` still counts: an unset
+    /// `$AGT_SESSION_ID` expands to one, and it is still a chord's request.
+    public var conflict: RequestConflict? {
+        guard field != nil else { return nil }
+        if focus == true { return .fieldWithFocus }
+        if sessionID != nil { return .fieldWithSession }
+        return nil
+    }
+}
+
+/// A request naming a focused field and an agterm target at once (D31).
+public enum RequestConflict: Error, Sendable, Equatable, CustomStringConvertible {
+    case fieldWithFocus
+    case fieldWithSession
+
+    public var description: String {
+        switch self {
+        case .fieldWithFocus:
+            "a start cannot name a focused field and ask for agterm's focus at once"
+        case .fieldWithSession:
+            "a start cannot name a focused field and an agterm session at once"
+        }
     }
 }
 

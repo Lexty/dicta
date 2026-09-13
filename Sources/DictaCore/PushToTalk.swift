@@ -72,6 +72,10 @@ public struct ModifierWatch: Sendable, Equatable {
     public enum Edge: Sendable, Equatable {
         case down
         case up
+        /// The owning key has been held, by sampled time, for the floor (D21, D31). Never produced
+        /// by a `ModifierWatch`, which sees state and not time; `HoldWatch` emits it, and only for
+        /// a hold the focused-field route armed.
+        case threshold
     }
 
     public let bit: UInt64
@@ -130,16 +134,38 @@ public struct HoldEdge: Sendable, Equatable {
 /// becomes an edge later -- the second key, pressed during a hold and released long after it, would
 /// report a `down` the next time anything looked. Sampling all and choosing one keeps every watch
 /// honest about the world; only the reporting is filtered.
+///
+/// **The threshold edge (D31).** On the focused-field path nothing may be sent until the hold has
+/// outlasted the floor, and the sender cannot find that out for itself: it handles edges serially
+/// and can be seconds behind, so sleeping there could not see a release already queued behind it,
+/// and timing the hold when the edge is finally handled would turn a short, queued shortcut into a
+/// long hold. So the poll loop emits a third edge, `.threshold`, from **sampled** time, once, while
+/// the owning key is still down -- and only for a hold the caller armed with `armThreshold()`. An
+/// unarmed hold, which is every agterm hold, produces exactly the edges it always did.
+///
+/// **Generations.** Every owning `down` bumps `generation`, and every edge of that hold belongs to
+/// it. Queue order is history, not liveness: a threshold handled after its hold ended must be told
+/// apart from the next hold's, and the generation is what names which hold an edge was.
 public struct HoldWatch: Sendable, Equatable {
     /// In the order given, which is the order a tie is broken in when two keys go down inside one
     /// poll interval. Not a `Set`: "first" has to mean something.
     public let keys: [HoldKey]
+    /// D21's floor, which the threshold edge measures against.
+    public let floor: TimeInterval
     private var watches: [ModifierWatch]
     /// The index of the key that owns the gesture in flight, if one does.
     private var owning: Int?
+    /// The generation of the hold in flight, or of the last one: bumped on every owning `down`,
+    /// and never by a key whose edges are being swallowed.
+    public private(set) var generation: UInt64 = 0
+    /// When the owning `down` was sampled, if `sample(_:at:)` was the one that saw it.
+    private var ownedSince: Date?
+    /// Whether the hold in flight still has a threshold edge to emit.
+    private var thresholdArmed = false
 
-    public init(keys: [HoldKey]) {
+    public init(keys: [HoldKey], floor: TimeInterval = HoldToTalk.defaultFloor) {
         self.keys = keys
+        self.floor = floor
         self.watches = keys.map { ModifierWatch(key: $0) }
     }
 
@@ -165,6 +191,8 @@ public struct HoldWatch: Sendable, Equatable {
                 guard index == owning, edge == .up else { continue }
                 reported = HoldEdge(key: keys[index], edge: .up)
                 self.owning = nil
+                ownedSince = nil
+                thresholdArmed = false
                 continue
             }
             // No gesture in flight. A `down` claims it; an `up` with no owner belongs to a gesture
@@ -172,9 +200,35 @@ public struct HoldWatch: Sendable, Equatable {
             // so would ask the daemon to end an attempt nobody started.
             guard edge == .down else { continue }
             owning = index
+            generation &+= 1
+            ownedSince = nil
+            thresholdArmed = false
             reported = HoldEdge(key: keys[index], edge: .down)
         }
         return reported
+    }
+
+    /// One sample, timed: the edge `sample(_:)` would report, or else the armed hold's threshold.
+    ///
+    /// The time is the SAMPLE's, taken by the poll loop, so a hold is measured by when the keyboard
+    /// was looked at and never by when a queued edge was handled. A sample that sees the owner come
+    /// up reports the `up` and never a threshold, however long the hold: the key is no longer down.
+    public mutating func sample(_ flags: UInt64, at now: Date) -> HoldEdge? {
+        if let edge = sample(flags) {
+            if edge.edge == .down { ownedSince = now }
+            return edge
+        }
+        guard thresholdArmed, let owner, let since = ownedSince,
+              now.timeIntervalSince(since) >= floor else { return nil }
+        thresholdArmed = false
+        return HoldEdge(key: owner, edge: .threshold)
+    }
+
+    /// The hold in flight is on the focused-field route: emit its threshold, once. Does nothing
+    /// with no hold in flight, so a late call cannot arm the next one.
+    public mutating func armThreshold() {
+        guard owning != nil else { return }
+        thresholdArmed = true
     }
 }
 
