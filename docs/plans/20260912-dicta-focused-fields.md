@@ -57,15 +57,21 @@ before it knows whether the hold will outlast the 300 ms floor (`HoldTrigger.swi
   - read AX under the handler lock;
   - leave an `aborted` line in the record;
   - when untrusted or in a password field, post a refusal notification.
-- **Decision proposed in this plan (⚠️ must be confirmed by the user BEFORE Task 2 writes D31; until
-  then every SPEC text that depends on it is provisional).** On the focused-field path, **nothing is
-  sent until the hold has outlasted the floor.**
+- **Decision, confirmed by the user on 2026-09-13 with F11's durations in hand.** On the
+  focused-field path, **nothing is sent until the hold has outlasted the floor.**
   - Refusals are also decided only then.
   - A combination **released before the floor** therefore costs nothing at all: no AX call, no
     microphone, no record line, no sound, no notification.
   - **A combination held past the floor still starts an attempt.** A source that sees only modifier
-    state cannot tell the two apart. `⌘Tab` is the known case, not the only one, and F11 measures how
-    often it happens.
+    state cannot tell the two apart. F11 measured the right-hand shortcuts ⌘C/⌘V/⌘Z/⌘S at 138–162 ms,
+    all cleared by the floor, and ⌘Tab with a window being chosen at 490–675 ms, never cleared.
+  - **An attempt whose hold switched the application is cancelled silently** (the user's decision,
+    2026-09-13). ⌘Tab activates the chosen application when ⌘ is released, so the check comes at
+    `up`: if the frontmost pid differs from the one captured at `down`, whether it changed during the
+    hold or within a short settle window after the release, the attempt ends in `abort` — no text, no
+    sound, no notification, like D21's floor — rather than `stop`. ⚠️ The settle window is not
+    measured: F11 did not time the activation notification after a ⌘Tab release. Task 7 measures it
+    on hardware before fixing the constant, and the window is added to `stop` on the field path only.
   - **The price outside agterm.** `Pop` arrives later by the floor, on top of the AX read, the
     socket round trip, capture start and feedback latency that every start already pays. Speech is
     not lost, because D13 already makes the user wait for `Pop`.
@@ -207,7 +213,6 @@ pid and name, all from the one observer-backed `FrontmostApplication`.
 | frontmost at the press | `--focused-fields` off | on |
 |---|---|---|
 | agterm | agterm path, start on key-down (unchanged) | agterm path, start on key-down (unchanged) |
-| one of dicta's own bundles (the menu panel, D30) | silent no-op | silent no-op |
 | any other app | silent no-op (unchanged) | **focused-field path, evaluated only once the hold outlasts the floor** |
 
 **The floor as an event, not a sleep.**
@@ -268,21 +273,40 @@ DictaCore, which classifies AX metadata only:
 - **answers:** `.eligible`, `.ineligible` or `.unknown`;
 - **what the daemon does:** `.ineligible` and `.unknown` are both refused before capture.
 
-The rules come from F11, including its negative cases (a focused button, list, sidebar and document
-body in each app), not from an assumption about Electron in either direction. ⚠️ If F11 shows VS
-Code's editor or terminal classify as `.unknown` even with `AXManualAccessibility`, **stop.** "Post
-to the focused app whatever has focus" would be a further scope decision for the user, not an
-implementation detail.
+**The rule, from F11's table** (no stop point was hit: every positive field classified, every
+negative was told apart):
+- `.eligible`: role `AXTextArea` or `AXTextField`, **and** `kAXValueAttribute` settable, **and**
+  subrole not `AXSecureTextField`;
+- `.ineligible`: any other role, or a settable value missing, or the secure subrole. This covers
+  F11's `AXGroup` tree and `AXWebArea` page, and the password field by subrole without reading it;
+- `.unknown`: role or settability could not be read.
+- **`kAXSelectedTextRangeAttribute` is dropped from the inputs.** F11 found Chromium puts it on a
+  tree, so it discriminates nothing.
+- **Other text roles** (`AXComboBox`, `AXSearchField`) were not measured and stay `.ineligible` until
+  an H item shows them.
 
-- **dicta's own menu bundle** is excluded because D30 makes the panel "where you go between
-  dictations", not a place text goes. Whether opening the panel even makes `DictaMenu` frontmost is
-  measured in F11. This concerns dicta's own bundles only; other applications, acta included, get no
-  exemption.
+- **dicta's own menu bundle needs no row.** F11 measured that opening the DictaMenu panel does not
+  make DictaMenu frontmost: the application under it stays frontmost. So D30's "silent ground" holds
+  by construction for the panel, and a hold with the panel open over VS Code goes to VS Code exactly
+  as one over agterm goes to agterm. D30 is amended in words, not given a routing row. Other
+  applications, acta included, get no exemption either way.
 - **Chords stay agterm-only.** They fire through agterm's keymap. Outside agterm, the hold key is the
   whole interface and `raw` is unreachable, which is accepted for v1 and stated in D31.
-- **Electron's accessibility tree.** If F11 shows VS Code exposes no usable focused element until
-  `AXManualAccessibility` is set, D31 records whether dicta sets it (and its side effects) or refuses.
-  This is a decision point, not a silent workaround.
+- **Electron's accessibility tree.** F11: VS Code and Slack expose no focused element (`noValue`)
+  until `AXManualAccessibility` is set on the application, and a real one after. Safari and Telegram
+  need nothing.
+  - **Proposed** (⚠️ confirm with the user before Task 2 writes D31): when the application element
+    answers `noValue` at start, dicta sets `AXManualAccessibility` on that application once, re-reads
+    once, and refuses as `.unknown` if the element is still absent.
+  - The attribute stays set for the life of that application process. That is a side effect on
+    another application, which D31 states.
+  - F11 saw no visible change in VS Code in a short check. Its performance cost, and how long
+    Electron takes to build the tree after the attribute is set, were **not** measured; Task 5 times
+    the second, and an H item covers the first.
+- **The focused element is read through the application element, never the system-wide one.** F11:
+  the system-wide `kAXFocusedUIElement` read failed with `cannotComplete` in every application and at
+  every timeout, while `AXUIElementCreateApplication(pid)` for the observer's frontmost pid answered
+  in 0.3–44 ms.
 
 **Target identity.** `.focusedField` carries the bundle identifier, the application name and the pid
 on the wire and in the record.
@@ -297,7 +321,9 @@ on the wire and in the record.
   same application during delivery**. SPEC says exactly that, and the audit wording follows.
 - **The AX timeout.** A hung application can block an AX call for seconds. The daemon makes no other
   AX calls, so the timeout is set **once, process-globally, on the system-wide object** at wiring
-  time (F11's value). The header (`AXUIElement.h:387-402`) says a per-element timeout does not carry
+  time. The system-wide object is used for nothing else, since its focused-element read does not
+  work (F11). The value is 0.25 s: F11's slowest successful read was 44 ms, and no hung application
+  was measured. The header (`AXUIElement.h:387-402`) says a per-element timeout does not carry
   over to `CFEqual` instances, so no element-level timeout is relied on, including any element
   `AXManualAccessibility` touches.
 - **Serialised calls for the non-thread-safe API.** `IsSecureEventInputEnabled` is documented as "Not
@@ -548,8 +574,10 @@ about `returned`.
     `CGEventPost` has no error channel, and an AX read-back is not in v1;
   - a chord or the hold key in front of agterm while `agtermctl` is absent and the option is on
     (refused with the reason).
-- **D30/H19:** the panel stays silent ground under the option, because dicta's own bundles are
-  `.ignore`.
+- **D30/H19:** the panel stays silent ground under the option because it never becomes frontmost
+  (F11), not because of a routing rule.
+- **New §7 row:** a hold on the focused-field path whose release switched the application (⌘Tab):
+  silently aborted, with no text, no sound and no notification.
 
 ## What Goes Where
 
@@ -567,14 +595,14 @@ about `returned`.
   in `Package.swift`
 - Modify: `SPEC.md` (§4: F11)
 
-- [ ] build a throwaway `FieldProbe` executable. Sign it into a bundle with the scheme
+- [x] build a throwaway `FieldProbe` executable. Sign it into a bundle with the scheme
   `Scripts/bundle.sh` uses, and run it **as a LaunchAgent with the installed daemon's identity
   scheme and run-loop shape**: a background thread for the work and a main run loop with the
   workspace observer. An interactively launched probe, or `Scripts/run.sh`, would measure a
   different identity and launch mode.
   - It posts a fixed ~2000-character line into the focused field after a countdown.
   - The line mixes escaped Cyrillic, Latin, emoji, `.`, `()`, quotes and brackets.
-- [ ] measure delivery in the VS Code editor, the VS Code integrated terminal, Safari (textarea),
+- [x] measure delivery in the VS Code editor, the VS Code integrated terminal, Safari (textarea),
   Slack and Telegram:
   - characters lost or rewritten, comparing delivered bytes with the source. This catches
     auto-closing pairs and suggestion-accepting commit characters, and covers Apple's warning that a
@@ -585,7 +613,7 @@ about `returned`.
   - delivery while **physically held right Command, right Control and Shift** are down;
   - frontmost pid against `AXUIElementGetPid` of the focused element, especially in Electron's helper
     processes.
-- [ ] measure AX identity and eligibility:
+- [x] measure AX identity and eligibility:
   - in VS Code, with and without `AXManualAccessibility` set, whether `kAXFocusedUIElement` answers,
     and whether it tells the editor from the terminal (`CFEqual` stable across 5 s, and different
     after focus moves);
@@ -595,7 +623,7 @@ about `returned`.
     for every **positive** field above;
   - the same for **negatives** in each app: a focused button, list, sidebar tree and document body.
     These facts become `FieldEligibility`'s table.
-- [ ] measure TCC under the LaunchAgent identity:
+- [x] measure TCC under the LaunchAgent identity:
   - `AXIsProcessTrusted` and `CGPreflightPostEventAccess` separately, and whether each predicts
     **actual** posting and **actual** AX reads (never inferring one from the other, and never
     substituting Input Monitoring);
@@ -603,29 +631,49 @@ about `returned`.
   - whether a grant takes effect without a restart;
   - whether it survives a rebuild and re-sign;
   - what revocation does to a running process.
-- [ ] measure feedback and edges:
+- [x] measure feedback and edges:
   - whether `NSSound(named:)` plays without `NSApplication`, or `afplay` is needed;
   - which notification mechanism is actually shown from the LaunchAgent;
   - `IsSecureEventInputEnabled` from a background thread against main;
   - global Secure Input left enabled by another process, separately from a focused password field;
   - whether opening the DictaMenu panel makes it frontmost;
   - how long right-hand `⌘Tab` and other held combinations actually last, against the floor.
-- [ ] write F11 into SPEC.md §4 with dates, apps and numbers, then delete the probe:
+- [x] write F11 into SPEC.md §4 with dates, apps and numbers, then delete the probe:
   - the chosen chunk size, delay, `maxChunks`, messaging timeout, sound mechanism, notification
     mechanism and TCC predicate;
   - the eligibility table, and the `AXManualAccessibility` finding;
   - the probe's commit hash, recorded before deleting it, the way `3dda6cb` is cited;
   - then delete `FieldProbe` and its target. No code survives, so no test is added; the gate is
     `bash Scripts/test.sh` and `bash Scripts/lint.sh` staying green.
-- [ ] ⚠️ **stop points.** Report to the user and return to design if any of these holds:
+- [x] ⚠️ **stop points.** Report to the user and return to design if any of these holds:
   - Unicode posting is unusable in VS Code;
   - VS Code needs the HID tap;
   - VS Code's editor or terminal classify as `.unknown` or `.ineligible` even with
     `AXManualAccessibility`;
   - no notification mechanism is shown from a LaunchAgent;
   - posting works without the predicate the design would check, or the reverse.
-- [ ] ⚠️ ask the user to confirm the floor-deferred start now, with F11's held-combination durations
+- [x] ⚠️ ask the user to confirm the floor-deferred start now, with F11's held-combination durations
   in hand, before Task 2 writes it.
+
+- ➕ **Outcome (2026-09-13).** F11 is in SPEC.md §4; the probe was commit `c3b9aba`, and it was
+  deleted in the commit that wrote F11.
+  - **No stop point hit.**
+  - **Values fixed:**
+    - predicate `AXIsProcessTrusted` only, prompting with `AXIsProcessTrustedWithOptions`;
+    - `postToPid`; the HID tap was not needed and not measured with the grant;
+    - `targetUTF16` 20, measured in all six applications with no gap and no loss;
+    - `maxEventUTF16` 200, accepted whole by VS Code only (⚠️ an H item confirms Safari, Slack,
+      Telegram and the terminal at 200 before the hard limit may be relied on);
+    - no inter-chunk delay needed for correctness;
+    - AX messaging timeout 0.25 s;
+    - sounds through `NSSound`;
+    - notifications through `osascript`, suppressed by Focus modes.
+  - **Not measured:**
+    - a process leaving Secure Input stuck;
+    - chunk sizes 1 and 40 outside TextEdit, and the 2 ms delay;
+    - the duration of VS Code's JavaScript-mode stall;
+    - `AXManualAccessibility`'s performance cost;
+    - the ⌘Tab activation lag.
 
 ### Task 2: The decisions and their audits, in the spec and the checklist, before any code
 
@@ -638,11 +686,15 @@ about `returned`.
   with its name updated and `Array(1...14)`. Watch it fail.
 - [ ] add D31 (the focused field as a second target kind), covering:
   - opt-in;
-  - the routing table, including dicta's own bundles;
+  - the routing table (no row for dicta's own bundles: F11 shows the panel never becomes frontmost);
+  - the silent cancel when the hold switched the application;
   - the threshold-edge start and its reason, as confirmed by the user;
   - `FieldEligibility` and its refusal of `.unknown`;
   - chords agterm-only and `raw` unreachable outside agterm;
-  - the `AXManualAccessibility` decision.
+  - the `AXManualAccessibility` decision, as confirmed by the user, and its side effect on other
+    applications;
+  - F11's feedback limit: under a Focus mode the notification is suppressed and the sound is the only
+    signal outside agterm (D13 and the §7 refusal rows say so).
 - [ ] add D32 (Unicode keystrokes to the pid), covering:
   - why not the pasteboard with ⌘V;
   - why not `kAXSelectedTextAttribute`;
@@ -752,11 +804,19 @@ about `returned`.
 - [ ] define `FocusedFieldAccess`, `EventPoster`, `Pacer` and `FieldHandle`, and add their fakes. The
   fakes are exercised by later tasks rather than tested for their own sake.
 - [ ] implement the system adapters:
-  - `SystemFocusedFieldAccess`: F11's TCC predicate, `IsSecureEventInputEnabled`, the focused-element
-    read returning metadata-only `FieldFacts`, `AXUIElementGetPid` against the expected pid, and
-    `CFEqual`. Every call is serialised by one private lock and never hops to main. The process-global
-    messaging timeout is set once, in the initializer, on the system-wide object.
-    `AXManualAccessibility` is used only if F11 decided so.
+  - `SystemFocusedFieldAccess`:
+    - `AXIsProcessTrusted`, never `CGPreflightPostEventAccess`, which F11 found stale in both
+      directions within one process;
+    - `IsSecureEventInputEnabled`;
+    - the focused-element read through `AXUIElementCreateApplication(pid)` returning metadata-only
+      `FieldFacts`;
+    - `AXUIElementGetPid` against the expected pid, and `CFEqual`;
+    - `AXManualAccessibility`, set once per application process on `noValue`, then one re-read.
+
+    Every call is serialised by one private lock and never hops to main. The process-global messaging
+    timeout (0.25 s) is set once, in the initializer, on the system-wide object.
+  - ⚠️ on hardware: time how long VS Code takes to answer after `AXManualAccessibility` is first set,
+    and record it in F11 before the re-read's wait is fixed.
   - `SystemEventPoster`: a `.privateState` source, key-down and key-up carrying the Unicode string,
     `flags = []` on both, and `postToPid`.
   - `ThreadPacer`.
@@ -802,8 +862,7 @@ about `returned`.
 - Modify: `docs/manual-checklist.md` (citations)
 
 - [ ] write the red tests first, pure:
-  - every cell of the routing table: {agterm, dicta's own bundle, other} × {off, on}, plus a nil
-    bundle identifier;
+  - every cell of the routing table: {agterm, other} × {off, on}, plus a nil bundle identifier;
   - `Request.conflict` refuses `field` together with `focus` or with `sessionID`, and accepts each
     alone;
   - `HoldWatch` emits `threshold` once, from sampled time, only while the field route is pending;
@@ -820,7 +879,9 @@ about `returned`.
   - `threshold(g)` starts only if `HoldLiveness` says g is the current owner generation **and still
     held**. The sender then checks the grant (a refusal notifies) and the frontmost pid (a change is
     a silent no-op), then sends `start` with `field`;
-  - `up(g)` stops if a start was committed for g, and otherwise discards;
+  - `up(g)` stops if a start was committed for g, unless the frontmost pid differs from the one
+    captured at `down(g)` by the end of the settle window, in which case it aborts silently; with no
+    committed start it discards;
   - a `threshold` failing the liveness check is dropped;
   - `HoldToTalk`'s floor is not applied a second time to the threshold-started attempt.
 - [ ] write `HoldTriggerTests` with fakes and a blocked sender:
@@ -835,6 +896,11 @@ about `returned`.
     discarded, and nothing is sent;
   - the release lands **after** the liveness check (the fake socket blocks the start): the start is
     committed, and the queued `up(g)` then stops it as a stop, not an abort;
+  - a started field attempt whose frontmost pid changes during the hold, or within the settle window
+    after `up(g)`, is aborted with no notification and no sound; one whose pid never changes is
+    stopped;
+- [ ] ⚠️ on hardware, before fixing the settle window's constant: time the activation notification
+  after a right-hand ⌘Tab release, over repeated switches, and record it in F11;
   - with the grant missing, a threshold notifies once and sends nothing;
   - with the option off, the `FocusedFieldAccess` fake records **zero** calls in every scenario;
   - the existing test `the hold key does nothing at all while another application is frontmost`

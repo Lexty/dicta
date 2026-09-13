@@ -717,6 +717,111 @@ sockets; after moving the subscription to the label — the one view that always
 **1**, and the daemon shows two descriptors on `control.sock`. Every test of the glyph had passed,
 because anyone testing a panel opens the panel.
 
+**F11 — Focused-field delivery: what posting Unicode keystrokes into another application actually
+does, measured before any of it was designed against.** Measured 2026-09-13 on macOS 26 (Darwin
+25.6.0) with a throwaway `FieldProbe` (commit `c3b9aba`,
+deleted in the commit that wrote this fact). It ran the way the daemon runs —
+a signed bundle (`dev.personal.dicta.fieldprobe`, the same "Dicta Local Signing" identity and the
+same identity-based designated requirement as `Dicta.app`) loaded as a LaunchAgent, a main run loop
+holding a workspace observer, the work on background threads — because a probe launched from a
+terminal would have measured the terminal's grant. The user moved focus by hand; every delivered
+text was copied back and compared byte for byte with what was posted. The mixed sample was 2 000
+characters (2 108 UTF-16 units): Cyrillic, Latin, `.`, `()`, straight quotes, brackets, braces,
+angle brackets, a plain emoji, a three-person ZWJ emoji and a combining accent.
+
+*The grant.*
+
+- **Without Accessibility, posting is silently discarded** — `postToPid` and the HID tap both
+  returned, and nothing reached a VS Code field. No error exists to observe; only a predicate
+  checked beforehand can tell.
+- **`AXIsProcessTrustedWithOptions` with the prompt option is the only call that shows a dialog**
+  and adds the bundle to System Settings → Accessibility. `CGRequestPostEventAccess` returned
+  `false` and showed nothing.
+- **Accessibility alone is sufficient for `postToPid`.** Delivery worked while
+  `CGPreflightPostEventAccess` still answered `false` in the same process.
+- **The grant is picked up live, and so is its revocation**, with no restart:
+  `AXIsProcessTrusted` flipped both ways in a running process, and after revocation delivery
+  stopped and AX reads returned `apiDisabled`. `CGPreflightPostEventAccess` and
+  `CGPreflightListenEventAccess` did **not** follow: they answered `false` after the grant and
+  `true` after the revocation until the process restarted. **Only `AXIsProcessTrusted` is a usable
+  check.**
+- **The grant survives a rebuild and re-sign**: a new binary under the same designated requirement
+  started trusted.
+
+*Delivery* (`postToPid`, key-down and key-up carrying the string, keycode 0, flags set to empty,
+a `.privateState` source).
+
+| target | result |
+|---|---|
+| VS Code editor, plain text | identical; 108 events of <= 20 units in 22 ms, and 11 events of <= 200 units |
+| VS Code editor, JavaScript mode | identical — **no auto-closed pairs and no accepted suggestions** — but VS Code stopped responding for several seconds while it caught up, at 20 units with no gap, at 20 units with 5 ms gaps, and at 200 units |
+| VS Code integrated terminal (a raw-mode reader, as Claude Code reads) | identical, 2 537 bytes of 2 537 |
+| VS Code chat input | identical |
+| Safari `<textarea>` | identical |
+| Telegram message field | identical |
+| Slack message field | no loss; Slack's own rewrites only — straight quotes to curly, emoji copied out as `:shortcodes:`, the combining accent normalised |
+| TextEdit | no loss; TextEdit's smart quotes only |
+
+- **Chunks of 200 UTF-16 units were accepted whole** by VS Code; no 20-unit truncation was seen.
+- **Keycode 0 is not reinterpreted** under the Russian layout, in TextEdit or in VS Code.
+- **Empty flags hold against a physically held modifier**: text posted while the user held Shift,
+  and separately right Command, arrived unchanged — no capitals and no ⌘ shortcuts fired.
+- **A delivery that ends mid-word can leave an autocomplete popup open** in the VS Code editor
+  (`quotes` offered after a final `q`); the user's next Return accepts it.
+- **The JavaScript-mode stall is a cost of VS Code handling each character on a long line, not of
+  the burst**: neither pacing nor fewer, larger events removed it, and plain text did not stall.
+  Its duration was not measured.
+- The HID tap was not measured with the grant. `postToPid` worked in every application tried, so it
+  was not needed.
+
+*Identity and eligibility* (AX metadata only; no value or selected text was read).
+
+- **The system-wide `kAXFocusedUIElement` read always failed** with `cannotComplete` in under 1 ms,
+  in every application and at every messaging timeout tried (0, 0.25, 1 s). **The application
+  element of the frontmost pid answered**, in 0.3–44 ms. The focused element has to be read through
+  `AXUIElementCreateApplication(pid)`.
+- **Electron exposes no focused element until `AXManualAccessibility` is set on the application**:
+  VS Code and Slack both answered `noValue` before and a real element after. Setting it changed
+  nothing visible in VS Code in a short check; its performance cost was not measured. Safari and
+  Telegram answered with no attribute set.
+- **`CFEqual` is stable and discriminating**: the VS Code editor compared equal to itself five
+  seconds later and unequal to the terminal and to the chat input.
+- **The element's pid matched the frontmost pid** in VS Code and Slack.
+
+| focused thing | role | subrole | value settable | has `AXSelectedTextRange` |
+|---|---|---|---|---|
+| VS Code editor | `AXTextArea` ("editor") | — | yes | yes |
+| VS Code chat input | `AXTextArea` ("editor") | — | yes | yes |
+| VS Code terminal | `AXTextField` ("text field") | — | yes | yes |
+| Slack message field | `AXTextArea` | — | yes | yes |
+| Telegram message field | `AXTextArea` | unsupported | yes | yes |
+| Safari `<textarea>` | `AXTextArea` | — | yes | yes |
+| Safari password field | `AXTextField` | **`AXSecureTextField`** | yes | yes |
+| VS Code Explorer tree | `AXGroup` | — | **no** | yes |
+| Safari after clicking a button (focus stays on the page) | `AXWebArea` | — | **no** | no |
+
+- **`AXSelectedTextRange` does not discriminate**: Chromium puts it on a tree. A text role together
+  with a settable value does, and the password field is named by its subrole without reading it.
+- **`IsSecureEventInputEnabled` answered identically from a background thread and from the main
+  thread**, `true` while the Safari password field had focus and `false` as soon as focus left it.
+  A process that leaves it stuck was not reproduced.
+
+*Feedback and the menu.*
+
+- **`NSSound(named:)` plays from the LaunchAgent with no `NSApplication`**; `afplay` does too.
+- **An `osascript` notification from the LaunchAgent is shown**, attributed to Script Editor — but
+  **not while a Focus mode is on**, from the LaunchAgent or from a terminal alike. With Focus on, a
+  sound is the only feedback that reaches the user outside agterm.
+- **Opening the DictaMenu panel does not make DictaMenu frontmost**: the application under it stays
+  frontmost.
+
+*How long the right-hand combinations are held* (60 s windows, the built-in keyboard).
+
+- ⌘C, ⌘V, ⌘Z and ⌘S with right Command: **138–162 ms**, all under D21's floor; with left Command
+  180–245 ms.
+- A window of ordinary use that included ⌘Tab with a window being chosen: **490–675 ms**, every one
+  over the floor. A floor clears the shortcuts and does not clear ⌘Tab.
+
 ---
 
 ## 5. Target identity
