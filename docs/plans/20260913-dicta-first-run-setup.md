@@ -735,18 +735,26 @@ way.
 - Modify: `Scripts/install.sh`
 - Modify: `Sources/DictaTestRunner/BundleTests.swift`
 
-- [ ] write failing tests that RUN `agent-seed.sh <old-agent-plist> <setup-json>` for all four
+- [x] write failing tests that RUN `agent-seed.sh <old-agent-plist> <setup-json>` for all four
   combinations (old agent with/without the flag × setup file present/absent), plus no old agent at
   all (a first install) and a present but unreadable setup file (present: no reseed), with paths
   containing a space: it prints `--focused-fields` only for "old agent had it and no setup file",
   else nothing
-- [ ] write failing tests: `install.sh --focused-fields` is refused, naming the menu's "Set Up…" and
+- [x] write failing tests: `install.sh --focused-fields` is refused, naming the menu's "Set Up…" and
   `dictactl configure`; `install.sh` passes `agent-seed.sh`'s output to `render-agent.sh` (asserted
   by text, the decision itself by the run above)
-- [ ] implement both scripts; the closing steps name the setup window instead of the Accessibility
+- [x] implement both scripts; the closing steps name the setup window instead of the Accessibility
   step
-- [ ] ⚠️ `install.sh` itself is not run by tests (it replaces the live agent); H33 scores it
-- [ ] run tests — must pass before Task 11
+- [x] ⚠️ `install.sh` itself is not run by tests (it replaces the live agent); H33 scores it
+- [x] ➕ the refusal and the seed wiring are asserted by text (`install.sh` is never run by a test);
+  the seed decision is run over twelve cases (old agent with the flag / without / none × `setup.json`
+  absent / readable / unreadable and mode 000 / a dangling symlink). "Present" is any directory
+  entry, so neither an unreadable file nor a dangling symlink reseeds. The old test "install.sh
+  takes --focused-fields and prints agterm's keymap step only with agtermctl" became "install.sh
+  refuses --focused-fields, names Set Up… and dictactl configure, and seeds" and "install.sh prints
+  agterm's keymap step only with agtermctl"; no checklist row cited it. README's and AGENTS.md's
+  sentences describing the install flag are corrected here, as Tasks 8 and 9 did
+- [x] run tests — must pass before Task 11
 
 ### Task 11: `SetupModel` — every decision the window makes
 

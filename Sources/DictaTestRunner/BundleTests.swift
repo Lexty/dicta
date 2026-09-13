@@ -269,18 +269,116 @@ struct BundleTests {
         #expect(agent["StandardErrorPath"] as? String == log)
     }
 
-    @Test("install.sh takes --focused-fields and prints agterm's keymap step only with agtermctl")
-    func installerFocusedFields() throws {
+    /// What `agent-seed.sh` is run over: whether the agent being replaced carried the flag (`nil`:
+    /// there is no old agent, a first install), and what stands at `setup.json`.
+    enum SetupFile: String, CaseIterable, Sendable {
+        case absent, readable, unreadable, danglingSymlink
+    }
+
+    struct SeedCase: Sendable, CustomTestStringConvertible {
+        let oldAgentHadFlag: Bool?
+        let setup: SetupFile
+        var seeds: Bool { oldAgentHadFlag == true && setup == .absent }
+        var testDescription: String {
+            let agent = oldAgentHadFlag.map { $0 ? "old agent with the flag" : "old agent without" }
+                ?? "no old agent"
+            return "\(agent), setup.json \(setup.rawValue)"
+        }
+    }
+
+    static let seedCases: [SeedCase] = [true, false, nil].flatMap { flag in
+        SetupFile.allCases.map { SeedCase(oldAgentHadFlag: flag, setup: $0) }
+    }
+
+    @Test("agent-seed.sh keeps --focused-fields only from an old agent with it, and no setup.json",
+          arguments: seedCases)
+    func agentSeed(_ seedCase: SeedCase) throws {
+        let directory = URL(fileURLWithPath: "/tmp")
+            .appendingPathComponent("dicta seed \(UUID().uuidString.prefix(8))", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let agent = directory.appendingPathComponent("old agent.plist")
+        let setup = directory.appendingPathComponent("Application Support/setup.json")
+        try FileManager.default.createDirectory(
+            at: setup.deletingLastPathComponent(), withIntermediateDirectories: false)
+
+        if let hadFlag = seedCase.oldAgentHadFlag {
+            // The old agent as the installer really rendered it, not a hand-written imitation.
+            let renderer = Self.repositoryRoot
+                .appendingPathComponent("Scripts/render-agent.sh").path
+            let (status, rendered) = try Self.run(
+                "/bin/bash", [renderer, "/Users/some one/Applications/Dicta.app", "/tmp/dicta.log"]
+                    + (hadFlag ? ["--focused-fields"] : []))
+            try #require(status == 0)
+            try rendered.write(to: agent)
+        }
+        switch seedCase.setup {
+        case .absent:
+            break
+        case .readable:
+            let json = #"{"schema": 1, "scope": "agterm-only", "offerSeen": true}"#
+            try Data(json.utf8).write(to: setup)
+        case .unreadable:
+            // Not JSON, and not readable by its owner either: present is present.
+            try Data("{not json".utf8).write(to: setup)
+            try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: setup.path)
+        case .danglingSymlink:
+            let gone = directory.appendingPathComponent("gone").path
+            try FileManager.default.createSymbolicLink(
+                atPath: setup.path, withDestinationPath: gone)
+        }
+
+        let script = Self.repositoryRoot.appendingPathComponent("Scripts/agent-seed.sh").path
+        let (status, output) = try Self.run("/bin/bash", [script, agent.path, setup.path])
+        #expect(status == 0)
+        let expected = seedCase.seeds ? "--focused-fields\n" : ""
+        #expect(String(decoding: output, as: UTF8.self) == expected)
+    }
+
+    @Test("install.sh refuses --focused-fields, names Set Up… and dictactl configure, and seeds")
+    func installerRefusesTheFlagAndSeeds() throws {
         let installer = try Self.text(at: "Scripts/install.sh")
-        #expect(installer.contains("--focused-fields) FOCUSED_FIELDS=1 ;;"))
-        let render = #"bash "$ROOT/Scripts/render-agent.sh" "$APP_DEST" "$LOG""#
-        #expect(installer.contains(render + #" --focused-fields > "$AGENT""#))
-        #expect(installer.contains(render + #" > "$AGENT""#))
-        #expect(installer.contains("focused fields: turned OFF"))
-        // Unrecognised arguments are refused rather than ignored: a typo of the flag must not
-        // install an agent with the option silently off.
+        // The refusal is asserted by text, never by running the installer: a refusal that had
+        // stopped working would build, sign and replace the live agent from inside a test.
+        let arguments = try #require(installer.range(of: #"for argument in "$@"; do"#))
+        let refusal = try #require(installer.range(of: "        --focused-fields)\n"))
+        let exit = try #require(installer.range(
+            of: "exit 2", range: refusal.upperBound..<installer.endIndex))
+        let branch = installer[refusal.upperBound..<exit.lowerBound]
+        #expect(arguments.upperBound <= refusal.lowerBound)
+        #expect(branch.contains("Set Up…"))
+        #expect(branch.contains("dictactl configure --scope other-apps"))
+        #expect(!installer.contains("FOCUSED_FIELDS"))
+        // Unrecognised arguments are refused rather than ignored.
         #expect(installer.contains("install: unknown option $argument"))
 
+        // The seed is decided over the OLD agent, before the new one is written over it, and an
+        // empty answer passes no argument at all.
+        let setupPath = #"SETUP="$HOME/Library/Application Support/$LABEL/setup.json""#
+        #expect(installer.contains(setupPath))
+        #expect(installer.contains(#"LABEL="\#(Paths.bundleID)""#))
+        #expect(Paths(home: URL(fileURLWithPath: "/h")).setup.path
+            == "/h/Library/Application Support/\(Paths.bundleID)/setup.json")
+        let seed = try #require(installer.range(
+            of: #"SEED="$(bash "$ROOT/Scripts/agent-seed.sh" "$AGENT" "$SETUP")""#))
+        let render = #"bash "$ROOT/Scripts/render-agent.sh" "$APP_DEST" "$LOG""#
+        let seeded = try #require(installer.range(of: render + #" "$SEED" > "$AGENT""#))
+        let unseeded = try #require(installer.range(of: render + #" > "$AGENT""#))
+        let guardLine = try #require(installer.range(of: #"if [ -n "$SEED" ]; then"#))
+        #expect(seed.upperBound <= guardLine.lowerBound)
+        #expect(guardLine.upperBound <= seeded.lowerBound)
+        #expect(seeded.upperBound <= unseeded.lowerBound)
+        #expect(installer.components(separatedBy: #"> "$AGENT""#).count == 3)
+
+        // The closing steps name the setup window, and no longer send anybody to grant
+        // Accessibility by hand: the window asks, after saying why.
+        #expect(installer.contains("setup window"))
+        #expect(!installer.contains("grant Accessibility"))
+    }
+
+    @Test("install.sh prints agterm's keymap step only with agtermctl")
+    func installerKeymapStep() throws {
+        let installer = try Self.text(at: "Scripts/install.sh")
         // The keymap instruction sits inside the one branch that found agtermctl.
         let guardLine = try #require(installer.range(of: "if [ -n \"$AGTERMCTL\" ]; then"))
         let step = #"echo "  $STEP. add docs/keymap.snippet.conf"#

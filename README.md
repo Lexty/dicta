@@ -55,18 +55,12 @@ That one command builds a release, signs `Dicta.app`, installs the pieces and re
 | the menu's agent | `~/Library/LaunchAgents/dev.personal.dicta.menu.plist` | starts the menu-bar item at login |
 | the log | `~/Library/Logs/dicta.log` | the daemon's stderr |
 
-To dictate into other applications as well, install with the option instead; it is written into
-the daemon's LaunchAgent:
-
-```sh
-bash Scripts/install.sh --focused-fields
-```
-
-The option is a property of the agent the installer writes, so **re-running `install.sh` without
-the flag turns it off**, and the script says so (`focused fields: turned OFF`). On a machine with no
-agterm, install with the flag: without it a missing `agtermctl` is fatal at start-up, because the
-daemon would have nowhere to deliver anything. The installer prints the keymap step only when it
-finds `agtermctl`, and with the option on it adds the Accessibility step.
+The installer does not choose where dictation goes. The menu-bar item's setup window does: it opens
+by itself when a choice is pending, and "Set Up…" in the panel reopens it (`dictactl configure` is
+the same choice from a shell). `install.sh --focused-fields` is refused. An agent installed with that
+flag before the choice was stored keeps it for one more start, so the daemon can seed the choice from
+it; afterwards the stored choice decides. The installer prints the keymap step only when it finds
+`agtermctl`, and ends by naming the setup window.
 
 The signing identity is self-signed, created in a dedicated keychain by `Scripts/setup-signing.sh`,
 which `bundle.sh` calls on its own when it is missing. It matters because the resulting *designated

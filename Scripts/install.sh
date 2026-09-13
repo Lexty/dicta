@@ -28,27 +28,32 @@
 # Does NOT touch ~/.config/agterm/keymap.conf: add docs/keymap.snippet.conf by hand, then
 # `agtermctl keymap reload`. Rewriting a user's keymap is not something an installer should do.
 #
-#   bash Scripts/install.sh [--focused-fields]
+#   bash Scripts/install.sh
 #
-# `--focused-fields` (D31) writes the daemon's agent with that flag, so it also dictates into the
-# focused text field of any other application, and a machine without agterm runs it. The option is
-# whatever THIS run says: re-running without the flag writes the agent without it, which turns the
-# option off, and the script says so rather than leaving the user to find out in VS Code.
+# The installer does not choose where dictation goes. The person does, in the menu's setup window
+# ("Set Up…"), or with `dictactl configure`, and the daemon keeps that choice in `setup.json`.
+# `--focused-fields` is refused: an installer flag that silently overrode a choice made in a window
+# would be a second source of truth. An agent installed with the flag before `setup.json` existed
+# keeps it for one more start, as the seed the daemon migrates from (`Scripts/agent-seed.sh`).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-FOCUSED_FIELDS=0
 for argument in "$@"; do
     case "$argument" in
-        --focused-fields) FOCUSED_FIELDS=1 ;;
+        --focused-fields)
+            echo "install: --focused-fields is no longer an install option" >&2
+            echo "install: choose other apps in the menu bar's Set Up… window, or run" >&2
+            echo "         dictactl configure --scope other-apps" >&2
+            exit 2
+            ;;
         -h|--help)
-            echo "usage: bash Scripts/install.sh [--focused-fields]"
+            echo "usage: bash Scripts/install.sh"
             exit 0
             ;;
         *)
             echo "install: unknown option $argument" >&2
-            echo "usage: bash Scripts/install.sh [--focused-fields]" >&2
+            echo "usage: bash Scripts/install.sh" >&2
             exit 2
             ;;
     esac
@@ -61,6 +66,8 @@ LOG="$HOME/Library/Logs/dicta.log"
 MENU_LABEL="dev.personal.dicta.menu"
 MENU_APP_DEST="$HOME/Applications/DictaMenu.app"
 MENU_AGENT="$HOME/Library/LaunchAgents/$MENU_LABEL.plist"
+# `Paths.setup`: the daemon's one file for the person's choice, read here and never written.
+SETUP="$HOME/Library/Application Support/$LABEL/setup.json"
 
 # --- the keypress client ------------------------------------------------------------------------
 echo "==> building and installing dictactl"
@@ -108,24 +115,16 @@ install_bundle "$ROOT/DictaMenu.app" "$MENU_APP_DEST"
 # --- the LaunchAgent ----------------------------------------------------------------------------
 echo "==> writing $AGENT"
 mkdir -p "$HOME/Library/LaunchAgents" "$(dirname "$LOG")"
-# Whether the agent being replaced had the option, read before it is overwritten: turning it off by
-# re-running without the flag is legitimate, and silent is the one way it must not happen.
-WAS_FOCUSED_FIELDS=0
-if [ -f "$AGENT" ] && grep -q '<string>--focused-fields</string>' "$AGENT"; then
-    WAS_FOCUSED_FIELDS=1
-fi
+# The seed is decided from the agent being replaced, so it is read before that agent is overwritten.
+# An empty answer is no argument at all: render-agent.sh refuses an empty one, and an empty
+# `<string></string>` in ProgramArguments would throttle-loop the daemon at login.
+SEED="$(bash "$ROOT/Scripts/agent-seed.sh" "$AGENT" "$SETUP")"
 # Rendered by its own script, which `BundleTests` runs for both settings through `plutil -lint`.
-if [ "$FOCUSED_FIELDS" -eq 1 ]; then
-    bash "$ROOT/Scripts/render-agent.sh" "$APP_DEST" "$LOG" --focused-fields > "$AGENT"
-    echo "    focused fields: ON -- the daemon also types into other applications' focused fields"
+if [ -n "$SEED" ]; then
+    bash "$ROOT/Scripts/render-agent.sh" "$APP_DEST" "$LOG" "$SEED" > "$AGENT"
+    echo "    kept --focused-fields for one start: the daemon seeds setup.json from it"
 else
     bash "$ROOT/Scripts/render-agent.sh" "$APP_DEST" "$LOG" > "$AGENT"
-    if [ "$WAS_FOCUSED_FIELDS" -eq 1 ]; then
-        echo "    focused fields: turned OFF -- the previous agent had --focused-fields and this run"
-        echo "    did not pass it; rerun with --focused-fields to keep dictating into other apps"
-    else
-        echo "    focused fields: off (pass --focused-fields to dictate into other applications)"
-    fi
 fi
 plutil -lint "$AGENT" >/dev/null
 
@@ -239,10 +238,8 @@ if [ -n "$AGTERMCTL" ]; then
     echo "     then run: agtermctl keymap reload"
     STEP=$((STEP + 1))
 fi
-if [ "$FOCUSED_FIELDS" -eq 1 ]; then
-    # Posting keystrokes into another process needs the grant, and without it every hold outside
-    # agterm is refused with a notification naming it. Nothing here asks: the daemon does, once at
-    # start-up, which shows the system dialog and lists Dicta (F11), and the switch is the user's.
-    echo "  $STEP. grant Accessibility to $APP_DEST in System Settings > Privacy & Security >"
-    echo "     Accessibility, then relaunch any Electron app (VS Code, Slack) you dictate into"
-fi
+# Where dictation goes, and the Accessibility permission typing into other apps needs, are both
+# asked for by the menu's setup window, which explains why before the system dialog appears. It
+# opens by itself when a choice is pending; nothing here asks, and the daemon asks nothing at start.
+echo "  $STEP. choose where dictation goes in the setup window: it opens by itself when a choice"
+echo "     is pending, and the menu bar's Set Up… reopens it"

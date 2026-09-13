@@ -98,8 +98,8 @@ most 200 per event and 4 000 chunks, a 10 s delivery deadline, a 0.25 s AX messa
 through `NSSound` and notifications through `osascript`. The pure decisions are in `DictaCore`
 (`HoldRoute`, `FieldEligibility`, `KeystrokeChunks`, `DaemonOptions`), the adapters in
 `DictaRuntime/FocusedField.swift`, `SystemFeedback.swift` and `FocusedFieldWiring.swift`, and
-`Scripts/install.sh --focused-fields` writes the option into the agent through
-`Scripts/render-agent.sh`. With the option off, every agterm behaviour is unchanged and the daemon
+`Scripts/render-agent.sh` renders the agent, which carries the flag only as a seed
+(`Scripts/agent-seed.sh`). With the option off, every agterm behaviour is unchanged and the daemon
 makes no accessibility call.
 
 What is left is what only a person can score, **H24–H34**: VS Code's editor and terminal, Slack and
@@ -148,9 +148,11 @@ stays as the record of the run that built it (decided by the user on 2026-09-13)
 - Install everything: `bash Scripts/install.sh` — `dictactl` to `~/.local/bin`, the signed bundle to
   `~/Applications/Dicta.app`, the LaunchAgent to `~/Library/LaunchAgents/dev.personal.dicta.plist`,
   then bootout/bootstrap/kickstart. It never touches `~/.config/agterm/keymap.conf`.
-  `bash Scripts/install.sh --focused-fields` writes the agent with that flag, and **re-running without
-  it turns the option off** (the script prints `focused fields: turned OFF`). Unknown arguments are
-  refused, so a typo cannot install the option silently off. `Scripts/render-agent.sh` renders the
+  The installer does not choose where dictation goes: `--focused-fields` is refused, naming the
+  menu's "Set Up…" and `dictactl configure`. `Scripts/agent-seed.sh` keeps the flag in the new agent
+  only when the agent being replaced had it and `setup.json` does not exist yet, so a pre-setup
+  `--focused-fields` install is seeded rather than asked again; `BundleTests` runs it over every
+  combination. Unknown arguments are refused. `Scripts/render-agent.sh` renders the
   agent and is what `BundleTests` lints for both settings, so no test runs the real installer.
 - One-time signing setup: `bash Scripts/setup-signing.sh` — idempotent, non-interactive, and called
   by `bundle.sh` on its own when the identity is missing, so it is rarely run by hand.
