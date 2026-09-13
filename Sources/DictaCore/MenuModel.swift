@@ -43,6 +43,8 @@ public struct Banner: Sendable, Equatable {
         case fetchModels
         /// `launchctl kickstart -k` on the daemon's label.
         case restartDaemon
+        /// Opens the setup window, for a choice or a grant the person has not given yet.
+        case openSetup
     }
 
     public var text: String
@@ -127,9 +129,10 @@ public struct MenuModel: Sendable, Equatable {
             return nil
         case .connected:
             guard let message = snapshot?.readiness.message else { return nil }
-            // A notice is amber, a fault is red: `fieldsOnly` is a working daemon telling the user
-            // where its words can and cannot go, and red would say something is broken.
-            let tint: Tint = snapshot?.readiness.blocksDictation == true ? .red : .amber
+            // A notice or a pending step is amber, a fault is red: `fieldsOnly` is a working
+            // daemon telling the user where its words can and cannot go, `setupNeeded` is a choice
+            // not yet made, and red on either would say something is broken.
+            let tint: Tint = snapshot?.readiness.isFault == true ? .red : .amber
             return Banner(text: message, tint: tint,
                           action: Self.action(for: snapshot?.readiness),
                           actionTitle: Self.actionTitle(for: snapshot?.readiness))
@@ -198,6 +201,7 @@ public struct MenuModel: Sendable, Equatable {
         switch readiness {
         case .microphoneDenied: .openMicrophoneSettings
         case .modelsMissing: .fetchModels
+        case let readiness? where readiness.isSetupStep: .openSetup
         default: nil
         }
     }
@@ -206,6 +210,7 @@ public struct MenuModel: Sendable, Equatable {
         switch readiness {
         case .microphoneDenied: "Open Settings"
         case .modelsMissing: "Fetch Models…"
+        case let readiness? where readiness.isSetupStep: "Set Up…"
         default: nil
         }
     }

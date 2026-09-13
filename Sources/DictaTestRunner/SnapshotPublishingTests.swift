@@ -147,6 +147,10 @@ struct SnapshotPublishingTests {
         let after = try ControlClient.send(Request(cmd: .status), to: fixture.path)
         #expect(after.snapshot?.readiness == .microphoneDenied)
         #expect(after.snapshot?.state == watcher.events.last?.snapshot?.state)
+        // The facts travel too, on both routes, so a checklist drawn from them agrees with the
+        // verdict drawn beside it.
+        #expect(after.snapshot?.faculties?.microphone == false)
+        #expect(watcher.events.last?.snapshot?.faculties?.microphone == false)
     }
 
     @Test("a watcher is told the state it attached to, before anything has transitioned")

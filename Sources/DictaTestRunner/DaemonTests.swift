@@ -2546,12 +2546,38 @@ struct DaemonTests {
                 $0.microphone = true
                 $0.models = true
                 $0.terminal = false
+                // Stated, not defaulted: under `other-apps` an unknown grant is still `starting`.
+                $0.accessibility = daemon === on ? true : nil
             }
         }
 
         let status = Request(cmd: .status)
         #expect(off.handle(.request(status)).snapshot?.readiness == .terminalMissing)
         #expect(on.handle(.request(status)).snapshot?.readiness == .fieldsOnly)
+    }
+
+    @Test("with no agterm and no grant, a daemon with focused fields waits on Accessibility")
+    func noAgtermNoGrantReadinessIsAPendingStep() throws {
+        let on = Self.daemonWithoutAgterm(
+            feedback: FakeNotifier(),
+            fields: Daemon.FocusedFields(access: FakeFocusedFieldAccess(),
+                                         injector: FakeFieldInjector()))
+        let status = Request(cmd: .status)
+        on.observe {
+            $0.microphone = true
+            $0.models = true
+            $0.terminal = false
+        }
+        // Nobody has checked the grant yet, so nothing past `starting` is claimed.
+        #expect(on.handle(.request(status)).snapshot?.readiness == .starting)
+
+        on.observe { $0.accessibility = false }
+        let snapshot = try #require(on.handle(.request(status)).snapshot)
+        #expect(snapshot.readiness == .accessibilityNeeded)
+        #expect(!snapshot.readiness.isFault)
+        // The facts travel with the verdict they produced, from the same read.
+        #expect(snapshot.faculties == Faculties(microphone: true, models: true, terminal: false,
+                                                scope: .otherApps, accessibility: false))
     }
 
     @Test("with no agterm, a chord and a focus start are refused with a reason naming agtermctl")

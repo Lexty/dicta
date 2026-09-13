@@ -355,6 +355,10 @@ final class StatusViewModel: ObservableObject {
                             "\"$HOME/Applications/Dicta.app/Contents/MacOS/Dicta\" --fetch-models"])
         case .restartDaemon:
             restartDaemon()
+        case .openSetup:
+            // The setup window does not exist yet; this build's banner offers the action and the
+            // click does nothing until the window arrives with it.
+            break
         }
     }
 

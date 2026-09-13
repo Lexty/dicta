@@ -63,8 +63,12 @@ public struct Presentation: Sendable, Equatable {
     /// with no models is not ready, and drawing it the same as a healthy idle daemon is exactly the
     /// silence §2 of `docs/ui-proposal.md` says the user discovers by pressing a chord and getting
     /// nothing.
+    ///
+    /// Only a fault gets the red triangle. A pending step — no choice yet, no grant yet — blocks
+    /// just as surely, but nothing is broken, and red before the person has done anything would
+    /// teach them that red means nothing.
     public static func of(_ snapshot: StatusSnapshot) -> Presentation {
-        if snapshot.readiness.blocksDictation, !snapshot.isBusy {
+        if snapshot.readiness.isFault, !snapshot.isBusy {
             return Presentation(
                 glyph: "exclamationmark.triangle.fill",
                 tint: .red,
@@ -74,7 +78,8 @@ public struct Presentation: Sendable, Equatable {
         switch snapshot.state {
         case .idle:
             // `fieldsOnly` is drawn as a healthy idle daemon, because it is one: a hold in any
-            // other application dictates. The notice is the banner's to give, not the glyph's.
+            // other application dictates. The notice is the banner's to give, not the glyph's, and
+            // so is a pending setup step's, which the status line still names.
             return Presentation(
                 glyph: "mic",
                 tint: .quiet,
@@ -105,6 +110,9 @@ public extension Readiness {
         case .microphoneDenied: "Microphone denied"
         case .modelsMissing: "Models not downloaded"
         case .terminalMissing: "agterm not found"
+        case .setupNeeded: "Not set up"
+        case .accessibilityNeeded: "Needs Accessibility"
+        case .accessibilityForFields: "Ready in agterm"
         case .fieldsOnly: "Ready, without agterm"
         }
     }

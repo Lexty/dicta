@@ -542,28 +542,32 @@ way.
 - Modify: `Sources/DictaTestRunner/SnapshotTests.swift`, `MenuModelTests.swift`,
   `SnapshotPublishingTests.swift`, `DaemonTests.swift`, `docs/manual-checklist.md`
 
-- [ ] set `accessibility = true` explicitly in the `observe` closure of
+- [x] set `accessibility = true` explicitly in the `observe` closure of
   `noAgtermReadinessFollowsTheOption` (`DaemonTests.swift:2522-2542`), whose field-on daemon would
   otherwise sit at `starting` instead of `fieldsOnly`; add its missing-grant counterpart
-- [ ] write failing tests: `Faculties.readiness` over every row of the readiness table, including
+- [x] write failing tests: `Faculties.readiness` over every row of the readiness table, including
   `starting` before every notice, `accessibility` counted as unknown only under `otherApps`, and
   `terminalMissing` for an unreadable file without agterm; the existing working-field cases gain
   `accessibility = true` explicitly, and the missing-grant cases (`accessibilityNeeded`,
   `accessibilityForFields`) are added beside them
-- [ ] write failing tests: `blocksDictation` and `isFault` for every case; `Presentation.of` draws the
+- [x] write failing tests: `blocksDictation` and `isFault` for every case; `Presentation.of` draws the
   red triangle only for a fault; `MenuModel` banner red only for a fault, amber with `openSetup` for
   the three setup verdicts
-- [ ] write failing tests: `StatusSnapshot` decodes JSON without `setup`, `faculties` or `hold`
+- [x] write failing tests: `StatusSnapshot` decodes JSON without `setup`, `faculties` or `hold`
   (older daemon); `SetupSnapshot`, `faculties` and both `HoldSnapshot` cases (custom keys,
   `.disabled`) round trip
-- [ ] replace `Faculties.focusedFields` with `scope` and `accessibility`; add the verdicts,
+- [x] replace `Faculties.focusedFields` with `scope` and `accessibility`; add the verdicts,
   `isFault`, `SetupSnapshot`, `HoldSnapshot`, the snapshot fields, `Banner.Action.openSetup`; in
   `Daemon`, construct `Faculties` with a scope derived from `fields != nil` until Task 7 replaces
   it, and leave `hold` `nil` until Task 7 gives `Daemon` a place for it; in
-  `StatusViewModel.perform`, `openSetup` does nothing yet (a temporary case, replaced in Task 12)
-- [ ] rename the citation of "a missing agterm blocks dictation only with focused fields off"; if
-  any of the three `:94` tests listed in Context is renamed, re-cite all three here
-- [ ] run tests — must pass before Task 6
+  `StatusViewModel.perform`, `openSetup` does nothing yet (a temporary case, replaced in Task 12);
+  `snapshot()` already carries `faculties`, read under the same lock as the verdict (Task 7 keeps
+  it); `setup` stays `nil` until Task 7
+- [x] rename the citation of "a missing agterm blocks dictation only with focused fields off"; if
+  any of the three `:94` tests listed in Context is renamed, re-cite all three here (renamed to "a
+  missing agterm is a fault only under agterm-only"; none of the three was renamed; row `:98` now
+  also cites the missing-grant readiness and banner tests)
+- [x] run tests — must pass before Task 6
 
 ### Task 6: `FocusedFieldSwitch` — wiring built once, a gate, and the grant observed
 

@@ -343,8 +343,9 @@ public final class Daemon: @unchecked Sendable {
         self.feedback = feedback
         self.fields = fields
         // Known at construction, unlike the three faculties: whether a missing `agtermctl` blocks
-        // dictation or is only a notice is decided by the option, and the option is this argument.
-        faculties = Faculties(focusedFields: fields != nil)
+        // dictation or is only a notice is decided by the scope, which for now is whether this
+        // daemon was handed the field wiring at all.
+        faculties = Faculties(scope: fields != nil ? .otherApps : .agtermOnly)
         terminal = provider(nil)
         machine = StateMachine(nextID: Self.firstUnusedID(in: history))
     }
@@ -1692,9 +1693,11 @@ public final class Daemon: @unchecked Sendable {
              machine.currentAttempt?.target ?? rememberedTarget,
              draft?.speechStartedAt)
         }
+        // One read, so the verdict and the facts it came from cannot disagree in one snapshot.
+        let facts = readinessLock.withLock { faculties }
         return StatusSnapshot(
             state: state,
-            readiness: readinessLock.withLock { faculties.readiness },
+            readiness: facts.readiness,
             attempt: attempt,
             target: target,
             // Measured from the moment capture CONFIRMED, never from the keypress:
@@ -1702,7 +1705,8 @@ public final class Daemon: @unchecked Sendable {
             // claim to have been
             // recording during the ~95 ms before the device was live.
             speakingSeconds: speaking.map { clock.now.timeIntervalSince($0) },
-            capSeconds: configuration.durationCap
+            capSeconds: configuration.durationCap,
+            faculties: facts
         )
     }
 

@@ -98,6 +98,34 @@ struct MenuModelTests {
         #expect(fault.banner?.tint == .red)
     }
 
+    @Test("a banner is red only for a fault, and a setup step is amber with Set Up")
+    func setupStepBannersAreAmber() throws {
+        for readiness in Readiness.allCases {
+            let model = MenuModel(link: .connected,
+                                  snapshot: StatusSnapshot(state: .idle, readiness: readiness))
+            guard let banner = model.banner else {
+                #expect(readiness.message == nil, "\(readiness) has a message and no banner")
+                continue
+            }
+            #expect(banner.tint == (readiness.isFault ? .red : .amber), "\(readiness)")
+        }
+        for readiness in [Readiness.setupNeeded, .accessibilityNeeded, .accessibilityForFields] {
+            let model = MenuModel(link: .connected,
+                                  snapshot: StatusSnapshot(state: .idle, readiness: readiness))
+            let banner = try #require(model.banner)
+            #expect(banner.tint == .amber)
+            #expect(banner.action == .openSetup)
+            #expect(banner.actionTitle == "Set Up…")
+        }
+        // No other verdict opens the window: a fault names its own fix, and `fieldsOnly` has none.
+        for readiness in [Readiness.microphoneDenied, .modelsMissing, .terminalMissing,
+                          .fieldsOnly] {
+            let model = MenuModel(link: .connected,
+                                  snapshot: StatusSnapshot(state: .idle, readiness: readiness))
+            #expect(model.banner?.action != .openSetup)
+        }
+    }
+
     @Test("a healthy daemon shows no banner at all")
     func healthyHasNoBanner() {
         let ready = MenuModel(link: .connected,

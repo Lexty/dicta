@@ -1,4 +1,5 @@
 import DictaCore
+import Foundation
 import Testing
 
 /// The pure half of what a UI draws (D27): readiness derived from three facts, and the mapping from
@@ -39,24 +40,100 @@ struct SnapshotTests {
             == .terminalMissing)
     }
 
-    @Test("a missing agterm blocks dictation only with focused fields off")
-    func missingAgtermBlocksOnlyWithTheOptionOff() {
-        // D31: with the option on, every other application's focused field still takes the words,
-        // so the same fact that is a fault without it is a notice with it.
-        let off = Faculties(microphone: true, models: true, terminal: false)
-        let on = Faculties(microphone: true, models: true, terminal: false, focusedFields: true)
-        #expect(off.readiness == .terminalMissing)
-        #expect(off.readiness.blocksDictation)
-        #expect(on.readiness == .fieldsOnly)
-        #expect(!on.readiness.blocksDictation)
-        // agterm found is ready either way, and the option changes nothing about the faults ahead
-        // of it in the pipeline or about start-up.
-        #expect(Faculties(microphone: true, models: true, terminal: true, focusedFields: true)
-            .readiness == .ready)
-        #expect(Faculties(microphone: false, models: true, terminal: false, focusedFields: true)
-            .readiness == .microphoneDenied)
-        #expect(Faculties(microphone: nil, models: true, terminal: false, focusedFields: true)
-            .readiness == .starting)
+    @Test("a missing agterm is a fault only under agterm-only")
+    func missingAgtermIsAFaultOnlyUnderAgtermOnly() {
+        // D31: under `other-apps` every other application's focused field still takes the words,
+        // and under `undecided` nobody has chosen yet, so the same fact that is a fault under
+        // `agterm-only` is a notice or a step there.
+        let agtermOnly = Faculties(microphone: true, models: true, terminal: false)
+        let otherApps = Faculties(microphone: true, models: true, terminal: false,
+                                  scope: .otherApps, accessibility: true)
+        let undecided = Faculties(microphone: true, models: true, terminal: false,
+                                  scope: .undecided)
+        #expect(agtermOnly.readiness == .terminalMissing)
+        #expect(agtermOnly.readiness.blocksDictation)
+        #expect(agtermOnly.readiness.isFault)
+        #expect(otherApps.readiness == .fieldsOnly)
+        #expect(!otherApps.readiness.blocksDictation)
+        #expect(undecided.readiness == .setupNeeded)
+        #expect(undecided.readiness.blocksDictation)
+        #expect(!undecided.readiness.isFault)
+        // agterm found with the grant is ready under every scope, and the scope changes nothing
+        // about the faults ahead of it in the pipeline or about start-up.
+        for scope in SetupScope.allCases {
+            let grant: Bool? = scope == .otherApps ? true : nil
+            #expect(Faculties(microphone: true, models: true, terminal: true, scope: scope,
+                              accessibility: grant).readiness == .ready)
+            #expect(Faculties(microphone: false, models: true, terminal: false, scope: scope,
+                              accessibility: grant).readiness == .microphoneDenied)
+            #expect(Faculties(microphone: nil, models: true, terminal: nil, scope: scope,
+                              accessibility: grant).readiness == .starting)
+        }
+    }
+
+    @Test("readiness follows every row of the table, in order")
+    func readinessTable() {
+        typealias Row = (Faculties, Readiness)
+        let rows: [Row] = [
+            // The faults, whatever the scope.
+            (Faculties(microphone: false, models: false, terminal: false, scope: .undecided),
+             .microphoneDenied),
+            (Faculties(microphone: true, models: false, terminal: false, scope: .otherApps,
+                       accessibility: false), .modelsMissing),
+            (Faculties(microphone: true, models: true, terminal: false, scope: .agtermOnly),
+             .terminalMissing),
+            // An unreadable `setup.json` without agterm is `terminalMissing` too: the daemon
+            // applies `agterm-only` over one (D31), and that is the scope the facts carry.
+            (Faculties(microphone: true, models: true, terminal: false, scope: .agtermOnly),
+             .terminalMissing),
+            // `terminalMissing` comes before `starting`, as the faults all do.
+            (Faculties(microphone: nil, models: nil, terminal: false, scope: .agtermOnly),
+             .terminalMissing),
+            // `starting` before every notice and pending step.
+            (Faculties(microphone: nil, models: true, terminal: false, scope: .undecided),
+             .starting),
+            (Faculties(microphone: true, models: nil, terminal: false, scope: .otherApps,
+                       accessibility: false), .starting),
+            (Faculties(microphone: true, models: true, terminal: nil, scope: .otherApps,
+                       accessibility: false), .starting),
+            // The grant is unknown only under `other-apps`; elsewhere nobody may look.
+            (Faculties(microphone: true, models: true, terminal: false, scope: .otherApps),
+             .starting),
+            (Faculties(microphone: true, models: true, terminal: true, scope: .otherApps),
+             .starting),
+            (Faculties(microphone: true, models: true, terminal: true, scope: .agtermOnly),
+             .ready),
+            (Faculties(microphone: true, models: true, terminal: true, scope: .undecided),
+             .ready),
+            // The pending steps and the notice.
+            (Faculties(microphone: true, models: true, terminal: false, scope: .undecided),
+             .setupNeeded),
+            (Faculties(microphone: true, models: true, terminal: false, scope: .otherApps,
+                       accessibility: false), .accessibilityNeeded),
+            (Faculties(microphone: true, models: true, terminal: true, scope: .otherApps,
+                       accessibility: false), .accessibilityForFields),
+            (Faculties(microphone: true, models: true, terminal: false, scope: .otherApps,
+                       accessibility: true), .fieldsOnly),
+            (Faculties(microphone: true, models: true, terminal: true, scope: .otherApps,
+                       accessibility: true), .ready),
+        ]
+        for (facts, verdict) in rows {
+            #expect(facts.readiness == verdict, "\(facts)")
+        }
+    }
+
+    @Test("a missing grant blocks only without agterm, and is never a fault")
+    func missingGrantIsAPendingStep() {
+        let withoutAgterm = Faculties(microphone: true, models: true, terminal: false,
+                                      scope: .otherApps, accessibility: false)
+        let withAgterm = Faculties(microphone: true, models: true, terminal: true,
+                                   scope: .otherApps, accessibility: false)
+        #expect(withoutAgterm.readiness == .accessibilityNeeded)
+        #expect(withoutAgterm.readiness.blocksDictation)
+        #expect(!withoutAgterm.readiness.isFault)
+        #expect(withAgterm.readiness == .accessibilityForFields)
+        #expect(!withAgterm.readiness.blocksDictation)
+        #expect(!withAgterm.readiness.isFault)
     }
 
     @Test("a missing agterm with focused fields on is drawn as a working daemon, not a fault")
@@ -79,23 +156,99 @@ struct SnapshotTests {
             == .microphoneDenied)
     }
 
-    @Test("only the blocking verdicts claim to block")
+    @Test("only the blocking verdicts claim to block, and only the broken ones are faults")
     func blockingIsExhaustive() {
         for readiness in Readiness.allCases {
             switch readiness {
             case .ready, .starting:
                 #expect(!readiness.blocksDictation)
+                #expect(!readiness.isFault)
                 #expect(readiness.message == nil)
             case .fieldsOnly:
                 // A notice: it does not block, and it still says where the words cannot go.
                 #expect(!readiness.blocksDictation)
+                #expect(!readiness.isFault)
                 #expect(readiness.message?.contains("agtermctl") == true)
+            case .accessibilityForFields:
+                #expect(!readiness.blocksDictation)
+                #expect(!readiness.isFault)
+                #expect(readiness.message?.contains("Accessibility") == true)
+            case .setupNeeded, .accessibilityNeeded:
+                // Pending steps: they block, and nothing is broken.
+                #expect(readiness.blocksDictation)
+                #expect(!readiness.isFault)
+                #expect(readiness.message?.isEmpty == false)
             case .microphoneDenied, .modelsMissing, .terminalMissing:
                 #expect(readiness.blocksDictation)
+                #expect(readiness.isFault)
                 // Every banner names the thing to do. One that only reports gets dismissed.
                 #expect(readiness.message?.isEmpty == false)
             }
+            let setupSteps: [Readiness] = [.setupNeeded, .accessibilityNeeded,
+                                           .accessibilityForFields]
+            #expect(readiness.isSetupStep == setupSteps.contains(readiness))
         }
+    }
+
+    @Test("only a fault draws the red triangle")
+    func onlyAFaultIsRed() {
+        for readiness in Readiness.allCases {
+            let presentation = Presentation.of(StatusSnapshot(state: .idle, readiness: readiness))
+            if readiness.isFault {
+                #expect(presentation.tint == .red, "\(readiness)")
+                #expect(presentation.glyph == "exclamationmark.triangle.fill")
+            } else {
+                // A pending step blocks and still draws the quiet glyph: nothing is broken.
+                #expect(presentation.tint == .quiet, "\(readiness)")
+                #expect(presentation.glyph == "mic")
+            }
+            #expect(!presentation.status.isEmpty)
+        }
+    }
+
+    // MARK: - the facts on the wire
+
+    @Test("a snapshot from an older daemon, without setup, faculties or hold, still decodes")
+    func olderSnapshotDecodes() throws {
+        let json = #"{"state":"idle","readiness":"ready","capSeconds":600}"#
+        let snapshot = try JSONDecoder().decode(StatusSnapshot.self, from: Data(json.utf8))
+        #expect(snapshot.state == .idle)
+        #expect(snapshot.setup == nil)
+        #expect(snapshot.faculties == nil)
+        // `nil`, never `.disabled`: an older daemon's user must not be told no key is armed.
+        #expect(snapshot.hold == nil)
+    }
+
+    @Test("setup, faculties and both hold cases round trip")
+    func newFactsRoundTrip() throws {
+        let snapshots = [
+            StatusSnapshot(
+                state: .idle, readiness: .accessibilityForFields,
+                setup: SetupSnapshot(scope: .otherApps, offerSeen: true),
+                faculties: Faculties(microphone: true, models: true, terminal: true,
+                                     scope: .otherApps, accessibility: false),
+                hold: .armed(keys: ["Right Control", "F13"])),
+            StatusSnapshot(
+                state: .idle, readiness: .terminalMissing,
+                setup: SetupSnapshot(scope: .agtermOnly, offerSeen: false,
+                                     loadProblem: .unreadable(reason: "invalid JSON"),
+                                     saveError: "the disk is full"),
+                faculties: Faculties(microphone: nil, models: false, terminal: false),
+                hold: .disabled),
+            StatusSnapshot(
+                state: .idle, readiness: .setupNeeded,
+                setup: SetupSnapshot(scope: .undecided, offerSeen: false,
+                                     loadProblem: .newerSchema(found: 2)),
+                faculties: Faculties(scope: .undecided)),
+        ]
+        for snapshot in snapshots {
+            let data = try JSONEncoder().encode(snapshot)
+            #expect(try JSONDecoder().decode(StatusSnapshot.self, from: data) == snapshot)
+        }
+        // The new verdicts travel under their hyphenated raw values, like every other one.
+        #expect(Readiness.setupNeeded.rawValue == "setup-needed")
+        #expect(Readiness.accessibilityNeeded.rawValue == "accessibility-needed")
+        #expect(Readiness.accessibilityForFields.rawValue == "accessibility-for-fields")
     }
 
     // MARK: - the glyph and the sentence
