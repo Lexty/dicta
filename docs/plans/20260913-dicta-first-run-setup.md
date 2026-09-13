@@ -88,7 +88,7 @@ policy for holds outside text fields (`docs/backlog/field-refusal-before-a-switc
   - `SPEC.md` — D5, D27 (`:463`), D31, invariants 13 and 14, §6 wire, §7, §13 (`:1488-1497`).
   - `docs/manual-checklist.md` — rows 13 and 14 (matched verbatim against §8's bold titles by
     `ChecklistTests.swift:223`), §7 rows, H11 (c), H28, H33; the last H item is H34.
-  - `README.md`, `AGENTS.md` (`:112-113` says finished plans stay in `docs/plans/`).
+  - `README.md`, `AGENTS.md` (finished plans move to `docs/plans/completed/`).
 - **Tests the checklist cites that this plan renames or removes** (each task that touches one
   updates the citation in the same task, or `ChecklistTests` fails):
   - "with focused fields off, the wiring is nil and constructs no system adapter" (Task 6)
@@ -614,9 +614,7 @@ way.
 - [ ] `AGENTS.md`: where it stands; `setup.json` and its one writer; the gate read at the start of an
   attempt and before any accessibility call; the two verbs; `isFault` versus `blocksDictation`;
   correct the model-load sentence in any text copied from this plan (17 s was a one-time cost)
-- [ ] finished plans: AGENTS.md (`:112-113`) says they stay in `docs/plans/`, but `f98782a` moved the
-  focused-fields plan to `docs/plans/completed/`. Follow AGENTS.md: move that plan back, remove the
-  empty directory, and leave this plan in `docs/plans/`
+- [ ] move this plan to `docs/plans/completed/` and update the paths that cite it (AGENTS.md)
 
 ## Post-Completion
 

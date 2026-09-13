@@ -28,7 +28,7 @@ Conversation about this project is in Russian. The repository is not.
 
 ## Where it stands
 
-**The plan `docs/plans/20260814-dicta-steps-1-3.md` is finished — all thirteen tasks. Steps 1–3 of
+**The plan `docs/plans/completed/20260814-dicta-steps-1-3.md` is finished — all thirteen tasks. Steps 1–3 of
 SPEC.md §10 are built and their automatable half is green; steps 4 (the external filter) and 5 (the
 §7 sweep) are not started. What remains of steps 1–3 is what only a person can score: the chords in
 a real pane, the TCC prompt, criteria (a)–(d) of step 2, and step 3's deliberate misfire — each
@@ -75,7 +75,7 @@ first. `Scripts/coverage.sh` holds `DictaCore` to a floor of 80% (measured 99.33
 The plan covered steps 1–3 of SPEC.md §10. Steps 4 (the filter) and 5 (the §7 audit) are the next
 work, and neither is begun: the `Filter` seam is `NoFilter`, and nothing invokes a subprocess.
 
-**The menu-bar UI is built — `docs/plans/20260823-dicta-menu-ui.md`, Tier 0 and Tier 1 of
+**The menu-bar UI is built — `docs/plans/completed/20260823-dicta-menu-ui.md`, Tier 0 and Tier 1 of
 `docs/ui-proposal.md`, all ten tasks.** A second signed bundle, `DictaMenu.app`, under a LaunchAgent
 of its own: the glyph with a running clock, the panel with its header, banners and footer, the live
 target line, Stop/Abort, and `Recent Dictations` with copy-to-clipboard. The daemon gained exactly
@@ -89,7 +89,7 @@ noticed without being looked at, that the banners appear on a machine with no mo
 microphone denied, that a dictation which went nowhere reaches the clipboard from the panel, and
 that `Stop and type` lands in the pane the chord was pressed in.
 
-**Dictating into any application's focused field is built — `docs/plans/20260912-dicta-focused-fields.md`,
+**Dictating into any application's focused field is built — `docs/plans/completed/20260912-dicta-focused-fields.md`,
 all thirteen tasks, behind the daemon's `--focused-fields` (D31, D32, invariant 14).** A target is
 now a sum, `.agterm(AgtermTarget)` or `.focusedField(FieldTarget)`, and an agterm record line is
 byte-identical to what it was. The measurements came first, as F11 (the probe was `c3b9aba`), and
@@ -109,8 +109,8 @@ constants are provisional because nobody has measured them yet: `HoldTrigger.def
 (the ⌘Tab activation lag) and `SystemFocusedFieldAccess.manualAccessibilitySettle` (how long
 Electron takes to build its tree).
 
-Plans stay in `docs/plans/` when they finish, as the record of the run that built them; there is no
-`completed/` directory.
+A plan is written in `docs/plans/` and moved to `docs/plans/completed/` when it finishes, where it
+stays as the record of the run that built it (decided by the user on 2026-09-13).
 
 ## Commands
 

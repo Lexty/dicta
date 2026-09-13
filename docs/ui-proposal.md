@@ -1,7 +1,7 @@
 # A minimal UI for dicta — the design argument
 
 **Decided 2026-08-23.** The user reversed §13 in the part that says "a menu bar" and accepted the
-second bundle. The plan of work is `docs/plans/20260823-dicta-menu-ui.md`, which supersedes this
+second bundle. The plan of work is `docs/plans/completed/20260823-dicta-menu-ui.md`, which supersedes this
 document wherever the two differ; what stays here is the reasoning, which the plan does not repeat.
 
 **Nothing was built when this was written**, and Tier 0 and Tier 1 have been built since — see the

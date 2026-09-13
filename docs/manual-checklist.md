@@ -2,7 +2,7 @@
 
 Two audits and one list.
 
-The audits are the ones Task 12 of `docs/plans/20260814-dicta-steps-1-3.md` asks for: every invariant
+The audits are the ones Task 12 of `docs/plans/completed/20260814-dicta-steps-1-3.md` asks for: every invariant
 in SPEC.md §8 against the test that would fail if it stopped holding, and every row of SPEC.md §7
 against a test or an entry below. They are here rather than in a commit message because they are
 meant to be re-read when the spec moves.
@@ -104,7 +104,7 @@ Two rows are the honest gaps, and both are named above rather than papered over:
 capture faults (**H3**) and the client's own desktop notification (**H1**).
 
 **The focused-field rows (D31, D32) began citing human items only, and that was a stage rather than a gap.**
-They were written before any of their code, from `docs/plans/20260912-dicta-focused-fields.md`,
+They were written before any of their code, from `docs/plans/completed/20260912-dicta-focused-fields.md`,
 because this file may cite only tests that exist. Each task of that plan adds its tests' citations
 beside the human item that stood in for them. Two rows stay human by nature: a delivery that
 something outside dicta rewrites (**H24**–**H27**), and a move of focus inside one application during
