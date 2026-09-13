@@ -168,14 +168,19 @@ struct MenuBundleTests {
 
     // MARK: - The setup window
 
-    /// Every Swift file of the menu, concatenated, in a stable order.
+    /// Every Swift file of the menu, concatenated, in a stable order: the executable and the
+    /// library holding its logic, read together, because a rule about what source may exist in the
+    /// menu is not kept by moving the source one module over.
     static func menuSources() throws -> String {
-        let directory = BundleTests.repositoryRoot.appendingPathComponent("Sources/DictaMenu")
-        let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
-            .filter { $0.hasSuffix(".swift") }.sorted()
-        #expect(names.contains("SetupWindow.swift"))
-        return try names.map { try BundleTests.text(at: "Sources/DictaMenu/\($0)") }
-            .joined(separator: "\n")
+        var paths: [String] = []
+        for directory in ["Sources/DictaMenu", "Sources/DictaMenuKit"] {
+            let url = BundleTests.repositoryRoot.appendingPathComponent(directory)
+            paths += try FileManager.default.contentsOfDirectory(atPath: url.path)
+                .filter { $0.hasSuffix(".swift") }.sorted().map { "\(directory)/\($0)" }
+        }
+        #expect(paths.contains("Sources/DictaMenu/SetupWindow.swift"))
+        #expect(paths.contains("Sources/DictaMenuKit/MenuWorld.swift"))
+        return try paths.map { try BundleTests.text(at: $0) }.joined(separator: "\n")
     }
 
     @Test("the menu sends configure and accessibility only as SetupModel decides")

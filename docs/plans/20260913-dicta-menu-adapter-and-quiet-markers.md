@@ -464,18 +464,31 @@ case symbol(String) }`.
 - Create: `Sources/DictaTestRunner/MenuKitBoundaryTests.swift`
 - Modify: `Sources/DictaTestRunner/MenuBundleTests.swift`, `Sources/DictaTestRunner/DaemonTests.swift`
 
-- [ ] add a probe: one `@MainActor @Suite` test that must run, and fail visibly when made to fail,
+- [x] add a probe: one `@MainActor @Suite` test that must run, and fail visibly when made to fail,
   under `bash Scripts/test.sh`. Score it under both `DEVELOPER_DIR` settings (Command Line Tools and
   Xcode), as `AGENTS.md` :238-243 does. If it hangs or is skipped, stop and redesign the fake main
   hop before anything moves
-- [ ] add the `DictaMenuKit` target with `MenuWorld`, `MenuEffects`, `MenuCancel` and
+  - done as `MainActorProbeTests` in `MenuKitBoundaryTests.swift`: on the main thread, and resumed
+    after a hop from a real `Thread` through `Task { @MainActor in }`. It passed in 0.001 s under
+    both toolchains, with no hang. With a deliberate `#expect(!hopped)`, `test.sh` exited 1 under
+    both, printing `Expectation failed: !(hopped …)`. Swift 6 refuses `Thread.isMainThread` in an
+    `async` body, so the probe reads it through a `nonisolated` synchronous helper
+- [x] add the `DictaMenuKit` target with `MenuWorld`, `MenuEffects`, `MenuCancel` and
   `SetupWindowPresenting`, each with an explicit `public init` where needed; wire `DictaMenu` and
   `DictaTestRunner` to it; update the `Package.swift` comments
-- [ ] write `MenuKitBoundaryTests`: `Sources/DictaMenuKit` imports only Foundation, Combine,
+- [x] write `MenuKitBoundaryTests`: `Sources/DictaMenuKit` imports only Foundation, Combine,
   DictaCore, DictaIPC and DictaRecord, and `Package.swift` gives it no `DictaRuntime` dependency
-- [ ] extend `MenuBundleTests.menuSources()` to read `Sources/DictaMenu` and `Sources/DictaMenuKit`
+  - watched failing: `import SwiftUI` in `MenuWorld.swift` failed the import test under both
+    toolchains, and a `"DictaRuntime"` added to the target failed the manifest test
+- [x] extend `MenuBundleTests.menuSources()` to read `Sources/DictaMenu` and `Sources/DictaMenuKit`
   together, and add `"Sources/DictaMenuKit"` to the directory list at `DaemonTests.swift:2941`
-- [ ] run `bash Scripts/test.sh`; `Scripts/linkage.sh` stays clean. Must pass before Task 2
+- [x] run `bash Scripts/test.sh`; `Scripts/linkage.sh` stays clean. Must pass before Task 2
+  - 888 tests in 51 suites passed under Xcode 26.6 and under the Command Line Tools, linkage clean,
+    lint clean. ⚠️ Not caused by this change: "a stream never goes backwards"
+    (`SnapshotPublishingTests.swift:117`) failed twice under load right after a build
+    (`sequences.count → 2`). The watcher's mailbox holds one event (`ControlSocket.swift:398`), so
+    intermediate transitions can be merged. It passed in 6 of 6 full runs on this change and on the
+    base commit alike
 
 ### Task 2: Move StatusViewModel into DictaMenuKit behind MenuWorld, with no behaviour change
 

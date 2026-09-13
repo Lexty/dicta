@@ -2939,7 +2939,7 @@ struct DaemonTests {
         var callers: [String] = []
         var prompts: [String] = []
         for directory in ["Sources/Dicta", "Sources/DictaRuntime", "Sources/DictaCore",
-                          "Sources/DictaIPC", "Sources/DictaMenu"] {
+                          "Sources/DictaIPC", "Sources/DictaMenu", "Sources/DictaMenuKit"] {
             let url = BundleTests.repositoryRoot.appendingPathComponent(directory)
             let names = try FileManager.default.contentsOfDirectory(atPath: url.path)
                 .filter { $0.hasSuffix(".swift") }

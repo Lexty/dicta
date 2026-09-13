@@ -20,6 +20,11 @@ import Foundation
 //                       A library rather than part of the executable because SwiftPM CANNOT import
 //                       an executable target — here the test runner can reach it; inside `Dicta`
 //                       it could not.
+//   • DictaMenuKit    — the menu-bar UI's logic, with every effect on the world injected through
+//                       `MenuWorld`. DictaCore + DictaIPC + DictaRecord, Foundation and Combine,
+//                       and NOTHING else: no SwiftUI, no AppKit, and never DictaRuntime (D27). A
+//                       library for the same reason DictaRuntime is one — the test runner can
+//                       import it, and it could not import the `DictaMenu` executable.
 //   • Dicta           — the resident daemon executable. Wiring only.
 //   • dictactl        — the client agterm's keymap invokes on every chord. Depends on DictaCore and
 //                       DictaIPC and NOTHING else: it links no AVFoundation, no CoreML, no AppKit,
@@ -172,14 +177,28 @@ let package = Package(
         // obvious one and `acta` takes it: the daemon's binary keeps failing invariant 11's gate on
         // `_OBJC_CLASS_$_NSEvent`, which a SwiftUI status item would drag in; and F6/F8a stay
         // measurements of the process they were taken in, which has no `NSApplication` (D27).
+        //
+        // `DictaMenuKit` is inside that budget rather than beside it: the same three modules, and
+        // it is linked statically into this binary, so every row `Scripts/linkage.sh` scores
+        // against `DictaMenu` scores the library too.
         .executableTarget(
             name: "DictaMenu",
-            dependencies: ["DictaCore", "DictaIPC", "DictaRecord"],
+            dependencies: ["DictaCore", "DictaIPC", "DictaRecord", "DictaMenuKit"],
             path: "Sources/DictaMenu"
+        ),
+        // The menu's logic, reachable from the test runner (D19, D27). Exactly the menu's budget
+        // and no wider; `MenuKitBoundaryTests` reads this line and the library's imports to hold
+        // it.
+        .target(
+            name: "DictaMenuKit",
+            dependencies: ["DictaCore", "DictaIPC", "DictaRecord"],
+            path: "Sources/DictaMenuKit"
         ),
         .executableTarget(
             name: "DictaTestRunner",
-            dependencies: ["DictaCore", "DictaIPC", "DictaRecord", "DictaRuntime"],
+            dependencies: [
+                "DictaCore", "DictaIPC", "DictaRecord", "DictaRuntime", "DictaMenuKit",
+            ],
             path: "Sources/DictaTestRunner",
             swiftSettings: testing.swift,
             linkerSettings: testing.linker
