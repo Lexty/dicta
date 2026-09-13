@@ -466,18 +466,53 @@ public final class FakeModifiers: ModifierSource, @unchecked Sendable {
     public func release(_ key: HoldKey) { lock.withLock { word &= ~key.bit } }
 }
 
-/// Which application the user is looking at (D22).
+/// Which application the user is looking at (D22, D31), one whole activation at a time.
+///
+/// Scripted: `script` lines up activations that successive reads consume, the last one standing,
+/// so a test can put a switch between two presses without reaching into the trigger. `reads`
+/// counts reads, which is how "the three facts come from one read" is asserted.
 public final class FakeFrontmost: FrontmostApplication, @unchecked Sendable {
     private let lock = NSLock()
-    private var identifier: String?
+    private var upcoming: [FrontmostFacts?] = []
+    private var standing: FrontmostFacts?
+    private var readCount = 0
+
+    /// The pid every activation built from a bare bundle identifier carries.
+    public static let defaultPID: Int32 = 501
 
     public init(bundleIdentifier: String? = HoldTrigger.agtermBundleIdentifier) {
-        identifier = bundleIdentifier
+        standing = Self.facts(bundleIdentifier)
     }
 
-    public var bundleIdentifier: String? { lock.withLock { identifier } }
+    public var current: FrontmostFacts? {
+        lock.withLock {
+            readCount += 1
+            if !upcoming.isEmpty { standing = upcoming.removeFirst() }
+            return standing
+        }
+    }
 
-    public func set(_ bundleIdentifier: String?) { lock.withLock { identifier = bundleIdentifier } }
+    public var reads: Int { lock.withLock { readCount } }
+
+    /// An application activates, and stays frontmost until the next one does.
+    public func activate(_ facts: FrontmostFacts?) {
+        lock.withLock {
+            upcoming.removeAll()
+            standing = facts
+        }
+    }
+
+    /// Activations for the next reads, one per read, in order.
+    public func script(_ activations: [FrontmostFacts?]) {
+        lock.withLock { upcoming = activations }
+    }
+
+    /// An application named only by its bundle identifier, which is all D22 compares.
+    public func set(_ bundleIdentifier: String?) { activate(Self.facts(bundleIdentifier)) }
+
+    private static func facts(_ bundleIdentifier: String?) -> FrontmostFacts? {
+        bundleIdentifier.map { FrontmostFacts(bundleID: $0, pid: defaultPID, name: $0) }
+    }
 }
 
 /// The daemon, as far as the hold trigger can tell: every request it sent, and the answers it was
@@ -515,5 +550,146 @@ public final class FakeDaemonDoor: @unchecked Sendable {
                 return Response(kind: .accepted, state: .idle, attempt: request.attempt)
             }
         }
+    }
+}
+
+// MARK: - focused fields (D31, D32)
+
+/// Accessibility, scripted: whether the grant is held, whether Secure Input is on, and what the
+/// next focused-element reads answer. Every call is logged, because "the option off makes zero AX
+/// calls" is an assertion about an empty log.
+public final class FakeFocusedFieldAccess: FocusedFieldAccess, @unchecked Sendable {
+    public enum Call: Equatable, Sendable {
+        case isTrusted
+        case isSecureInputOn
+        case focusedElement(expectedPID: Int32)
+        case isSame
+    }
+
+    private let lock = NSLock()
+    private var calls: [Call] = []
+    private var trusted: Bool
+    private var secureInput: Bool
+    private var upcoming: [Result<FocusedElement, FocusedFieldError>] = []
+    private var standing: Result<FocusedElement, FocusedFieldError>
+    private var onRead: (@Sendable () -> Void)?
+
+    /// An eligible text area, as F11 found the VS Code editor.
+    public static func textArea(token: Int = 1) -> FocusedElement {
+        FocusedElement(handle: FieldHandle(token: token),
+                       facts: FieldFacts(role: "AXTextArea", subrole: nil, valueSettable: true,
+                                         hasSelectedTextRange: true))
+    }
+
+    public init(trusted: Bool = true, secureInput: Bool = false,
+                element: FocusedElement = FakeFocusedFieldAccess.textArea()) {
+        self.trusted = trusted
+        self.secureInput = secureInput
+        standing = .success(element)
+    }
+
+    public var callLog: [Call] { lock.withLock { calls } }
+
+    public func setTrusted(_ value: Bool) { lock.withLock { trusted = value } }
+
+    public func setSecureInput(_ value: Bool) { lock.withLock { secureInput = value } }
+
+    /// What every read answers from now on.
+    public func answer(_ result: Result<FocusedElement, FocusedFieldError>) {
+        lock.withLock {
+            upcoming.removeAll()
+            standing = result
+        }
+    }
+
+    /// Answers for the next reads, one per read, the last one standing.
+    public func script(_ results: [Result<FocusedElement, FocusedFieldError>]) {
+        lock.withLock { upcoming = results }
+    }
+
+    /// Runs on every focused-element read, after it is logged and outside the lock: an AX call that
+    /// takes long enough for the clock to pass a deadline, or for focus to move.
+    public func duringRead(_ body: (@Sendable () -> Void)?) { lock.withLock { onRead = body } }
+
+    public var isTrusted: Bool {
+        lock.withLock {
+            calls.append(.isTrusted)
+            return trusted
+        }
+    }
+
+    public var isSecureInputOn: Bool {
+        lock.withLock {
+            calls.append(.isSecureInputOn)
+            return secureInput
+        }
+    }
+
+    public func focusedElement(expectedPID: Int32) throws -> FocusedElement {
+        let (result, hook) = lock.withLock { () -> (Result<FocusedElement, FocusedFieldError>,
+                                                    (@Sendable () -> Void)?) in
+            calls.append(.focusedElement(expectedPID: expectedPID))
+            if !upcoming.isEmpty { standing = upcoming.removeFirst() }
+            return (standing, onRead)
+        }
+        hook?()
+        return try result.get()
+    }
+
+    public func isSame(_ handle: FieldHandle, as other: FieldHandle) -> Bool {
+        lock.withLock { calls.append(.isSame) }
+        guard let one = handle.token, let two = other.token else { return false }
+        return one == two
+    }
+}
+
+/// Posted chunks, recorded instead of posted.
+public final class FakeEventPoster: EventPoster, @unchecked Sendable {
+    public struct Post: Equatable, Sendable {
+        public var unicode: String
+        public var pid: Int32
+    }
+
+    private let lock = NSLock()
+    private var posted: [Post] = []
+    private var failure: (any Error)?
+    private var onPost: (@Sendable (Int) -> Void)?
+
+    public init() {}
+
+    public var posts: [Post] { lock.withLock { posted } }
+
+    public func setError(_ error: (any Error)?) { lock.withLock { failure = error } }
+
+    /// Runs after each post with the number posted so far, outside the lock: focus moving after
+    /// chunk k, or the deadline passing.
+    public func afterPost(_ body: (@Sendable (Int) -> Void)?) { lock.withLock { onPost = body } }
+
+    public func post(unicode: String, toPID pid: Int32) throws {
+        let (count, hook) = try lock.withLock { () -> (Int, (@Sendable (Int) -> Void)?) in
+            if let failure { throw failure }
+            posted.append(Post(unicode: unicode, pid: pid))
+            return (posted.count, onPost)
+        }
+        hook?(count)
+    }
+}
+
+/// Pauses recorded instead of slept, each one advancing the fake clock when given one -- so the
+/// monotonic delivery deadline moves exactly as far as the pacing asked.
+public final class FakePacer: Pacer, @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [TimeInterval] = []
+    private let clock: FakeClock?
+
+    public init(clock: FakeClock? = nil) {
+        self.clock = clock
+    }
+
+    public var pauses: [TimeInterval] { lock.withLock { recorded } }
+
+    public func pause(_ seconds: TimeInterval) {
+        lock.withLock { recorded.append(seconds) }
+        clock?.advance(by: seconds)
     }
 }

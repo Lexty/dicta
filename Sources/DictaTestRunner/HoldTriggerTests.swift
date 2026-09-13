@@ -1,3 +1,4 @@
+import AppKit
 import DictaCore
 import DictaIPC
 import DictaRuntime
@@ -535,6 +536,72 @@ struct HoldTriggerTests {
         rig.modifiers.release(.rightControl)
         if let up = rig.trigger.sample() { rig.trigger.perform(up) }
         #expect(rig.daemon.verbs == [.start, .stop])
+    }
+
+    @Test("the press captures bundle id, pid and name as one value from one activation")
+    func thePressCapturesOneActivation() {
+        // D31's field target is built from these three. Read one at a time, an activation landing
+        // between the reads would name an application that was never frontmost: VS Code's bundle
+        // id with Safari's pid. So the source hands back one value and the press reads it once.
+        let rig = Rig()
+        let code = FrontmostFacts(bundleID: "com.microsoft.VSCode", pid: 4_242, name: "Code")
+        let safari = FrontmostFacts(bundleID: "com.apple.Safari", pid: 717, name: "Safari")
+        rig.frontmost.script([code, safari])
+        rig.modifiers.press(.rightControl)
+        let down = rig.trigger.sample()
+        #expect(down?.edge == .down)
+        #expect(down?.frontmost == code)
+        #expect(rig.frontmost.reads == 1)
+        // The release reads nothing: what was frontmost is a fact about the press (D22).
+        rig.modifiers.release(.rightControl)
+        let up = rig.trigger.sample()
+        #expect(up?.edge == .up)
+        #expect(up?.frontmost == nil)
+        #expect(rig.frontmost.reads == 1)
+        // The next press is the next activation, whole.
+        rig.modifiers.press(.rightCommand)
+        #expect(rig.trigger.sample()?.frontmost == safari)
+        #expect(rig.frontmost.reads == 2)
+    }
+
+    @Test("the press in front of agterm captures agterm's facts and still reads frontmost once")
+    func agtermPressCapturesItsFacts() {
+        let rig = Rig()
+        let agterm = FrontmostFacts(bundleID: HoldTrigger.agtermBundleIdentifier, pid: 99,
+                                    name: "agterm")
+        rig.frontmost.activate(agterm)
+        rig.modifiers.press(.rightControl)
+        let down = rig.trigger.sample()
+        #expect(down?.frontmost == agterm)
+        #expect(down?.wasFrontmost == true)
+        #expect(rig.frontmost.reads == 1)
+    }
+
+    @Test("the system frontmost source keeps all three facts from the activation notification")
+    func systemFrontmostKeepsTheNotification() throws {
+        // F8a: the value comes from the notification's own `NSRunningApplication`, never from a
+        // second read of the workspace's cache. Posted by hand, naming a running application that
+        // is neither this process nor the cached frontmost one, so a value read back out of the
+        // cache could not pass by accident. (`NSRunningApplication.current` is no use here: a
+        // process with no bundle reports pid -1.)
+        let source = SystemFrontmost()
+        let me = ProcessInfo.processInfo.processIdentifier
+        let cached = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let other = try #require(NSWorkspace.shared.runningApplications.first {
+            $0.processIdentifier > 0 && $0.processIdentifier != me
+                && $0.processIdentifier != cached
+                && $0.bundleIdentifier != nil && $0.localizedName != nil
+        })
+        NSWorkspace.shared.notificationCenter.post(
+            name: NSWorkspace.didActivateApplicationNotification,
+            object: NSWorkspace.shared,
+            userInfo: [NSWorkspace.applicationUserInfoKey: other]
+        )
+        let facts = source.current
+        #expect(facts == FrontmostFacts(bundleID: other.bundleIdentifier,
+                                        pid: other.processIdentifier, name: other.localizedName))
+        #expect(SystemFrontmost.facts(of: other) == facts)
+        #expect(SystemFrontmost.facts(of: nil) == nil)
     }
 
     @Test("a session that cannot be resolved starts nothing and is said out loud")

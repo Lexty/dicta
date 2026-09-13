@@ -35,9 +35,15 @@ public struct SystemModifiers: ModifierSource {
     }
 }
 
-/// Which application the user is actually looking at (D22).
+/// Which application the user is actually looking at (D22, D31).
+///
+/// One value per read, never three properties: the bundle identifier, the pid and the name must
+/// come from the same activation, or a field target could name VS Code's bundle with Safari's
+/// pid. It is also the ONLY frontmost source in the daemon -- the trigger and the focused-field
+/// injector share one instance -- because a second, unobserved one would bring back F8a's frozen
+/// value.
 public protocol FrontmostApplication: Sendable {
-    var bundleIdentifier: String? { get }
+    var current: FrontmostFacts? { get }
 }
 
 /// The real one, and the observer below is the entire reason it works. DO NOT DELETE IT because it
@@ -71,20 +77,23 @@ public protocol FrontmostApplication: Sendable {
 /// at all in a process with no `NSApplication` (F6). The two are not the same kind of API: one
 /// reports what the window server tells this process, the other replays an event stream it never
 /// receives.
+///
+/// All three facts are taken from the notification's own `NSRunningApplication`, together, and
+/// never by reading `NSWorkspace.shared.frontmostApplication` again -- that read is the cache.
 public final class SystemFrontmost: FrontmostApplication, @unchecked Sendable {
     private let lock = NSLock()
-    private var current: String?
+    private var facts: FrontmostFacts?
     private var observer: (any NSObjectProtocol)?
 
     public init() {
-        current = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        facts = Self.facts(of: NSWorkspace.shared.frontmostApplication)
         observer = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil,
             queue: nil
         ) { [weak self] note in
             let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-            self?.set(app?.bundleIdentifier)
+            self?.set(Self.facts(of: app))
         }
     }
 
@@ -94,11 +103,18 @@ public final class SystemFrontmost: FrontmostApplication, @unchecked Sendable {
         }
     }
 
-    private func set(_ bundleIdentifier: String?) {
-        lock.withLock { current = bundleIdentifier }
+    /// The three facts of one running application, read off the one object.
+    public static func facts(of app: NSRunningApplication?) -> FrontmostFacts? {
+        guard let app else { return nil }
+        return FrontmostFacts(bundleID: app.bundleIdentifier, pid: app.processIdentifier,
+                              name: app.localizedName)
     }
 
-    public var bundleIdentifier: String? { lock.withLock { current } }
+    private func set(_ facts: FrontmostFacts?) {
+        lock.withLock { self.facts = facts }
+    }
+
+    public var current: FrontmostFacts? { lock.withLock { facts } }
 }
 
 /// The loop that turns a held key into a dictation.
@@ -168,6 +184,10 @@ public final class HoldTrigger: @unchecked Sendable {
         /// Captured in the poll loop rather than read by the sender, so D22 asks "was agterm
         /// frontmost when the key went down" and not "is it frontmost now that we got round to it".
         public var wasFrontmost: Bool
+        /// The whole frontmost application at a `down`, from the same single read `wasFrontmost`
+        /// was decided on; `nil` on an `up`, and when nothing was frontmost. The focused-field
+        /// route (D31) builds its target from it.
+        public var frontmost: FrontmostFacts?
     }
 
     public typealias Sender = @Sendable (Request) throws -> Response
@@ -261,12 +281,11 @@ public final class HoldTrigger: @unchecked Sendable {
         guard let held = watch.sample(modifiers.flags()) else { return nil }
         // Read at the edge and not in the sender: whether agterm was frontmost is a fact about the
         // keypress, and the sender can be several seconds behind it.
-        let frontmost = held.edge == .down ? isAgtermFrontmost() : false
-        return Pending(edge: held.edge, key: held.key, at: clock.now, wasFrontmost: frontmost)
-    }
-
-    private func isAgtermFrontmost() -> Bool {
-        frontmost.bundleIdentifier == configuration.agtermBundleIdentifier
+        // One read, so the bundle id D22 compares and the pid D31 targets are one activation's.
+        let facts = held.edge == .down ? frontmost.current : nil
+        let isAgterm = facts?.bundleID == configuration.agtermBundleIdentifier
+        return Pending(edge: held.edge, key: held.key, at: clock.now, wasFrontmost: isAgterm,
+                       frontmost: facts)
     }
 
     // MARK: - the sender

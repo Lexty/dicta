@@ -260,3 +260,23 @@ public struct HoldToTalk: Sendable, Equatable {
         return held < floor ? .discard(attempt: id) : .deliver(attempt: id)
     }
 }
+
+/// The frontmost application, as one activation reported it (D22, D31).
+///
+/// One value rather than three reads, and that is the point of the type: a bundle identifier read
+/// from one activation and a pid read from the next would name an application that was never
+/// frontmost. The poll loop captures this at the press, and the focused-field route builds its
+/// `FieldTarget` from it.
+public struct FrontmostFacts: Sendable, Equatable {
+    /// `nil` for an application that has none, carried as absent rather than invented.
+    public var bundleID: String?
+    public var pid: Int32
+    /// The localized name, `nil` when the application reports none.
+    public var name: String?
+
+    public init(bundleID: String?, pid: Int32, name: String?) {
+        self.bundleID = bundleID
+        self.pid = pid
+        self.name = name
+    }
+}

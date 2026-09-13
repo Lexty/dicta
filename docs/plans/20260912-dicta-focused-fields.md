@@ -845,14 +845,14 @@ about `returned`.
 - Modify: `Sources/DictaTestRunner/Fakes.swift`, `HoldTriggerTests.swift`
 - Create: `Sources/DictaTestRunner/FocusedFieldTests.swift`
 
-- [ ] write the red test first: a scripted `FrontmostApplication` fake reports bundle id, pid and name
+- [x] write the red test first: a scripted `FrontmostApplication` fake reports bundle id, pid and name
   as **one** value from one activation, and the trigger's captured `Pending` carries all three.
-- [ ] extend `FrontmostApplication`. `SystemFrontmost`'s notification closure stores all three from
+- [x] extend `FrontmostApplication`. `SystemFrontmost`'s notification closure stores all three from
   the notification's `NSRunningApplication`, and never re-reads
   `NSWorkspace.shared.frontmostApplication` (F8a).
-- [ ] define `FocusedFieldAccess`, `EventPoster`, `Pacer` and `FieldHandle`, and add their fakes. The
+- [x] define `FocusedFieldAccess`, `EventPoster`, `Pacer` and `FieldHandle`, and add their fakes. The
   fakes are exercised by later tasks rather than tested for their own sake.
-- [ ] implement the system adapters:
+- [x] implement the system adapters:
   - `SystemFocusedFieldAccess`:
     - `AXIsProcessTrusted`, never `CGPreflightPostEventAccess`, which F11 found stale in both
       directions within one process;
@@ -865,15 +865,47 @@ about `returned`.
     Every call is serialised by one private lock and never hops to main. The process-global messaging
     timeout (0.25 s) is set once, in the initializer, on the system-wide object.
   - ⚠️ on hardware: time how long VS Code takes to answer after `AXManualAccessibility` is first set,
-    and record it in F11 before the re-read's wait is fixed.
+    and record it in F11 before the re-read's wait is fixed. (skipped - not automatable: needs VS
+    Code on screen; the wait is a provisional constant, see the outcome.)
   - `SystemEventPoster`: a `.privateState` source, key-down and key-up carrying the Unicode string,
     `flags = []` on both, and `postToPid`.
   - `ThreadPacer`.
-- [ ] write tests:
+- [x] write tests:
   - the table mapping `AXError` to "definitely different" / "cannot tell" / "no element";
   - a concurrency test that `SystemFocusedFieldAccess`'s lock serialises calls, using an injected
     probe function in place of the Carbon call.
-- [ ] run tests — must pass before next task
+- [x] run tests — must pass before next task
+
+- ➕ **Outcome (2026-09-13).** The seams, their fakes and the system adapters are in
+  `Sources/DictaRuntime/FocusedField.swift`; nothing constructs an adapter yet (Task 10 wires them).
+  - **Frontmost.** `FrontmostFacts` (bundle id, pid, name) is in DictaCore beside `HoldWatch`, because
+    Task 7's `HoldRoute` takes it. `FrontmostApplication` now has one property, `current`, and
+    `SystemFrontmost` builds it from the notification's `NSRunningApplication`. `Pending.frontmost`
+    carries it from the one read that also decides `wasFrontmost`; an `up` reads nothing.
+  - **The system-frontmost test posts the activation notification by hand**, naming a running
+    application that is neither the test process nor the cached frontmost one. The first draft named
+    the first running application, which happened to be the cached one (loginwindow in this shell),
+    so a mutation reading the cache survived; the fixed test kills it. `NSRunningApplication.current`
+    reports pid -1 in a bundle-less process and could not be used.
+  - **`FocusedFieldError`** is the three-way table: `noValue` → `noElement`, `invalidUIElement` →
+    `definitelyDifferent`, every other error → `cannotTell`. A focused element owned by another pid is
+    also `definitelyDifferent`.
+  - **`AXManualAccessibility`** is read before it is set, rather than remembered by pid, so "once per
+    application process" holds across pid reuse; already on, or refused by the application, means no
+    re-read. ⚠️ The wait before the one re-read (`manualAccessibilitySettle`, 0.25 s) is **not
+    measured**; too short costs one refused first dictation per application launch.
+  - **`hasSelectedTextRange`** comes from the attribute-name list, so the range itself is never read.
+  - **Deviation:** `EventPoster.post` throws (`EventPostFailure`) when the events cannot even be built,
+    rather than dropping the chunk silently; a posted event still has no error channel.
+  - **`SystemEventPoster.keystrokes(for:)`** builds the pair without posting, so a test reads back
+    keycode 0, key-down/key-up, empty flags and the whole string, including a 200-unit chunk.
+  - **Fakes:** `FakeFocusedFieldAccess` (call log, scripted answers, a hook inside the read),
+    `FakeEventPoster` (a hook after chunk k), `FakePacer` (advances a `FakeClock`); `FakeFrontmost`
+    is scripted and counts reads.
+  - Mutation check: dropping the lock, mapping `invalidUIElement` to `cannotTell`, dropping the empty
+    flags, reading frontmost twice at a press, and reading the workspace cache in the observer each
+    failed a new test. Tests: 628 in 37 suites green under Xcode 26.6 (Swift 6.3.3), nine new; lint
+    clean (swiftlint not installed, built-in checks only); linkage clean.
 
 ### Task 6: `SystemFeedback` and an optional `Terminal` — plumbing the daemon's field path will need
 
