@@ -46,6 +46,10 @@ public final class StatusViewModel: ObservableObject {
     private var resolvingName: String?
     /// Whether the panel is on screen, which is one of the two reasons to run a second hand.
     private var panelOpen = false
+    /// The number of the last record read started, and of the last one published. A read is
+    /// published only if its number is newer than the last published one (`refreshRecent`).
+    private var readsStarted = 0
+    private var readApplied = 0
 
     /// Whether "Allow Access…" was clicked during this launch, which turns the row's action into
     /// "Open Accessibility Settings": the system shows its dialog once, and a second click must not
@@ -227,13 +231,24 @@ public final class StatusViewModel: ObservableObject {
     /// Bounded by `RecordReader`, on a thread of its own. The record is append-only and grows for
     /// ever, and this runs every time the panel opens — the two facts together are why Task 5
     /// existed at all.
+    ///
+    /// Each read is numbered here, on the main actor, and its rows are published only if no later
+    /// read has been published first. Two reads can finish in order and still land out of order,
+    /// because landing is a hop of its own; without the number, the older one landing second would
+    /// put back rows the newer one had already replaced.
     func refreshRecent() {
+        readsStarted += 1
+        let read = readsStarted
         let world = world
         let url = recordURL
         world.offMain("record") {
             let entries = try? world.readRecent(url, Self.recentCount)
             let rows = DictationRow.rows(from: entries ?? [])
-            world.toMain { [weak self] in self?.recent = rows }
+            world.toMain { [weak self] in
+                guard let self, read > self.readApplied else { return }
+                self.readApplied = read
+                self.recent = rows
+            }
         }
     }
 

@@ -591,7 +591,7 @@ case symbol(String) }`.
 **Files:**
 - Modify: `Sources/DictaMenuKit/StatusViewModel.swift`, `Sources/DictaTestRunner/StatusViewModelTests.swift`
 
-- [ ] write a failing test:
+- [x] write a failing test:
   - start two reads;
   - run both held off-main closures in start order, with `readRecent` returning older rows first and
     newer rows second;
@@ -599,10 +599,20 @@ case symbol(String) }`.
   - expect the newer rows.
 
   This is the real race: slow publication, not slow reads. Record the failure
-- [ ] write tests that in-order completion publishes the latest, and that a single read publishes
-- [ ] number reads on the main actor, and apply a completion only if its number is newer than the
+  - "an older read published late does not roll the drawer back" starts the reads with `start()`
+    and `panelAppeared()`. Before the fix the newer hop published two rows, and the older hop
+    landing second failed with `Expectation failed: (model.recent → [… id: 1 …]) ==
+    (DictationRow.rows(from: newer) → [… id: 2 …, … id: 1 …])`
+- [x] write tests that in-order completion publishes the latest, and that a single read publishes
+  - "reads published in order leave the latest" and "a single read publishes its rows", which also
+    pins newest-first order and that nothing is published before the hop lands
+- [x] number reads on the main actor, and apply a completion only if its number is newer than the
   last applied one
-- [ ] run `bash Scripts/test.sh`; must pass before Task 5
+  - `readsStarted` and `readApplied` in `StatusViewModel`. Still `try?`: Task 5 routes failures
+    through the same check
+- [x] run `bash Scripts/test.sh`; must pass before Task 5
+  - 908 tests in 52 suites passed under Xcode 26.6 and under the Command Line Tools, linkage
+    clean, lint and `git diff --check` clean
 
 ### Task 5: Show a failed record read as a failure, as acta does (defect c)
 

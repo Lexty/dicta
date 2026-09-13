@@ -1,6 +1,7 @@
 import DictaCore
 import DictaIPC
 import DictaMenuKit
+import DictaRecord
 import Foundation
 import Testing
 
@@ -197,6 +198,63 @@ struct StatusViewModelTests {
 
         model.panelDisappeared()
         #expect(fake.runningTickers == 0)
+    }
+
+    // MARK: - the record reads
+
+    /// Two record reads, started in order and each already answered off the main actor, whose
+    /// publications are still held. `older` was read first, `newer` second.
+    static func twoHeldReads(_ fake: FakeMenuWorld, older: [RecordEntry],
+                             newer: [RecordEntry]) -> StatusViewModel {
+        let model = model(fake)
+        fake.with { $0.reads = [.success(older), .success(newer)] }
+        model.start()
+        model.panelAppeared()
+        #expect(fake.pendingOffMain == ["watch", "record", "record"])
+        fake.runOffMain("record")
+        #expect(fake.heldMainHops == 2)
+        return model
+    }
+
+    @Test("an older read published late does not roll the drawer back")
+    func olderReadLandingLateIsDropped() {
+        let fake = FakeMenuWorld()
+        let older = [DictationRowTests.entry(id: 1)]
+        let newer = [DictationRowTests.entry(id: 1), DictationRowTests.entry(id: 2)]
+        let model = Self.twoHeldReads(fake, older: older, newer: newer)
+        // The race is slow publication, not a slow read: both reads finished in order, and the
+        // newer one's hop lands first.
+        fake.releaseMain(at: 1)
+        #expect(model.recent == DictationRow.rows(from: newer))
+        fake.releaseMain(at: 0)
+        #expect(model.recent == DictationRow.rows(from: newer))
+    }
+
+    @Test("reads published in order leave the latest")
+    func readsInOrderPublishTheLatest() {
+        let fake = FakeMenuWorld()
+        let older = [DictationRowTests.entry(id: 1)]
+        let newer = [DictationRowTests.entry(id: 1), DictationRowTests.entry(id: 2)]
+        let model = Self.twoHeldReads(fake, older: older, newer: newer)
+        fake.releaseMain(at: 0)
+        #expect(model.recent == DictationRow.rows(from: older))
+        fake.releaseMain(at: 0)
+        #expect(model.recent == DictationRow.rows(from: newer))
+    }
+
+    @Test("a single read publishes its rows")
+    func singleReadPublishes() {
+        let fake = FakeMenuWorld()
+        let entries = [DictationRowTests.entry(id: 3), DictationRowTests.entry(id: 4)]
+        fake.with { $0.reads = [.success(entries)] }
+        let model = Self.model(fake)
+        #expect(model.recent.isEmpty)
+        model.start()
+        fake.runOffMain("record")
+        #expect(model.recent.isEmpty)
+        fake.releaseMain()
+        #expect(model.recent == DictationRow.rows(from: entries))
+        #expect(model.recent.map(\.id) == [4, 3])
     }
 
     // MARK: - commands
