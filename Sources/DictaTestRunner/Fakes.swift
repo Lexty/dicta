@@ -654,6 +654,40 @@ public final class FakeFocusedFieldAccess: FocusedFieldAccess, @unchecked Sendab
     }
 }
 
+/// A field delivery recorded instead of posted: the text, the field, and which captured handle the
+/// daemon handed over -- the evidence that the handle travelled with its own attempt.
+public final class FakeFieldInjector: FieldInjector, @unchecked Sendable {
+    public struct Delivery: Equatable, Sendable {
+        public let text: String
+        public let target: FieldTarget
+        public let handleToken: Int?
+
+        public init(text: String, target: FieldTarget, handleToken: Int?) {
+            self.text = text
+            self.target = target
+            self.handleToken = handleToken
+        }
+    }
+
+    private let lock = NSLock()
+    private var deliveries: [Delivery] = []
+    private var failure: DeliveryFailure?
+
+    public init() {}
+
+    public var delivered: [Delivery] { lock.withLock { deliveries } }
+
+    public func setFailure(_ failure: DeliveryFailure?) { lock.withLock { self.failure = failure } }
+
+    public func inject(_ text: String, into target: FieldTarget, handle: FieldHandle) throws {
+        let failure = lock.withLock { () -> DeliveryFailure? in
+            deliveries.append(Delivery(text: text, target: target, handleToken: handle.token))
+            return self.failure
+        }
+        if let failure { throw failure }
+    }
+}
+
 /// Posted chunks, recorded instead of posted.
 public final class FakeEventPoster: EventPoster, @unchecked Sendable {
     public struct Post: Equatable, Sendable {

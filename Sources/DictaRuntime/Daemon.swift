@@ -88,6 +88,33 @@ public final class Daemon: @unchecked Sendable {
     /// naming `agtermctl`, and feedback that belongs to no pane goes through `feedback` instead.
     public typealias TerminalProvider = @Sendable (String?) -> Terminal?
 
+    /// What the focused-field path needs (D31), handed over only when `--focused-fields` is on. A
+    /// daemon without it refuses every field start before reaching any accessibility call, which is
+    /// how the option off means no permission prompt (D5, invariant 14).
+    public struct FocusedFields: Sendable {
+        /// The checks before capture: the grant, Secure Input, and the one focused-element read.
+        public var access: any FocusedFieldAccess
+        /// Delivery into the field, handed the element this attempt captured.
+        public var injector: any FieldInjector
+
+        public init(access: any FocusedFieldAccess, injector: any FieldInjector) {
+            self.access = access
+            self.injector = injector
+        }
+    }
+
+    /// Which attempt is live and which attempts hold a field handle, read in one acquisition, so a
+    /// test can assert that no handle outlives -- or precedes -- its accepted attempt.
+    public struct FieldOwnership: Equatable, Sendable {
+        public var live: AttemptID?
+        public var held: [AttemptID]
+
+        public init(live: AttemptID?, held: [AttemptID]) {
+            self.live = live
+            self.held = held
+        }
+    }
+
     /// The Tier 0 dictionary for the attempt about to be processed (D9a).
     ///
     /// A closure rather than a stored value, because the file is re-read per attempt: the workflow
@@ -183,8 +210,11 @@ public final class Daemon: @unchecked Sendable {
     private let history: any History
     private let clock: any Clock
     private let provider: TerminalProvider
-    /// Where a notification goes when there is no agterm to show it (D13, D31).
+    /// Where a notification goes when there is no agterm to show it, and everything a focused
+    /// field is told, since a field has no indicator (D13, D31).
     private let feedback: any Notifier
+    /// `nil` while `--focused-fields` is off.
+    private let fields: FocusedFields?
     private let dictionary: DictionaryProvider
 
     /// Guards the machine and the small amount of per-attempt state that travels with it. Held for
@@ -199,6 +229,14 @@ public final class Daemon: @unchecked Sendable {
     /// a time: two scripts each expecting "the next thing the user says" cannot both be right, and
     /// the second is refused rather than silently handed somebody else's sentence.
     private var claim: Claim?
+    /// **Guarded by `stateLock`.** The focused element each field attempt captured before its
+    /// microphone opened, by attempt id and never by "the current one" (D31). Inserted in the SAME
+    /// critical section that accepts the start and removed in the same one that ends the attempt,
+    /// so no other thread can observe a handle without its accepted attempt -- see `apply`.
+    private var fieldHandles: [AttemptID: FieldHandle] = [:]
+    /// **Guarded by `stateLock`.** A test's code, run inside the critical section that accepts a
+    /// field start. See `duringFieldAcceptance`.
+    private var fieldAcceptanceHook: (@Sendable (AttemptID) -> Void)?
     /// **Guarded by `stateLock`.** Attempts whose audio belongs to the record and to nothing else
     /// (D26), because they were cancelled, capped or faulted after the microphone had opened.
     private var journalling: Set<AttemptID> = []
@@ -279,6 +317,9 @@ public final class Daemon: @unchecked Sendable {
     ///
     /// `feedback` has no default either, for `history`'s reason in a quieter key: the obvious
     /// one -- `SystemFeedback()` -- plays real sounds and posts real notifications from a test run.
+    ///
+    /// `fields` does, and the default is the option off: a daemon nobody asked to type into other
+    /// applications makes no accessibility call (invariant 14).
     public init(
         configuration: Configuration,
         capture: any Capture,
@@ -288,6 +329,7 @@ public final class Daemon: @unchecked Sendable {
         clock: any Clock = SystemClock(),
         dictionary: @escaping DictionaryProvider = { .none },
         feedback: any Notifier,
+        fields: FocusedFields? = nil,
         terminal provider: @escaping TerminalProvider
     ) {
         self.configuration = configuration
@@ -299,6 +341,7 @@ public final class Daemon: @unchecked Sendable {
         self.dictionary = dictionary
         self.provider = provider
         self.feedback = feedback
+        self.fields = fields
         terminal = provider(nil)
         machine = StateMachine(nextID: Self.firstUnusedID(in: history))
     }
@@ -404,6 +447,26 @@ public final class Daemon: @unchecked Sendable {
     /// The internal phase, which distinguishes `draining` from `recording` (§8.9).
     public var phase: Phase { stateLock.withLock { machine.phase } }
 
+    /// The field handle attempt `attempt` owns, if it is a live field attempt.
+    public func fieldHandle(for attempt: AttemptID) -> FieldHandle? {
+        stateLock.withLock { fieldHandles[attempt] }
+    }
+
+    /// The live attempt and the attempts holding a field handle, from one acquisition.
+    public var fieldHandleAttempts: FieldOwnership {
+        stateLock.withLock {
+            FieldOwnership(live: machine.currentAttempt?.id, held: fieldHandles.keys.sorted())
+        }
+    }
+
+    /// Runs `body` inside the critical section that accepts a field start, before the lock is
+    /// released -- the one window in which an abort or a fault on another thread could otherwise
+    /// end the attempt before its handle was stored. `body` must not wait for anything that takes
+    /// the daemon's lock: it is holding it.
+    public func duringFieldAcceptance(_ body: (@Sendable (AttemptID) -> Void)?) {
+        stateLock.withLock { fieldAcceptanceHook = body }
+    }
+
     /// The target a notification about the current or most recent attempt belongs to.
     public var knownTarget: Target? {
         stateLock.withLock { machine.currentAttempt?.target ?? rememberedTarget }
@@ -419,7 +482,8 @@ public final class Daemon: @unchecked Sendable {
             // Loud (§7), and notification-only: a frame the daemon cannot read is not about any
             // attempt, so there is no pane whose indicator would be telling the truth.
             let message = "dicta could not read the command: \(detail)"
-            notifier.notify(message, for: knownTarget)
+            let target = knownTarget
+            notifier(for: target).notify(message, for: target)
             return response(.rejected, message: message)
         }
     }
@@ -499,6 +563,10 @@ public final class Daemon: @unchecked Sendable {
     /// whether a pane must be resolved, and that costs an `agtermctl tree --json` -- 38 ms of the
     /// 150 ms budget (F4), which is not worth spending on a chord that turns out to mean "stop".
     private func begin(_ request: Request) -> Response {
+        if let conflict = request.conflict {
+            // Two places to type, and choosing either is D4's substitution decided by field order.
+            return reject(conflict.description)
+        }
         if request.cmd == .toggle, currentAttempt != nil {
             // A toggle with an attempt in flight means STOP, and `.stop` says so without carrying a
             // target -- which is the point. `currentAttempt` and `machine.apply` are two separate
@@ -511,6 +579,9 @@ public final class Daemon: @unchecked Sendable {
             // door that resolves nothing. `.stop` in idle is a refusal instead, which costs the
             // user one more keypress in a window microseconds wide.
             return respond(to: apply(.stop(mode: request.mode ?? .clean, attempt: request.attempt)))
+        }
+        if let field = request.field {
+            return beginField(request, field)
         }
         // BEFORE the guard, so the refusal below is announced through the agterm the chord fired in
         // rather than through whichever one this daemon last adopted -- or, on a fresh daemon, the
@@ -550,6 +621,57 @@ public final class Daemon: @unchecked Sendable {
             return reject(Self.reason(error))
         }
         return respond(to: apply(event(for: request, target: target)))
+    }
+
+    /// A start into another application's focused field (D31), refused BEFORE capture unless every
+    /// check passes: the option is on, the grant is held, Secure Input is off, and the application
+    /// the trigger captured at the press has a focused element that is an eligible text field.
+    ///
+    /// Every accessibility call is made here, on the socket thread, with no lock held: a hung
+    /// application can hold one for the messaging timeout, and `abort` must still be decided at
+    /// once. What they produce is a LOCAL handle, stored only by the transition that accepts the
+    /// start; a start the machine refuses -- "already recording" -- drops it and touches nothing.
+    ///
+    /// No agterm is adopted or needed, so a daemon without `agtermctl` still takes this road.
+    private func beginField(_ request: Request, _ field: FieldTarget) -> Response {
+        let target = Target.focusedField(field)
+        guard let fields else {
+            return reject("dicta was not started with --focused-fields, so it does not type into "
+                          + "\(field.appName)", for: target)
+        }
+        guard fields.access.isTrusted else {
+            return reject("dicta cannot type into \(field.appName) without the Accessibility "
+                          + "grant: allow Dicta in System Settings > Privacy & Security > "
+                          + "Accessibility", for: target)
+        }
+        // System-wide, so this names no field: some process has Secure Input on, and keystrokes
+        // posted now would be discarded or, worse, be the password being typed.
+        guard !fields.access.isSecureInputOn else {
+            return reject("dicta will not type into \(field.appName) while Secure Input is on "
+                          + "(a password field, or another application holding it)", for: target)
+        }
+        let element: FocusedElement
+        do {
+            element = try fields.access.focusedElement(expectedPID: field.pid)
+        } catch {
+            return reject("dicta cannot type into \(field.appName): \(Self.reason(error))",
+                          for: target)
+        }
+        switch FieldEligibility.classify(element.facts) {
+        case .eligible:
+            break
+        case .ineligible:
+            return reject("dicta will not type into \(field.appName): the focused element is not "
+                          + "a text field", for: target)
+        case .unknown:
+            return reject("dicta will not type into \(field.appName): accessibility could not tell "
+                          + "whether the focused element is a text field", for: target)
+        }
+        let handle = element.handle
+        return respond(to: apply(event(for: request, target: target)) { attempt in
+            self.fieldHandles[attempt] = handle
+            self.fieldAcceptanceHook?(attempt)
+        })
     }
 
     private func event(for request: Request, target: Target) -> Event {
@@ -596,15 +718,25 @@ public final class Daemon: @unchecked Sendable {
     /// A refusal the machine never saw, because the command did not survive far enough to become an
     /// event. Notification-only for the same reason as an undecodable frame: no target could be
     /// named, and lighting the previous attempt's pane would be D4's substitution wearing a colour.
-    private func reject(_ message: String) -> Response {
-        notifier.notify(message, for: nil)
+    ///
+    /// A field start names its target in the request itself, so its refusal goes where a field is
+    /// told things -- `feedback` -- rather than to agterm, which has nothing to show it on.
+    private func reject(_ message: String, for target: Target? = nil) -> Response {
+        notifier(for: target).notify(message, for: target)
         return response(.rejected, message: message)
     }
 
     // MARK: - applying an event
 
+    /// `onAcceptedStartLocked` runs with `stateLock` held, in the critical section that accepted a
+    /// start, and only if one was accepted. It is how a field handle is stored: inserting after
+    /// `apply` returned would let an abort or a fault on another thread end the attempt in between
+    /// and run its cleanup first, and the insert would then resurrect the handle of an attempt that
+    /// is already over. The same section removes the handle of whichever attempt this event ended,
+    /// by that attempt's id alone, so a late teardown of attempt N cannot touch N+1's.
     @discardableResult
-    private func apply(_ event: Event) -> Transition {
+    private func apply(_ event: Event,
+                       onAcceptedStartLocked: ((AttemptID) -> Void)? = nil) -> Transition {
         // The phase before and after, read under the same lock as the transition: the record needs
         // to know whether this event ENDED an attempt, and asking afterwards would race a chord.
         //
@@ -637,6 +769,12 @@ public final class Daemon: @unchecked Sendable {
         let (transition, phase, sequence, ending, target) = stateLock.withLock {
             let before = machine.phase
             let transition = machine.apply(event)
+            if let ended = before.attempt, machine.phase.attempt?.id != ended.id {
+                fieldHandles[ended.id] = nil
+            }
+            if before.attempt == nil, let started = machine.phase.attempt {
+                onAcceptedStartLocked?(started.id)
+            }
             transitionSequence += 1
             let ending = endingLocked(event, before: before, after: machine.phase,
                                       transition: transition)
@@ -705,9 +843,9 @@ public final class Daemon: @unchecked Sendable {
         case let .announce(feedback):
             // An indicator needs a pane. There is one for every announcement the machine emits,
             // because each is about an attempt that reached a state.
-            if let target { notifier.announce(feedback, for: target) }
+            if let target { notifier(for: target).announce(feedback, for: target) }
         case let .notify(message):
-            notifier.notify(message, for: target)
+            notifier(for: target).notify(message, for: target)
         }
     }
 
@@ -929,8 +1067,10 @@ public final class Daemon: @unchecked Sendable {
         // rules, and never instead of the attempt's own report. Told AFTER the outcome has been
         // applied, so the entry that explains the notification is already on disk.
         func reportConfigTrouble() {
-            if let degraded = book.degradedReason { notifier.notify(degraded, for: target) }
-            if let filterFailure { notifier.notify(filterFailure, for: target) }
+            if let degraded = book.degradedReason {
+                notifier(for: target).notify(degraded, for: target)
+            }
+            if let filterFailure { notifier(for: target).notify(filterFailure, for: target) }
         }
 
         switch Sanitizer.sanitize(text) {
@@ -998,13 +1138,24 @@ public final class Daemon: @unchecked Sendable {
         record(id, outcome: stateLock.withLock { draft?.id == id ? draft?.degraded : nil }
             ?? .injected)
         do {
-            // Re-validates both halves of the target itself (D4, §8.3) and never retries (§7).
-            guard let injector = currentTerminal?.injector else {
-                // Unreachable while an attempt holds its agterm (`adoptTerminal` refuses to rebind
-                // one), and classified honestly anyway: nothing was typed.
-                throw DeliveryFailure.notStarted(target, reason: Self.agtermMissing)
+            // Each injector re-validates its own target (D4, §8.3) and never retries (§7).
+            switch target {
+            case .agterm:
+                guard let injector = currentTerminal?.injector else {
+                    // Unreachable while an attempt holds its agterm (`adoptTerminal` refuses to
+                    // rebind one), and classified honestly anyway: nothing was typed.
+                    throw DeliveryFailure.notStarted(target, reason: Self.agtermMissing)
+                }
+                try injector.inject(final, into: target)
+            case let .focusedField(field):
+                // The handle THIS attempt captured, by its id. Unreachable without one -- a field
+                // start is accepted only together with its handle -- and nothing was typed.
+                guard let fields, let handle = fieldHandle(for: id) else {
+                    throw DeliveryFailure.notStarted(
+                        target, reason: "the focused field was not captured for this attempt")
+                }
+                try fields.injector.inject(final, into: field, handle: handle)
             }
-            try injector.inject(final, into: target)
             apply(.injectionFinished(id, .delivered))
         } catch let failure as DeliveryFailure {
             // The file is append-only, so the line above cannot be corrected in place: this writes
@@ -1222,7 +1373,7 @@ public final class Daemon: @unchecked Sendable {
             return historyTrouble
         }
         guard let message else { return }
-        notifier.notify(message, for: target)
+        notifier(for: target).notify(message, for: target)
     }
 
     /// Stores §9's `recognised` on the live draft, answering whether the attempt is still live.
@@ -1279,8 +1430,14 @@ public final class Daemon: @unchecked Sendable {
         }
     }
 
-    /// The notifier of the agterm this attempt belongs to, or `feedback` when there is no agterm.
-    private var notifier: any Notifier { stateLock.withLock { terminal?.notifier ?? feedback } }
+    /// Where anything about `target` is said: `feedback` for a focused field, which has no
+    /// indicator, and otherwise the agterm the daemon is addressed at, or `feedback` when there is
+    /// no agterm (D13, D31). agterm's notifier is silent for a field, so routing one there would
+    /// lose the attempt's every sound.
+    private func notifier(for target: Target?) -> any Notifier {
+        if case .focusedField = target { return feedback }
+        return stateLock.withLock { terminal?.notifier ?? feedback }
+    }
 
     /// The reason every agterm chord is refused with when the provider found no agterm.
     static let agtermMissing = "agtermctl is not installed, so dicta cannot reach agterm"
@@ -1289,7 +1446,7 @@ public final class Daemon: @unchecked Sendable {
     ///
     /// Reading `terminal` unlocked was a torn multi-word read, not a benign stale value: `begin`
     /// runs on the socket thread while `deliver` can be on capture's, since recognition and
-    /// injection re-enter through `drainCapture`. Every use goes through here or `notifier`.
+    /// injection re-enter through `drainCapture`. Every use goes through here or `notifier(for:)`.
     private var currentTerminal: Terminal? { stateLock.withLock { terminal } }
 
     private func adoptTerminal(agtermSocket: String?) {

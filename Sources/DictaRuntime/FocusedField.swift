@@ -131,6 +131,18 @@ public protocol FocusedFieldAccess: Sendable {
     func isSame(_ handle: FieldHandle, as other: FieldHandle) -> Bool
 }
 
+/// Delivery into a focused field (D32): **final**, the field the attempt was started for, and the
+/// element the daemon captured for it before the microphone opened.
+///
+/// A seam of its own rather than `Injector`, because the handle has to reach it and `Target`
+/// cannot carry one -- `Target` is `DictaCore`, and the element is ApplicationServices. The daemon
+/// owns the handle by attempt id and hands over exactly that attempt's. Throws `DeliveryFailure`,
+/// aimed at `.focusedField(target)`, in §7's three kinds; like `Injector`, it re-validates and
+/// never retries.
+public protocol FieldInjector: Sendable {
+    func inject(_ text: String, into target: FieldTarget, handle: FieldHandle) throws
+}
+
 /// Posting one chunk into a process.
 public protocol EventPoster: Sendable {
     /// A key-down and a key-up carrying `unicode`, posted to `pid`. Throws only when the events

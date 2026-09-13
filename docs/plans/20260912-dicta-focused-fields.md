@@ -1062,13 +1062,13 @@ about `returned`.
 - Modify: `Sources/DictaTestRunner/DaemonTests.swift`
 - Modify: `docs/manual-checklist.md` (citations)
 
-- [ ] write the red tests first, with fakes:
+- [x] write the red tests first, with fakes:
   - a `field` start with the grant, no Secure Input, and a readable, **eligible** element with a
     matching pid starts capture, and the snapshot's target is `.focusedField`;
   - each of these is refused with **the capture fake recording no start**: no grant, Secure Input,
     unreadable element, pid mismatch, `.ineligible`, `.unknown`, option off, `Request.conflict`;
   - a waiting `dictate` claim still returns the text (D29).
-- [ ] write the red ownership tests:
+- [x] write the red ownership tests:
   - a field start refused because an attempt is busy (field or agterm) neither overwrites nor
     releases the live attempt's handle;
   - a late teardown of attempt N (a fault, a watchdog firing on another thread) after attempt N+1
@@ -1081,13 +1081,51 @@ about `returned`.
     handle for the aborted attempt, and the handle was never observable without its accepted
     attempt;
   - a handle is released after `injected`, `cancelled`, `capture-fault`, `target-gone` and a refusal.
-- [ ] implement the branch in `begin`:
+- [x] implement the branch in `begin`:
   - resolve into a local, with no lock held across AX;
   - refactor `apply` to take an optional `onAcceptedStartLocked` step that runs inside the same
     `stateLock` acquisition as `machine.apply`, and store `fieldHandles[attemptID]` there;
   - release by id on every ending.
-- [ ] route injection and feedback by target case.
-- [ ] add citations, then run tests — must pass before next task
+- [x] route injection and feedback by target case.
+- [x] add citations, then run tests — must pass before next task
+
+- ➕ **Outcome (2026-09-13).** The daemon acts on `Request.field`: `beginField` in `Daemon.swift`
+  refuses before capture, holds field handles by attempt id, and routes delivery and feedback by
+  target case. Nothing constructs `Daemon.FocusedFields` in `main.swift` yet (Task 10 wires it), and
+  no production `FieldInjector` exists yet (Task 9).
+  - **Deviation: a `FieldInjector` seam rather than `Injector`.** The handle has to reach delivery
+    and `Target` (DictaCore) cannot carry an `AXUIElement`, so `FieldInjector.inject(_:into:handle:)`
+    sits beside `Injector` in `FocusedField.swift`; Task 9's `FocusedFieldInjector` conforms to it.
+    `Daemon.FocusedFields` is `{access, injector}`, handed to the designated `init` as `fields:`
+    (default `nil`, the option off).
+  - **Order in `begin`.** `Request.conflict` first, for every start or toggle; then a `field` request
+    leaves the agterm road before `adoptTerminal`, so it needs no `agtermctl`. Checks: option on, grant,
+    Secure Input, one focused-element read for the request's pid, `FieldEligibility`. Every refusal
+    goes through `reject(_:for:)` to `feedback`, aimed at the field; a conflict stays untargeted.
+  - **Ownership.** `apply` takes `onAcceptedStartLocked`, called inside the `machine.apply` critical
+    section only when the phase went from no attempt to one; the same section drops the handle of
+    whichever attempt the event ended, by that id. So a handle is never observable without its live
+    attempt, and release covers every ending with no per-ending code. Test surface:
+    `fieldHandle(for:)`, `fieldHandleAttempts` (live id and held ids from one acquisition) and
+    `duringFieldAcceptance(_:)`, the hook inside that section.
+  - **Routing.** `notifier(for:)` answers `feedback` for a `.focusedField` target and agterm's notifier
+    (or `feedback` without agterm) otherwise; announcements, notifications, config and record trouble
+    and the undecodable-frame notice all go through it.
+  - **The interleaving test waits for the contender thread to be running, plus 20 ms, inside the
+    hook** -- never for the abort. Without that, moving the insert after the unlock still passed,
+    because the insert beat an unscheduled thread. The late-teardown test aborts attempt N while
+    `warming`: a journalling attempt's late fault is swallowed before any transition and proved nothing
+    (a "clear every handle on a fault" mutation survived until this was changed).
+  - ⚠️ **A field refusal is notified twice.** The daemon notifies through `feedback`, and the trigger
+    (Task 7) also notifies a daemon refusal through its own feedback. The agterm path already doubles
+    the same way (`reject` plus the trigger's `notifier.notify`); left consistent, and worth one fix
+    for both paths rather than two.
+  - **Citations:** invariants 3 and 14, and the no-grant, Secure Input, unreadable element,
+    ineligible/unknown and gone-before-delivery §7 rows.
+  - Mutation check: inserting the handle after `apply` released the lock (2 issues), clearing every
+    handle on a fault (2), routing a field's feedback to agterm (4) and skipping eligibility (6) each
+    failed. Tests: 676 in 41 suites green under Xcode 26.6 (Swift 6.3.3), nine new (17 cases); lint
+    clean (swiftlint not installed, built-in checks only); linkage clean.
 
 ### Task 9: `FocusedFieldInjector` — re-validate, bound, pace, post, abort mid-way
 

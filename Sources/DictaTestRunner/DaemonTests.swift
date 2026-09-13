@@ -106,6 +106,11 @@ struct DaemonTests {
         let history = FakeHistory()
         /// Empty unless a test fills it, so every other test's text is the transcriber's own.
         let dictionary: DictionaryBox
+        /// Where a focused-field attempt is announced, kept apart from `notifier` -- agterm's --
+        /// so a test can see which of the two an announcement went through (D13, D31).
+        let feedback = FakeNotifier()
+        let access = FakeFocusedFieldAccess()
+        let fieldInjector = FakeFieldInjector()
         let daemon: Daemon
 
         /// `injecting` and `processing` each last exactly as long as one synchronous seam call, so
@@ -118,7 +123,8 @@ struct DaemonTests {
              transcriber: (any Transcriber)? = nil,
              filter: (any Filter)? = nil,
              injector: (any Injector)? = nil,
-             history: (any History)? = nil) {
+             history: (any History)? = nil,
+             focusedFields: Bool = false) {
             // `/tmp` rather than the per-user temp directory, for the reason `ControlSocketTests`
             // gives: `sun_path` is 104 bytes and $TMPDIR plus a UUID is most of that budget.
             directory = URL(fileURLWithPath: "/tmp")
@@ -131,6 +137,8 @@ struct DaemonTests {
             // until every stored property is initialised, and `daemon` is one of them.
             let book = DictionaryBox()
             dictionary = book
+            let terminal = Daemon.Terminal(resolver: resolver, injector: injector ?? self.injector,
+                                           notifier: notifier)
             daemon = Daemon(
                 configuration: Daemon.Configuration(
                     socketPath: directory.appendingPathComponent("c.sock").path,
@@ -145,9 +153,10 @@ struct DaemonTests {
                 history: history ?? self.history,
                 clock: clock,
                 dictionary: { book.read() },
-                resolver: resolver,
-                injector: injector ?? self.injector,
-                notifier: notifier
+                feedback: feedback,
+                fields: focusedFields
+                    ? Daemon.FocusedFields(access: access, injector: fieldInjector) : nil,
+                terminal: { _ in terminal }
             )
         }
 
@@ -167,6 +176,23 @@ struct DaemonTests {
         @discardableResult
         func chord(_ mode: Mode = .clean, session: String = "S1") -> Response {
             send(Request(cmd: .toggle, sessionID: session, mode: mode))
+        }
+
+        /// What the hold trigger sends once a hold in another application outlasts the floor (D31).
+        @discardableResult
+        func fieldStart(_ field: FieldTarget = DaemonTests.field) -> Response {
+            send(Request(cmd: .start, field: field))
+        }
+
+        /// A whole focused-field dictation: the threshold's start, ready, the release's stop, and
+        /// the drain.
+        @discardableResult
+        func dictateIntoField() -> AttemptID {
+            let id = fieldStart().attempt ?? 0
+            capture.reportReady(id)
+            send(Request(cmd: .stop, mode: .clean, attempt: id))
+            capture.reportDrained(id)
+            return id
         }
 
         /// Drives an attempt to `recording`, the way a chord plus a working microphone would.
@@ -189,6 +215,7 @@ struct DaemonTests {
     }
 
     static let target = Target(sessionID: "S1", pane: .left)
+    static let field = FieldTarget(bundleID: "com.microsoft.VSCode", appName: "Code", pid: 4242)
 
     /// A throwaway path for the parked target, for the tests that build a `Daemon` without the
     /// harness. Never the real one: an attempt parks its target the moment it starts warming, so a
@@ -2021,6 +2048,341 @@ struct DaemonTests {
         #expect(response.state == .idle)
         let message = try #require(harness.notifier.messages.first)
         #expect(message.contains("not a command this build knows"))
+    }
+
+    // MARK: - the focused-field start path (D31)
+
+    @Test("a field start with the grant, no Secure Input and an eligible element starts capture")
+    func aFieldStartThatPassesEveryCheckStartsCapture() throws {
+        let harness = Harness(focusedFields: true)
+
+        let response = harness.fieldStart()
+
+        #expect(response.kind == .accepted)
+        let id = try #require(response.attempt)
+        #expect(harness.capture.callLog == [.begin(id)])
+        // D31's order, and every check made before the microphone opened: the grant, Secure Input,
+        // then the one element read, through the pid the trigger captured at the press.
+        #expect(harness.access.callLog == [.isTrusted, .isSecureInputOn,
+                                           .focusedElement(expectedPID: Self.field.pid)])
+        let status = harness.send(Request(cmd: .status))
+        #expect(status.snapshot?.target == .focusedField(Self.field))
+        #expect(harness.daemon.fieldHandle(for: id)?.token == 1)
+        // Nothing of agterm was asked: a field start resolves no pane.
+        #expect(harness.resolver.requested.isEmpty)
+    }
+
+    /// Every reason a field start is refused before capture (D31, §7).
+    enum FieldRefusal: String, CaseIterable, CustomTestStringConvertible, Sendable {
+        case optionOff
+        case fieldWithFocus
+        case fieldWithSession
+        case noGrant
+        case secureInput
+        case noElement
+        case unreadable
+        case pidMismatch
+        case ineligible
+        case unknown
+
+        var testDescription: String { rawValue }
+
+        var request: Request {
+            switch self {
+            case .fieldWithFocus: Request(cmd: .start, focus: true, field: DaemonTests.field)
+            case .fieldWithSession: Request(cmd: .start, sessionID: "S1", field: DaemonTests.field)
+            default: Request(cmd: .start, field: DaemonTests.field)
+            }
+        }
+
+        /// The accessibility calls made before the refusal, and none after it: each check stops the
+        /// path, and the option off or a malformed request reaches no accessibility at all.
+        var calls: [FakeFocusedFieldAccess.Call] {
+            let read: [FakeFocusedFieldAccess.Call] = [
+                .isTrusted, .isSecureInputOn, .focusedElement(expectedPID: DaemonTests.field.pid),
+            ]
+            return switch self {
+            case .optionOff, .fieldWithFocus, .fieldWithSession: []
+            case .noGrant: [.isTrusted]
+            case .secureInput: [.isTrusted, .isSecureInputOn]
+            case .noElement, .unreadable, .pidMismatch, .ineligible, .unknown: read
+            }
+        }
+
+        var reasonMentions: String {
+            switch self {
+            case .optionOff: "--focused-fields"
+            case .fieldWithFocus, .fieldWithSession: "focused field"
+            case .noGrant: "Accessibility"
+            case .secureInput: "Secure Input"
+            case .noElement: "no focused element"
+            case .unreadable: "could not read"
+            case .pidMismatch: "gone"
+            case .ineligible, .unknown: "text field"
+            }
+        }
+
+        func arrange(_ harness: Harness) {
+            let facts: FieldFacts
+            switch self {
+            case .optionOff, .fieldWithFocus, .fieldWithSession:
+                return
+            case .noGrant:
+                harness.access.setTrusted(false)
+                return
+            case .secureInput:
+                harness.access.setSecureInput(true)
+                return
+            case .noElement:
+                harness.access.answer(.failure(.noElement))
+                return
+            case .unreadable:
+                harness.access.answer(.failure(.cannotTell(reason: "cannotComplete")))
+                return
+            case .pidMismatch:
+                harness.access.answer(.failure(.definitelyDifferent(
+                    reason: "the focused element belongs to pid 7, not 4242")))
+                return
+            case .ineligible:
+                facts = FieldFacts(role: "AXOutline", subrole: nil, valueSettable: false,
+                                   hasSelectedTextRange: true)
+            case .unknown:
+                facts = FieldFacts(role: nil, subrole: nil, valueSettable: nil,
+                                   hasSelectedTextRange: nil)
+            }
+            harness.access.answer(.success(FocusedElement(handle: FieldHandle(token: 1),
+                                                          facts: facts)))
+        }
+    }
+
+    @Test("a field start is refused before capture opens, for every reason it can be refused",
+          arguments: FieldRefusal.allCases)
+    func aFieldStartIsRefusedBeforeCapture(_ refusal: FieldRefusal) throws {
+        let harness = Harness(focusedFields: refusal != .optionOff)
+        refusal.arrange(harness)
+
+        let response = harness.send(refusal.request)
+
+        #expect(response.kind == .rejected)
+        // The whole point of refusing HERE: the microphone never opened, so nothing is lit, nothing
+        // is recorded and there is no attempt to end (D31).
+        #expect(harness.capture.callLog.isEmpty)
+        #expect(harness.daemon.state == .idle)
+        #expect(harness.daemon.currentAttempt == nil)
+        #expect(harness.history.appended.isEmpty)
+        #expect(harness.daemon.fieldHandleAttempts.held.isEmpty)
+        #expect(harness.access.callLog == refusal.calls)
+        let message = try #require(response.message)
+        #expect(message.contains(refusal.reasonMentions), "\(message)")
+        // Said once, and never as an indicator on some agterm pane the request did not name.
+        #expect((harness.feedback.messages + harness.notifier.messages) == [message])
+        #expect(harness.notifier.announcements.isEmpty)
+        #expect(harness.resolver.requested.isEmpty)
+    }
+
+    @Test("a field attempt is typed through the field injector, with the handle it captured")
+    func aFieldAttemptIsDeliveredWithItsOwnHandle() throws {
+        let harness = Harness(focusedFields: true)
+
+        let id = harness.dictateIntoField()
+
+        #expect(harness.daemon.state == .idle)
+        #expect(harness.fieldInjector.delivered == [
+            FakeFieldInjector.Delivery(text: FakeTranscriber.sanitizedHostileText,
+                                       target: Self.field, handleToken: 1),
+        ])
+        #expect(harness.injector.delivered.isEmpty, "a field attempt reached agterm's injector")
+        // A field has no indicator: its feedback is the system's sounds, and agterm hears nothing.
+        #expect(harness.feedback.announcements == [.listening, .working, .done])
+        #expect(harness.notifier.signals.isEmpty)
+        let entry = try #require(harness.history.appended.last)
+        #expect(entry.id == id)
+        #expect(entry.outcome == .injected)
+        #expect(entry.target == .focusedField(Self.field))
+    }
+
+    @Test("a field attempt's delivery failure is said through system feedback, never agterm")
+    func aFieldDeliveryFailureIsSaidThroughFeedback() throws {
+        let harness = Harness(focusedFields: true)
+        harness.fieldInjector.setFailure(.targetGone(.focusedField(Self.field),
+                                                     reason: "a different element is focused"))
+
+        harness.dictateIntoField()
+
+        #expect(harness.history.appended.last?.outcome == .targetGone)
+        #expect(harness.feedback.announcements == [.listening, .working, .blocked])
+        let message = try #require(harness.feedback.messages.last)
+        #expect(message.contains("a different element is focused"))
+        #expect(harness.notifier.signals.isEmpty)
+    }
+
+    @Test("a waiting dictate still takes the text of a field attempt, and nothing is typed")
+    func aClaimStillWinsOverAFieldTarget() throws {
+        // D29: the claim is decided where text leaves the daemon, whatever the target.
+        let harness = Harness(focusedFields: true)
+        let answer = Locked<Response?>(nil)
+        let done = awaitingDictation(harness, answer)
+
+        let id = harness.dictateIntoField()
+        #expect(done.wait(timeout: .now() + 5) == .success)
+
+        #expect(try #require(answer.value).text == "dicta hears you from the fake transcriber")
+        #expect(harness.fieldInjector.delivered.isEmpty, "the text was typed as well as returned")
+        let entry = try #require(harness.history.appended.last)
+        #expect(entry.id == id)
+        #expect(entry.outcome == .returned)
+    }
+
+    // MARK: - who owns a field handle
+
+    enum BusyWith: String, CaseIterable, CustomTestStringConvertible, Sendable {
+        case field
+        case agterm
+
+        var testDescription: String { rawValue }
+    }
+
+    @Test("a field start refused while an attempt is live neither replaces nor drops its handle",
+          arguments: BusyWith.allCases)
+    func aBusyRefusalLeavesTheLiveHandleAlone(_ busy: BusyWith) throws {
+        let harness = Harness(focusedFields: true)
+        let live = switch busy {
+        case .field: harness.fieldStart()
+        case .agterm: harness.chord()
+        }
+        let id = try #require(live.attempt)
+        // The refused start reads a DIFFERENT element: storing it would re-aim the live attempt.
+        harness.access.answer(.success(FakeFocusedFieldAccess.textArea(token: 2)))
+
+        let refused = harness.fieldStart()
+
+        #expect(refused.kind == .rejected)
+        #expect(harness.daemon.currentAttempt?.id == id)
+        switch busy {
+        case .field:
+            #expect(harness.daemon.fieldHandleAttempts.held == [id])
+            #expect(harness.daemon.fieldHandle(for: id)?.token == 1)
+        case .agterm:
+            #expect(harness.daemon.fieldHandleAttempts.held.isEmpty)
+        }
+    }
+
+    @Test("a late teardown of a finished field attempt leaves the next attempt's handle in place")
+    func aLateTeardownReleasesOnlyItsOwnHandle() throws {
+        let harness = Harness(focusedFields: true)
+        let first = try #require(harness.fieldStart().attempt)
+        // Aborted while WARMING, so its audio is discarded rather than journalled (D26): a late
+        // fault for a journalling attempt is swallowed before any transition, and would prove
+        // nothing about who releases which handle.
+        harness.send(Request(cmd: .abort, attempt: first))
+        harness.access.answer(.success(FakeFocusedFieldAccess.textArea(token: 2)))
+        let second = try #require(harness.fieldStart().attempt)
+
+        // The first attempt's device reports its death late, on a thread of its own, as a real
+        // capture fault or a watchdog would.
+        let done = DispatchSemaphore(value: 0)
+        let late = Thread {
+            harness.capture.reportFault(first, reason: "the engine died")
+            done.signal()
+        }
+        late.start()
+        #expect(done.wait(timeout: .now() + 5) == .success)
+
+        #expect(harness.daemon.currentAttempt?.id == second)
+        #expect(harness.daemon.fieldHandleAttempts.held == [second])
+        #expect(harness.daemon.fieldHandle(for: second)?.token == 2)
+    }
+
+    @Test("an abort landing as a field start is accepted never leaves a handle behind")
+    func anAbortInterleavedWithAcceptanceLeavesNoHandle() throws {
+        let harness = Harness(focusedFields: true)
+        let daemon = harness.daemon
+        let aborted = Locked<Response?>(nil)
+        let abortDone = DispatchSemaphore(value: 0)
+        // Runs INSIDE the critical section that accepts the start. It launches the contender and
+        // waits only for that thread to be RUNNING, then gives it a moment to reach the lock --
+        // never for the abort itself, which needs the same lock and would deadlock. Without the
+        // moment, an insert made after the lock was released would usually still beat a thread
+        // that had not been scheduled yet, and the test would pass against the very bug it names.
+        daemon.duringFieldAcceptance { [weak daemon] _ in
+            let running = DispatchSemaphore(value: 0)
+            let contender = Thread {
+                running.signal()
+                aborted.set(daemon?.handle(.request(Request(cmd: .abort))))
+                abortDone.signal()
+            }
+            contender.name = "dicta.test.abort"
+            contender.start()
+            _ = running.wait(timeout: .now() + 5)
+            usleep(20_000)
+        }
+        // Watches, from a third thread, for a handle that exists without its accepted attempt.
+        let watching = Locked(true)
+        let orphans = Locked<[AttemptID]>([])
+        let watcherDone = DispatchSemaphore(value: 0)
+        let watcher = Thread { [weak daemon] in
+            while watching.value, let daemon {
+                let seen = daemon.fieldHandleAttempts
+                let orphaned = seen.held.filter { $0 != seen.live }
+                if !orphaned.isEmpty { orphans.set(orphans.value + orphaned) }
+            }
+            watcherDone.signal()
+        }
+        watcher.start()
+
+        let started = harness.fieldStart()
+        #expect(abortDone.wait(timeout: .now() + 5) == .success)
+        watching.set(false)
+        #expect(watcherDone.wait(timeout: .now() + 5) == .success)
+        daemon.duringFieldAcceptance(nil)
+
+        #expect(started.kind == .accepted)
+        #expect(try #require(aborted.value).kind == .accepted)
+        #expect(daemon.state == .idle)
+        #expect(daemon.fieldHandleAttempts.held.isEmpty,
+                "the handle of an attempt that had already ended was stored after it")
+        #expect(orphans.value.isEmpty)
+    }
+
+    enum FieldEnding: String, CaseIterable, CustomTestStringConvertible, Sendable {
+        case injected
+        case cancelled
+        case captureFault
+        case targetGone
+        case refused
+
+        var testDescription: String { rawValue }
+    }
+
+    @Test("a field handle is released however its attempt ends", arguments: FieldEnding.allCases)
+    func aFieldHandleIsReleasedOnEveryEnding(_ ending: FieldEnding) throws {
+        let harness = Harness(focusedFields: true)
+        switch ending {
+        case .injected:
+            harness.dictateIntoField()
+            #expect(harness.history.appended.last?.outcome == .injected)
+        case .targetGone:
+            harness.fieldInjector.setFailure(.targetGone(.focusedField(Self.field),
+                                                         reason: "the element went"))
+            harness.dictateIntoField()
+            #expect(harness.history.appended.last?.outcome == .targetGone)
+        case .cancelled:
+            let id = try #require(harness.fieldStart().attempt)
+            #expect(harness.daemon.fieldHandleAttempts.held == [id])
+            harness.send(Request(cmd: .abort, attempt: id))
+        case .captureFault:
+            let id = try #require(harness.fieldStart().attempt)
+            harness.capture.reportReady(id)
+            #expect(harness.daemon.fieldHandleAttempts.held == [id])
+            harness.capture.reportFault(id, reason: "the engine died")
+            #expect(harness.history.appended.last?.outcome == .captureFault)
+        case .refused:
+            harness.access.setSecureInput(true)
+            #expect(harness.fieldStart().kind == .rejected)
+        }
+
+        #expect(harness.daemon.state == .idle)
+        #expect(harness.daemon.fieldHandleAttempts == Daemon.FieldOwnership(live: nil, held: []))
     }
 
     // MARK: - no agterm (D31)
