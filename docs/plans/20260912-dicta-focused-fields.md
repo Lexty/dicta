@@ -788,7 +788,7 @@ about `returned`.
 - Create: `Sources/DictaCore/KeystrokeChunks.swift`, `Sources/DictaCore/FieldEligibility.swift`
 - Create: `Sources/DictaTestRunner/KeystrokeChunksTests.swift`, `FieldEligibilityTests.swift`
 
-- [ ] write the red tests first for `KeystrokeChunks`:
+- [x] write the red tests first for `KeystrokeChunks`:
   - empty text gives no chunks;
   - ASCII splits at exactly `targetUTF16`;
   - escaped Cyrillic splits correctly;
@@ -806,11 +806,35 @@ about `returned`.
     limit passes the pre-count (a deterministic boundary assertion, not a timing test);
   - constants whose product would overflow are rejected at construction;
   - dictionary-expanded text over the bound is `.tooManyChunks`.
-- [ ] write the red tests first for `FieldEligibility`: every row of F11's table, both positives and
+- [x] write the red tests first for `FieldEligibility`: every row of F11's table, both positives and
   negatives, plus all-`nil` facts giving `.unknown`, and a role that is eligible except that the
   value is not settable.
-- [ ] implement both with F11's defaults and table.
-- [ ] run tests — must pass before next task
+- [x] implement both with F11's defaults and table.
+- [x] run tests — must pass before next task
+
+- ➕ **Outcome (2026-09-13).** `KeystrokeChunks` and `FieldEligibility` are in DictaCore with no
+  I/O; 27 new tests in two suites.
+  - **Shape.** `KeystrokeChunks` is a value with a failable `init(targetUTF16:maxEventUTF16:maxChunks:)`
+    and `plan(_:)`, rather than one static function, so that "rejected at construction" is testable:
+    `nil` for `maxChunks < 1`, `maxEventUTF16` under the clamped target, or an overflowing limit.
+    `KeystrokeChunks.standard` is 20 / 200 / 4 000. The pre-count is the public
+    `boundedUTF16Count(_:limit:)`, generic over the unit sequence, because the tests use no
+    `@testable` and a counting sequence is the only way to see it draw exactly limit + 1 units.
+  - **`maxChunks` = 4 000 is a choice, not an F11 value.** It fits the largest recognised text the
+    wire carries (`RecognisedText.maxBytes`, all ASCII: 3 226 chunks), so it only refuses what the
+    dictionary or the filter grew. Task 9's delivery ceiling multiplies by it and may lower it.
+  - **"Clamped and asserted".** The clamp is not an `assert`, which would trap the debug test run;
+    the other constraint (`maxEventUTF16 >= targetUTF16`) is a construction refusal instead.
+  - **Eligibility order.** A definite negative wins over a missing fact: the secure subrole, a known
+    non-text role or a non-settable value is `.ineligible` whatever else went unread; otherwise a
+    missing role or settability is `.unknown`. Both refuse.
+  - ⚠️ **`AXSearchField` is a subrole on macOS, not a role.** D31 lists it among unmeasured roles
+    that stay ineligible; the rule as written (text role, settable, not secure) admits an
+    `AXTextField` whose subrole is `AXSearchField`. The test covers it only as a role. Left as the
+    spec's rule states; a human item or a spec amendment should settle which is meant.
+  - Mutation check: breaking the packing boundary, the secure-subrole rule and the pre-count bound
+    together gave 9 failures. Tests: 619 in 36 suites green under Xcode 26.6 (Swift 6.3.3); lint
+    clean (swiftlint not installed, built-in checks only).
 
 ### Task 5: Seams, fakes, and a frontmost source that knows the pid
 

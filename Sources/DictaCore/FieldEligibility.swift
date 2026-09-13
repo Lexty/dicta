@@ -1,0 +1,56 @@
+// D31's admission rule for a focused element. A focused element is not necessarily a text field:
+// plain characters posted to a focused tree, list or page act as commands or type-to-select, and §1
+// excludes voice control. So before the microphone opens, and again immediately before the first
+// event (D32), the element is classified from accessibility METADATA alone -- never its value and
+// never its selected text (invariant 14).
+
+/// What the daemon read about a focused element. Metadata only, by construction: there is no field
+/// here that could hold a value. `nil` means accessibility did not answer for that attribute.
+public struct FieldFacts: Equatable, Sendable {
+    public var role: String?
+    /// `nil` when the element reports none, which F11 saw as both "no value" and "unsupported" on
+    /// real text fields. Only the secure subrole means anything to the rule.
+    public var subrole: String?
+    /// Whether `kAXValueAttribute` is settable.
+    public var valueSettable: Bool?
+    /// Whether `kAXSelectedTextRangeAttribute` is present. Read, and deliberately not an input to
+    /// the rule: F11 found Chromium puts it on a tree, so it discriminates nothing.
+    public var hasSelectedTextRange: Bool?
+
+    public init(role: String?, subrole: String?, valueSettable: Bool?,
+                hasSelectedTextRange: Bool?) {
+        self.role = role
+        self.subrole = subrole
+        self.valueSettable = valueSettable
+        self.hasSelectedTextRange = hasSelectedTextRange
+    }
+}
+
+/// Three answers, not a `Bool`, because "could not tell" is a real outcome the caller must not
+/// round up: both refusals refuse, but only one of them is a statement about the element.
+public enum Eligibility: Equatable, Sendable {
+    case eligible
+    case ineligible
+    /// The role or the settability could not be read. Refused, never promoted to eligible.
+    case unknown
+}
+
+/// F11's table as a rule (SPEC.md D31).
+public enum FieldEligibility {
+    /// The roles F11 measured as text fields. Other text-like roles (`AXComboBox`, `AXSearchField`)
+    /// were not measured and stay out until a human item shows them.
+    public static let textRoles: Set<String> = ["AXTextArea", "AXTextField"]
+    /// The password field, named by its subrole without reading it.
+    public static let secureSubrole = "AXSecureTextField"
+
+    public static func classify(_ facts: FieldFacts) -> Eligibility {
+        // A definite negative wins over a missing fact: the secure subrole, a known non-text role
+        // or a value known not to be settable each settle the answer whatever else went unread.
+        // Both refusals refuse, so the order only decides which of the two is reported.
+        if facts.subrole == secureSubrole { return .ineligible }
+        guard let role = facts.role else { return .unknown }
+        guard textRoles.contains(role) else { return .ineligible }
+        guard let settable = facts.valueSettable else { return .unknown }
+        return settable ? .eligible : .ineligible
+    }
+}
