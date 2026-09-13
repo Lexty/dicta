@@ -5,6 +5,11 @@ one a MacBook keyboard actually has), speak, let go, and the text appears in the
 typing in. It is meant for dictating prompts to Claude Code and instructions
 to agents running inside agterm.
 
+With `--focused-fields` it also types into **the focused text field of any other application** — the
+VS Code editor and its integrated terminal, Slack, a Safari text area — and agterm becomes optional.
+That is opt-in, because it needs the Accessibility permission; see
+[Dictating into any app](#dictating-into-any-app).
+
 Everything is local. The audio is recognised on this machine by Parakeet TDT 0.6B v3 on the Apple
 Neural Engine, is never written to disk, and never leaves the computer.
 
@@ -20,12 +25,17 @@ this file is for using it.
 **Status: steps 1–3 of SPEC.md §10 are implemented.** The external filter (step 4) is not: the seam
 exists as a pass-through, which is all `raw` mode needs in order to be *defined* as the mode that
 skips it.
+Dictating into the focused field of any application is implemented behind `--focused-fields`
+(D31, D32); what only a person can score about it is H24–H34 in `docs/manual-checklist.md`.
 
 ## Requirements
 
 - macOS on Apple silicon (measured on macOS 26.6, M3 Pro).
 - Swift 6.3+ — Command Line Tools are enough; full Xcode is not required.
-- `agterm` with `agtermctl` on `PATH`.
+- `agterm` with `agtermctl` on `PATH` — **unless** the daemon runs with `--focused-fields`, where it
+  is optional: without it the daemon starts, dictates into other applications' fields, and refuses
+  only what needs agterm (the chords, and the key held in front of agterm).
+- For `--focused-fields` only: the Accessibility permission for `Dicta.app`.
 - ~600 MB of disk for the recognition models, and one download to fetch them.
 
 ## Install
@@ -44,6 +54,19 @@ That one command builds a release, signs `Dicta.app`, installs the pieces and re
 | the LaunchAgent | `~/Library/LaunchAgents/dev.personal.dicta.plist` | starts the daemon at login and keeps it running |
 | the menu's agent | `~/Library/LaunchAgents/dev.personal.dicta.menu.plist` | starts the menu-bar item at login |
 | the log | `~/Library/Logs/dicta.log` | the daemon's stderr |
+
+To dictate into other applications as well, install with the option instead; it is written into
+the daemon's LaunchAgent:
+
+```sh
+bash Scripts/install.sh --focused-fields
+```
+
+The option is a property of the agent the installer writes, so **re-running `install.sh` without
+the flag turns it off**, and the script says so (`focused fields: turned OFF`). On a machine with no
+agterm, install with the flag: without it a missing `agtermctl` is fatal at start-up, because the
+daemon would have nowhere to deliver anything. The installer prints the keymap step only when it
+finds `agtermctl`, and with the option on it adds the Accessibility step.
 
 The signing identity is self-signed, created in a dedicated keychain by `Scripts/setup-signing.sh`,
 which `bundle.sh` calls on its own when it is missing. It matters because the resulting *designated
@@ -71,7 +94,7 @@ asking.
 The models land in FluidAudio's own cache at
 `~/Library/Application Support/FluidAudio/Models/parakeet-tdt-0.6b-v3`.
 
-Finally, add the chords, if you want them. Push-to-talk works without this step; the chords are how
+Finally, add the chords, if you want them — agterm only. Push-to-talk works without this step; the chords are how
 **raw** mode is reached, and the installer deliberately does not edit your keymap:
 
 ```sh
@@ -97,8 +120,11 @@ Clicking it opens a small panel:
 
 - **what dicta is doing right now**, and — if it cannot dictate at all — one red sentence saying why,
   with the single button that fixes it: the microphone was denied (opens the right Settings pane),
-  the models are not downloaded (runs `--fetch-models`), `agtermctl` is not on the PATH.
-- **where the current dictation is going**, by session name and pane, with `Stop and type` and
+  the models are not downloaded (runs `--fetch-models`), `agtermctl` is not on the PATH. With
+  `--focused-fields` on, a missing `agtermctl` is not a fault: the panel says "Ready, without
+  agterm" with an amber notice, and dictation into other applications works.
+- **where the current dictation is going**, by session name and pane (or by application name, for a
+  focused field), with `Stop and type` and
   `Abort`. They are there only while something is being dictated. There is no Start, and there
   cannot be: a click carries no session to aim at, so dictations are started by the key or a chord
   and nothing else.
@@ -136,7 +162,8 @@ you press first owns the dictation until you let it go, and pressing the other o
 does nothing at all. Pass `--hold-key rightOption` (repeatable) to the daemon to arm something else;
 `--hold-key` replaces the pair rather than adding to it.
 
-It asks for **no permission**, and that is worth being precise about, because every other
+It asks for **no permission** — unless you turn on `--focused-fields`, which needs Accessibility to
+type into another application, not to read the key — and that is worth being precise about, because every other
 push-to-talk tool on this platform asks for Input Monitoring or Accessibility. dicta does not read
 your keyboard. It reads the *state of the modifier keys* — a word of flags that says which of Shift,
 Control, Option, Command and Fn are down right now, and carries no key code and no character. There
@@ -153,9 +180,11 @@ Two rules follow from holding a key rather than pressing a chord:
   300 ms is `⌘Tab` — do that with the right-hand Command inside agterm and you spend a dictation
   that recognises nothing. Nothing is typed anywhere; if it becomes a nuisance, arm right Option
   instead.
-- **It does nothing unless agterm is in front.** A chord carries the session it fired in; a held key
-  carries nothing, so the session comes from live focus — and live focus is only meaningful while
-  you are looking at agterm. Hold it in a browser and nothing at all happens, silently (D22).
+- **Without `--focused-fields`, it does nothing unless agterm is in front.** A chord carries the
+  session it fired in; a held key carries nothing, so the session comes from live focus — and live
+  focus is only meaningful while you are looking at agterm. Hold it in a browser and nothing at all
+  happens, silently (D22). With the option on, the same hold in a browser dictates into the focused
+  field instead; agterm in front always takes the agterm path.
 
 ## The chords
 
@@ -172,6 +201,74 @@ The mode is chosen by *whatever stops* the recording, so nothing has to be decid
 speaking (D3). The held key always stops in **clean** — one key cannot carry two meanings — which
 is why `⌃⌥⇧D` is where **raw** lives. The two mix: begin by holding the key, then press `⌃⌥⇧D` to
 end it, and the text comes back unfiltered. Letting go afterwards is silent (D23).
+
+## Dictating into any app
+
+Run the daemon with `--focused-fields` (`bash Scripts/install.sh --focused-fields` writes it into the
+agent), and **holding the key in any application types into the text field that has focus there**.
+agterm in front still takes the agterm path, exactly as without the option: it knows the session and
+the pane, it has the indicator, and it needs no permission (D31).
+
+**The Accessibility permission.** Posting keystrokes into another process needs it, and without it
+macOS discards them silently (F11). dicta shows no permission dialog of its own: turn on `Dicta` in
+System Settings → Privacy & Security → Accessibility, adding `~/Applications/Dicta.app` with `+` if
+it is not listed. Until then, every hold outside agterm that passes the floor is refused with
+`Basso` and a notification naming the grant, and the microphone never opens. The grant is picked up
+without a restart, and a rebuild does not revoke it, for the same signing reason as the
+microphone's. The daemon's log says which it is at start-up: `focused fields: on, accessibility:
+granted` or `not granted`. **Without the option, dicta makes no accessibility call and posts no
+event at all**, so the permission is never needed and never asked about.
+
+**Outside agterm, the start waits for the floor.** Right Control and right Command are real
+modifiers, so a right-hand `⌘C` looks like the start of a dictation until 300 ms have passed. On
+this path nothing is sent until the hold outlasts the floor: a shortcut released before it costs
+nothing at all — no sound, no notification, no microphone, no line in the record. The price is that
+`Pop` arrives **about 300 ms later** than it does in agterm. Nothing is lost by it: wait for `Pop`
+before speaking, as always (D13). A shortcut held past the floor, such as `⌘Tab` with the right
+hand, does start an attempt; one whose hold switched the application is cancelled silently, with no
+text, no sound and no notification.
+
+**What it types into, and what it refuses.** Only a real text field: a text area or text field whose
+value can be edited. A focused button, list, sidebar tree or page receives nothing, because plain
+characters there act as commands or type-to-select, and dicta is not voice control. **A password
+field is refused**, by its kind, without anything in it being read; so is any dictation while
+Secure Input is on anywhere on the machine. Each refusal happens before the microphone opens, with
+`Basso` and a notification. dicta never reads what a field contains, only what kind of thing it is.
+
+**Where the text goes, and where it does not.** The target is the application and the field that had
+focus when the hold passed the floor. Before the first keystroke dicta checks that the same field is
+still focused in the same application, and if not it types nothing and says so; the text is in
+`dictactl last`. If you switch to another application while a long text is being typed, it stops
+there, never finishes in the new application, and says the insertion may be partial. **Moving focus
+inside the same application while the text is being typed is not detected** — the VS Code editor to
+its terminal, for instance — so do not do that mid-delivery.
+
+**Feedback is sounds and notifications**, since there is no agterm indicator: `Pop` when the
+microphone is running, `Tink` on delivery, `Basso` with a notification when something went wrong.
+Under a Focus mode macOS suppresses the notification, and `Basso` plus the record are all there is.
+The menu bar works unchanged and names the application instead of a session.
+
+**The chords stay agterm-only, and so does raw mode.** The chords fire through agterm's keymap; in
+any other application the held key is the whole interface, and it always stops in **clean**.
+
+**The pasteboard is never used.** The text arrives as Unicode keystrokes posted to that application's
+process, not as a paste, so whatever you had copied is untouched — the clipboard stays yours, and
+the panel's copy button is still the way to recover a dictation that went nowhere (D32).
+
+**VS Code, and Electron applications in general, need their accessibility tree switched on.** VS
+Code and Slack expose no focused field until something sets `AXManualAccessibility` on them (F11).
+dicta sets it the first time you dictate into such an application and reads again; that setting
+stays on for the life of that application's process. If the tree is not ready in time, the first
+dictation after the application launches is refused, and the next one works — or relaunch the
+application after granting. What F11 saw in VS Code, so that it is not mistaken for a dicta fault:
+the text arrives identical in the editor, the integrated terminal (with Claude Code in it) and the
+chat input; a long line in a JavaScript editor can make VS Code stop responding for several seconds
+while it catches up, without changing the text; and a dictation that ends mid-word can leave the
+editor's autocomplete open, so your next Return accepts the suggestion. Slack applies its own
+rewrites — curly quotes, emoji as `:shortcodes:` — which dicta cannot see.
+
+**Submitting is still yours.** The same sanitiser runs last on this path, so what is typed is a
+single line with no Return in it; a terminal in VS Code submits on Return exactly as agterm does.
 
 ## Dictating into something dicta cannot type into
 
@@ -255,16 +352,19 @@ usage: Dicta [options]
 options:
   --control <path>         dicta's own control socket (defaults to the one under
                            ~/Library/Application Support/dev.personal.dicta)
-  --agterm-socket <path>   agterm's control socket, when it is not the default one. A chord that
-                           passes "$AGT_SOCKET" overrides this per attempt; this is the fallback
-                           for a keymap that does not
+  --agterm-socket <path>   agterm's control socket, when it is not the default one
   --fetch-models           download the recognition models, then exit
   --no-hold                do not arm push-to-talk; the keymap chords still work
   --hold-key <name>        arm push-to-talk on this key instead of the default pair
-                           (rightControl|rightCommand|rightOption); repeat the flag to
-                           arm several, and note that the first one REPLACES the pair
+                           (rightControl|rightCommand|rightOption); repeat the flag to arm several
+  --focused-fields         also dictate into the focused text field of any other application;
+                           needs the Accessibility grant, and makes agterm optional
   --help                   print this
 ```
+
+A chord that passes `"$AGT_SOCKET"` overrides `--agterm-socket` per attempt; the flag is the
+fallback for a keymap that does not. The first `--hold-key` **replaces** the default pair rather than
+adding to it.
 
 `--fetch-models` is a separate invocation rather than something the daemon does at start-up, and
 that is deliberate: it starts at login, on whatever network the laptop woke up on, and pulling six
@@ -335,7 +435,7 @@ are attempted, which is the only route by which recognised text survives a deliv
 | `recognised` | verbatim recogniser output, hazards and all |
 | `final` | what was injected, or would have been: replaced, filtered, sanitised |
 | `rules` | the ids of the replacement rules that fired, and the dictionary's mtime |
-| `target` | the session id and pane resolved at the start, and never substituted |
+| `target` | what was resolved at the start, and never substituted: `sessionID` and `pane` for agterm, or `field` with the application's `appName`, `bundleID` and `pid` for a focused field |
 | `error` | the reason you were shown, when there was one |
 
 `recognised` and `final` are separate on purpose: comparing them, with `rules` beside them, is what
@@ -366,7 +466,13 @@ attempt (D14). Losing an utterance costs one keypress.
   place. Whatever text a capped attempt produced is still in the record.
 - **The text went nowhere.** If the session or the pane is gone when the keystrokes are due, the
   attempt fails and is recorded; it is never re-aimed at whatever has focus now, because that would
-  put your prompt in somebody else's agent (D4).
+  put your prompt in somebody else's agent (D4). A focused field is the same: if another field or
+  application has focus when the text is due, nothing is typed and the text is in `dictactl last`.
+- **A hold in another application does nothing, or says it was refused.** Silence means the daemon
+  runs without `--focused-fields` (`~/Library/Logs/dicta.log` says `focused fields: off`). A refusal
+  names the reason: the Accessibility grant, Secure Input, or a focused thing that is not a text
+  field. A refused first dictation into a freshly launched VS Code or Slack is their accessibility
+  tree not being ready yet; the next one works.
 - **Wrong words.** Compare `recognised` with `final`. If they differ, `rules` names what changed it.
   If they agree, it is the recogniser, and a dictionary rule is how you fix it.
 

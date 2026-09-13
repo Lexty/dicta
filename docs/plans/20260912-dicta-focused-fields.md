@@ -1343,13 +1343,13 @@ about `returned`.
 
 ### Task 13: [Final] Update documentation
 
-- [ ] `README.md`:
+- [x] `README.md`:
   - Requirements: agterm becomes optional;
   - a "Dictating into any app" section covering `--focused-fields`, the grant, the floor's extra delay before
     `Pop`, password fields, chords and `raw` staying agterm-only, the pasteboard never
     being used, and VS Code's accessibility-mode note from F11;
   - installing without agterm.
-- [ ] `AGENTS.md`:
+- [x] `AGENTS.md`:
   - "Where it stands";
   - rules worth not relearning:
     - AX never on the poll thread;
@@ -1362,8 +1362,27 @@ about `returned`.
     - field handles are owned by accepted attempt id;
     - the option off means zero AX calls, and which test holds that;
     - one-way record compatibility.
-- [ ] repository convention: plans stay in `docs/plans/` as historical run records (both earlier
+- [x] repository convention: plans stay in `docs/plans/` as historical run records (both earlier
   plans are there), so this file is not moved to `docs/plans/completed/`.
+
+- ➕ **Outcome (2026-09-13).** `README.md` gained "Dictating into any app" (the option, the grant, the
+  floor's later `Pop`, what is refused, where the text goes and does not, feedback, chords and `raw`
+  agterm-only, no pasteboard, and F11's VS Code and Electron notes), the optional agterm in
+  Requirements, installing with `--focused-fields` and without agterm, the field shape of `target`,
+  and the daemon's usage block quoted as `Dicta --help` prints it. `AGENTS.md` gained the plan in
+  "Where it stands", the installer and linkage changes in Commands, the new files in Structure, and a
+  section "Focused fields, and why the permission is opt-in" carrying every listed rule; the D21 rule
+  now names the one path where the floor delays the start. The plan stays in `docs/plans/`, and
+  AGENTS.md says that is the convention.
+  - ⚠️ **The grant is never prompted for.** The daemon checks `AXIsProcessTrusted` only
+    (`FocusedField.swift`), while F11 found that only `AXIsProcessTrustedWithOptions` with the prompt
+    option adds `Dicta.app` to the Accessibility list. `install.sh`'s comment ("TCC adds the entry the
+    first time the daemon checks") and H28 (a) ("`Dicta` is now listed") both assume otherwise. The
+    README tells the user to add `~/Applications/Dicta.app` with `+` if it is not listed, which holds
+    either way; H28 (a) will settle it, and a prompting check is the likely fix.
+  - Tests: 714 in 43 suites green under Xcode 26.6 (Swift 6.3.3), none new (documentation only;
+    `DocumentationTests` still pass); lint clean (swiftlint not installed, built-in checks only).
+
 
 ## Post-Completion
 *Items requiring manual intervention or external systems - no checkboxes, informational only*

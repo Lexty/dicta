@@ -5,7 +5,8 @@ specifics; Codex, and anything else, reads this file.
 
 Voice dictation into **agterm**'s input line: hold the right Control key, speak, let go, the text
 appears where you were typing. Primarily for dictating prompts to Claude Code and instructions to agents
-running inside agterm. Everything is local; the audio never leaves the machine.
+running inside agterm. With `--focused-fields`, also into the focused text field of any other
+application, and agterm becomes optional. Everything is local; the audio never leaves the machine.
 
 `SPEC.md` is normative — decisions are cited as D*, measurements as F*, invariants as §8. This file
 is the operating manual: what to run, what the environment actually is, and the rules that are
@@ -88,6 +89,29 @@ noticed without being looked at, that the banners appear on a machine with no mo
 microphone denied, that a dictation which went nowhere reaches the clipboard from the panel, and
 that `Stop and type` lands in the pane the chord was pressed in.
 
+**Dictating into any application's focused field is built — `docs/plans/20260912-dicta-focused-fields.md`,
+all thirteen tasks, behind the daemon's `--focused-fields` (D31, D32, invariant 14).** A target is
+now a sum, `.agterm(AgtermTarget)` or `.focusedField(FieldTarget)`, and an agterm record line is
+byte-identical to what it was. The measurements came first, as F11 (the probe was `c3b9aba`), and
+fixed the delivery: Unicode keystrokes posted to the captured pid in chunks of 20 UTF-16 units, at
+most 200 per event and 4 000 chunks, a 10 s delivery deadline, a 0.25 s AX messaging timeout, sounds
+through `NSSound` and notifications through `osascript`. The pure decisions are in `DictaCore`
+(`HoldRoute`, `FieldEligibility`, `KeystrokeChunks`, `DaemonOptions`), the adapters in
+`DictaRuntime/FocusedField.swift`, `SystemFeedback.swift` and `FocusedFieldWiring.swift`, and
+`Scripts/install.sh --focused-fields` writes the option into the agent through
+`Scripts/render-agent.sh`. With the option off, every agterm behaviour is unchanged and the daemon
+makes no accessibility call.
+
+What is left is what only a person can score, **H24–H34**: VS Code's editor and terminal, Slack and
+Safari, the grant from a clean state, Secure Input, a non-text focus, focus moving around a
+delivery, a day of right-hand shortcuts, a machine without agterm and the delivery bound. Two
+constants are provisional because nobody has measured them yet: `HoldTrigger.defaultSettleWindow`
+(the ⌘Tab activation lag) and `SystemFocusedFieldAccess.manualAccessibilitySettle` (how long
+Electron takes to build its tree).
+
+Plans stay in `docs/plans/` when they finish, as the record of the run that built them; there is no
+`completed/` directory.
+
 ## Commands
 
 - Build: `swift build` / `swift build -c release`
@@ -124,6 +148,10 @@ that `Stop and type` lands in the pane the chord was pressed in.
 - Install everything: `bash Scripts/install.sh` — `dictactl` to `~/.local/bin`, the signed bundle to
   `~/Applications/Dicta.app`, the LaunchAgent to `~/Library/LaunchAgents/dev.personal.dicta.plist`,
   then bootout/bootstrap/kickstart. It never touches `~/.config/agterm/keymap.conf`.
+  `bash Scripts/install.sh --focused-fields` writes the agent with that flag, and **re-running without
+  it turns the option off** (the script prints `focused fields: turned OFF`). Unknown arguments are
+  refused, so a typo cannot install the option silently off. `Scripts/render-agent.sh` renders the
+  agent and is what `BundleTests` lints for both settings, so no test runs the real installer.
 - One-time signing setup: `bash Scripts/setup-signing.sh` — idempotent, non-interactive, and called
   by `bundle.sh` on its own when the identity is missing, so it is rarely run by hand.
 - One suite only: `bash Scripts/test.sh --filter "sanitiser"` (arguments pass through to
@@ -137,7 +165,11 @@ that `Stop and type` lands in the pane the chord was pressed in.
   reads `Dicta` for the four shapes of "read a keystroke" — `CGEventTapCreate`, `CGEventTapEnable`,
   `IOHIDManager`, `_OBJC_CLASS_$_NSEvent` — which is invariant 11, the one thing standing between
   push-to-talk and a permission prompt. `--daemon <path>` scores that check alone; it was probed by
-  adding a `CGEvent.tapCreate` call and watching it fail on `U _CGEventTapCreate`.
+  adding a `CGEvent.tapCreate` call and watching it fail on `U _CGEventTapCreate`. For
+  `dictactl` and `DictaMenu` it also fails by name on `_CGEventPost`, `_CGEventPostToPid`,
+  `_CGEventKeyboardSetUnicodeString`, `_AXUIElementCreateSystemWide` and
+  `_AXUIElementCopyAttributeValue`, matched as exact C names: only the daemon may post keystrokes or
+  touch accessibility (invariant 14).
 
 ## Why the test runner exists (D18) — measured, not assumed
 
@@ -462,7 +494,12 @@ testing.linker` to the `DictaTests` target — otherwise the failing test cannot
   `dictactl` cannot reach it even by accident, because it does not depend on this target.
   `ParakeetTranscriber.swift` is in turn the only file that knows FluidAudio exists — everything else
   sees `RecognitionEngine`, which is what makes "the models load exactly once" a countable assertion.
-- `Sources/Dicta/` — the daemon executable. Wiring only.
+  The focused-field adapters are here too — `FocusedField.swift` (the `FocusedFieldAccess`,
+  `EventPoster` and `Pacer` seams, their system adapters and `FocusedFieldInjector`),
+  `SystemFeedback.swift` (sounds and notifications where there is no agterm indicator) and
+  `FocusedFieldWiring.swift`, which builds none of them when the option is off.
+- `Sources/Dicta/` — the daemon executable. Wiring only: flags are parsed by `DaemonOptions` in
+  `DictaCore`, so they are testable.
 - `Sources/dictactl/` — the client the keymap invokes. **DictaCore + DictaIPC and nothing else**,
   and it never opens the microphone: the TCC grant belongs to the daemon's signed bundle, and a
   second binary opening the device would fracture it (D11, D12, invariant 8).
@@ -800,8 +837,9 @@ More rules that are not obvious from the code:
   keyboard and 86-195 ms on the built-in one, speaking does not. **The margin is no longer "twice
   the longest press"** — F6a's 195 ms took that, leaving 105 ms — and the one everyday gesture that
   clears the floor on purpose is `⌘Tab` held with the right hand, which costs an attempt with no
-  text in it and never an injection (D22 read frontmost at the press). The floor is NOT a delay
-  before recording starts — waiting would spend it out of F4's budget on every real dictation.
+  text in it and never an injection (D22 read frontmost at the press). On the agterm path the floor
+  is NOT a delay before recording starts — waiting would spend it out of F4's budget on every real
+  dictation. The focused-field path is the one exception, and the next section says why.
 - **`SystemFrontmost` holds an observer that looks unused and is the only reason any of this
   works.** `NSWorkspace.frontmostApplication` reads a per-process cache that is only refreshed if
   something in the process has subscribed to the workspace notification centre. With no observer it
@@ -855,6 +893,104 @@ commands are serialised, and a second door into the lifecycle would be a code pa
 Two real `Thread`s — one polling at 16 ms, one sending — for the reason at the bottom of the list
 below about the control socket: the sender blocks for the length of a whole dictation, and Darwin's
 non-overcommit pool does not grow when its threads block.
+
+## Focused fields, and why the permission is opt-in
+
+**`--focused-fields` makes the focused text field of any other application a second kind of target
+(D31), delivered as Unicode keystrokes posted to that application's pid (D32).** The routing is
+`HoldRoute`: agterm frontmost takes the agterm path whether the option is on or off, and any other
+application is a silent no-op with it off and the field path with it on. Posting into another
+process needs the Accessibility grant, and that is why the option exists: **with it off the daemon
+makes no accessibility call and posts no event, so D5's "no permission" still holds for everyone who
+did not ask for this.** The chords stay agterm-only, so outside agterm `raw` cannot be reached.
+
+The rules, each of which is either a measurement or a mistake a first draft made:
+
+- **The option off means zero AX calls, and a test holds it rather than a habit.**
+  `FocusedFieldWiring.make` returns `nil` before it calls a single adapter factory
+  (`test: with focused fields off, the wiring is nil and constructs no system adapter`), and the
+  trigger, handed a live fake with the option off, never calls it
+  (`test: with focused fields off, the accessibility fake records zero calls in every scenario`).
+  That is also why the start-up line reads `accessibility: not checked` with the option off: the
+  trust check is itself an accessibility call.
+- **The field path starts on the poll loop's threshold edge, never by sleeping in the sender.** On
+  this path nothing is sent until the hold outlasts the floor, because right Control and right
+  Command are real modifiers and a start on key-down would open the microphone, read AX and write an
+  `aborted` line for every right-hand `⌘C` in every application. The sender handles edges serially
+  and can be seconds behind, so a sleep there could not see an `up` already queued behind it, and
+  timing the hold when the edge is finally handled turns a short queued shortcut into a long hold.
+  So `HoldWatch` emits `.threshold` from **sampled** time, every edge carries its hold's generation,
+  and the sender starts only if `HoldLiveness` — written by the poll loop at each owning `down` and
+  `up`, independently of the queue — says that generation is still held right now. **Queue order is
+  history, not liveness**: a long hold released while the sender was blocked sits in the queue as
+  `[down, threshold, up]`, and checking against the sender's own pending hold would start a
+  dictation for a key no longer down.
+- **One observer-backed frontmost source, shared.** `SystemFrontmost` stores bundle id, pid and name
+  together from the activation notification's `NSRunningApplication`, never re-reading
+  `NSWorkspace.shared.frontmostApplication` (F8a). The trigger and the injector share one instance,
+  and it is built whenever the option is on, **even under `--no-hold`**, so the observer exists.
+  `FocusedFieldAccess` deliberately has no `frontmostPID`: a second, unobserved source would bring
+  back F8a's frozen value.
+- **AX never runs on the poll thread**, and never hops to the main run loop either, which the
+  workspace observer needs and a hop could deadlock. A hung application can block an AX call for
+  seconds, so the messaging timeout is set once, process-globally, at 0.25 s on the system-wide
+  object — which is used for nothing else, because its focused-element read fails in every
+  application (F11). The focused element is read through `AXUIElementCreateApplication(pid)`.
+- **`IsSecureEventInputEnabled` is system-wide and not thread safe** (`CarbonEventsCore.h`). It is a
+  reason to refuse, not a password-field detector — the password field is refused by
+  `FieldEligibility` naming the `AXSecureTextField` subrole. Every `SystemFocusedFieldAccess` call is
+  serialised by one private lock inside the adapter.
+- **The element never leaves the daemon, and its value is never read** (invariant 14). The
+  `AXUIElement` is parked beside the attempt in `DictaRuntime`, so `DictaCore` stays free of
+  ApplicationServices; the wire and the record carry only `appName`, `bundleID` and `pid`.
+  Eligibility is decided from role, subrole and whether the value is settable — metadata only. The
+  adapter copies attributes through one function typed by a closed list of identity attributes, and
+  `test: the adapter can copy only identity attributes, never a field's value or selected text`
+  holds that nothing in `Sources/` copies around it. `.unknown` eligibility is refused, never
+  promoted.
+- **Field handles are owned by the accepted attempt id.** `begin` resolves the handle into a local
+  with no lock held across AX, and stores it inside the same `stateLock` acquisition that accepts
+  the start (`apply`'s `onAcceptedStartLocked`). Inserting after `apply` returned let an abort or
+  fault on another thread run its cleanup in between and resurrect the handle of an attempt that had
+  already ended; the interleaving test only caught that once its hook waited for the contender
+  thread to be running. A refused start drops its local; release is by id, so a late teardown of
+  attempt N cannot remove N+1's handle.
+- **Flags are zeroed on every posted event.** Each chunk is a key-down and key-up with keycode 0,
+  the Unicode string, `flags = []` and a `.privateState` source. Without the empty flags a right
+  Command the user is still holding combines with the text, and the dictation fires shortcuts. F11
+  measured the zeroed form against a physically held Shift and right Command: the text arrived
+  unchanged.
+- **`postToPid`, not the HID tap.** An event posted at the HID level is delivered to whatever is
+  frontmost when it is **processed**, so no per-chunk check could close D4's substitution race;
+  `postToPid` pins the process, and F11 found it sufficient in every application tried. It does not
+  pin the element: a move of focus inside the same application during delivery is not detected, and
+  SPEC says so rather than claiming more. Not the pasteboard with `⌘V` either — the pasteboard is
+  the user's recovery channel (D28), and this path never touches it.
+- **Re-validate last, then post, and bound the plan before either.** `FocusedFieldInjector` plans
+  with `KeystrokeChunks` first (a text over the bound is `notStarted` with `final` in the record),
+  then checks deadline, frontmost pid, `CFEqual` element, fresh eligibility, Secure Input and the
+  grant, then the deadline and pid **again** after the AX calls have returned, and then posts. Only
+  a definite answer is called gone (`targetGone`); an AX timeout or error is `notStarted`. Between
+  chunks the pid and the deadline are re-checked, and a failure is `mayBePartial`, never retried —
+  D20 refuses an abort mid-delivery, so the deadline is the only thing that stops a long one.
+- **Only `AXIsProcessTrusted` is a usable grant check** (F11). `CGPreflightPostEventAccess` stayed
+  stale in both directions within one process, and without the grant posting is silently discarded
+  with no error to observe.
+- **Setting `AXManualAccessibility` is a side effect on another application, and it is stated.**
+  Electron (VS Code, Slack) exposes no focused element until it is set; dicta sets it once, when the
+  application answers `noValue`, re-reads once after a settle, and refuses as unknown if the element
+  is still absent. It stays set for the life of that process.
+- **Record compatibility is one-way.** Every old `record.jsonl` line and `active-target` file
+  decodes, and `.agterm` still encodes to the flat `{"pane", "sessionID"}` object. A field line is
+  `{"field": {…}}`, which an **older** daemon cannot decode and skips — so after a rollback
+  `firstUnusedID` can reuse a field attempt's id. Accepted, and written here so nobody rediscovers it
+  as a bug.
+- **Feedback without agterm goes through `SystemFeedback`**: `Pop`, `Tink`, `Basso` and an
+  `osascript` notification, which a Focus mode suppresses (F11), leaving the sound. It is also the
+  notifier for untargeted refusals whenever there is no agterm. `Terminal` is optional in the daemon:
+  with the option on and no `agtermctl`, start-up logs it and carries on, readiness is `.fieldsOnly`
+  rather than a fault, and a chord is refused with a reason naming `agtermctl`. With the option off,
+  a missing `agtermctl` stays fatal.
 
 ## The menu bar, and why the daemon does not know it exists
 
@@ -930,6 +1066,12 @@ external keyboard UNPLUGGED, since with it attached a pass proves nothing about 
 a LaunchAgent. If that call returns nil under launchd, D22 stops
 holding and the key dictates from inside Safari — the same shape of gap that made F4's old number
 describe a build with a fake microphone in it.
+
+Focused fields add **H24–H34**, and nothing about them has been scored on hardware by a person yet:
+real delivery into VS Code (editor and terminal, with Claude Code), Slack and Safari; the grant from
+`tccutil reset` through a rebuild; Secure Input; a non-text focus receiving nothing; focus moving
+around a delivery; right-hand shortcuts costing nothing over a day; a machine without agterm; and
+the delivery bound.
 
 **`docs/manual-checklist.md` is the list, and it is complete** — every item states the observation
 that counts as a pass, so two people scoring it agree. In short: that the chords fire and
