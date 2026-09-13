@@ -169,6 +169,7 @@ public final class StatusViewModel: ObservableObject {
         case .end:
             model = MenuModel(link: .ended(event.reason ?? "it was stopped"),
                               snapshot: nil, receivedAt: time)
+            updateTicker()
         }
     }
 
@@ -178,6 +179,9 @@ public final class StatusViewModel: ObservableObject {
         if case .ended = model.link, case .ended = link {} else {
             model = MenuModel(link: link, snapshot: nil, receivedAt: world.now())
         }
+        // Before the guard: a connection that ended took the recording with it, whether or not
+        // another one is coming.
+        updateTicker()
         guard running else { return }
         let delay = Backoff.delay(afterFailures: failures)
         failures += 1
@@ -197,8 +201,12 @@ public final class StatusViewModel: ObservableObject {
     ///
     /// One second is the right interval when it does run: the clock shows `m:ss`, and anything
     /// faster would redraw for a digit that cannot have changed.
+    ///
+    /// The microphone half is gated on the link, as `liveTarget` is: a recording known only from a
+    /// connection that has gone is not a clock anyone is watching count.
     private func updateTicker() {
-        let wanted = panelOpen || model.snapshot?.state == .recording
+        let recording = model.link == .connected && model.snapshot?.state == .recording
+        let wanted = panelOpen || recording
         guard wanted != (ticker != nil) else { return }
         guard wanted else {
             ticker?.cancel()

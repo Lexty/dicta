@@ -119,6 +119,86 @@ struct StatusViewModelTests {
         #expect(fake.with { $0.watchedPaths } == [Self.socket, Self.socket])
     }
 
+    // MARK: - the ticker
+
+    @Test("with the panel closed, a recording schedules the ticker and an end cancels it")
+    func endCancelsTheTicker() {
+        let fake = FakeMenuWorld()
+        let model = Self.model(fake)
+        fake.script([.update(Self.recording),
+                     WatchEvent(kind: .end, reason: "the daemon is shutting down")])
+        model.start()
+        fake.runOffMain("watch")
+        // Three hops wait: the update, the end, and the return. Landed one at a time, so the end
+        // is shown to cancel the ticker on its own, before the returning thread reports anything.
+        #expect(fake.heldMainHops == 3)
+        fake.releaseMain(at: 0)
+        #expect(fake.runningTickers == 1)
+        #expect(fake.with { $0.tickers.map(\.interval) } == [1])
+        fake.releaseMain(at: 0)
+        #expect(model.model.link == .ended("the daemon is shutting down"))
+        #expect(fake.runningTickers == 0)
+        fake.settle()
+        #expect(fake.runningTickers == 0)
+    }
+
+    @Test("with the panel closed, a watch that throws mid-recording cancels the ticker")
+    func thrownWatchCancelsTheTicker() {
+        let fake = FakeMenuWorld()
+        let model = Self.model(fake)
+        let crashed = ControlClient.ClientError.daemonCrashed(path: Self.socket)
+        fake.script([.update(Self.recording)], then: .throwing(crashed))
+        model.start()
+        fake.runOffMain("watch")
+        fake.releaseMain(at: 0)
+        #expect(fake.runningTickers == 1)
+        fake.settle()
+        #expect(model.model.link == .failed(crashed.description))
+        #expect(fake.runningTickers == 0)
+        // The reconnect is still scheduled: stopping the second hand stops nothing else.
+        #expect(fake.pendingAfterDelays == [Backoff.delay(afterFailures: 0)])
+    }
+
+    @Test("with the panel open, the ticker survives an end, a disconnect and a restart")
+    func openPanelKeepsTheTicker() {
+        let fake = FakeMenuWorld()
+        let model = Self.model(fake)
+        fake.script([.update(Self.recording),
+                     WatchEvent(kind: .end, reason: "the daemon is shutting down")])
+        model.start()
+        model.panelAppeared()
+        fake.settle()
+        #expect(model.model.link == .ended("the daemon is shutting down"))
+        #expect(fake.runningTickers == 1)
+
+        // The drawer's relative times still need a second hand while nothing is connected.
+        let later = fake.with { state -> Date in
+            state.now += 5
+            return state.now
+        }
+        fake.tick()
+        #expect(model.now == later)
+
+        // The daemon is gone when the backoff elapses...
+        fake.script([], then: .throwing(ControlClient.ClientError.daemonNotRunning(path: "x")))
+        fake.fireAfter()
+        fake.settle()
+        #expect(model.model.link == .notRunning)
+        #expect(fake.runningTickers == 1)
+
+        // ...and back, idle, when the next one does.
+        fake.script([.update(Self.idle)], then: .open)
+        fake.fireAfter()
+        fake.settle()
+        #expect(model.model.link == .connected)
+        #expect(fake.runningTickers == 1)
+        // The same ticker throughout: none was cancelled and scheduled again.
+        #expect(fake.with { $0.tickers.count } == 1)
+
+        model.panelDisappeared()
+        #expect(fake.runningTickers == 0)
+    }
+
     // MARK: - commands
 
     @Test("stopAndType and abort send requests naming the live attempt")

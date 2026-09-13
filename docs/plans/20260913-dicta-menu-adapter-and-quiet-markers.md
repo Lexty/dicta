@@ -565,15 +565,26 @@ case symbol(String) }`.
 **Files:**
 - Modify: `Sources/DictaMenuKit/StatusViewModel.swift`, `Sources/DictaTestRunner/StatusViewModelTests.swift`
 
-- [ ] write a failing test: with the panel closed, a recording snapshot schedules the ticker, and
+- [x] write a failing test: with the panel closed, a recording snapshot schedules the ticker, and
   `.end` cancels it. Record the failure
-- [ ] write a failing test: with the panel closed, a watch that throws mid-recording cancels the
+  - "with the panel closed, a recording schedules the ticker and an end cancels it" lands the
+    update, the end and the return one hop at a time. Before the fix it failed with
+    `Expectation failed: (fake.runningTickers → 1) == 0` after the end, and again after the return
+- [x] write a failing test: with the panel closed, a watch that throws mid-recording cancels the
   ticker
-- [ ] write a test: with the panel open, the ticker survives `.end`, a disconnect, and a daemon
+  - failed before the fix with `Expectation failed: (fake.runningTickers → 1) == 0`; it also checks
+    the backoff reconnect is still scheduled
+- [x] write a test: with the panel open, the ticker survives `.end`, a disconnect, and a daemon
   restart that reconnects through `after`; it stops when the panel closes
-- [ ] call `updateTicker()` from `.end` and from `finished`, before `guard running`, and gate the
+  - passed before the fix too, as expected: the panel half was never broken. It also checks a tick
+    still advances `now` while disconnected, and that one ticker runs throughout
+- [x] call `updateTicker()` from `.end` and from `finished`, before `guard running`, and gate the
   recording half on `model.link == .connected`
-- [ ] run `bash Scripts/test.sh`; must pass before Task 4
+  - the link gate has no failing test of its own: every path that leaves `.connected` today also
+    clears the snapshot, so it guards a state no event produces yet, as `liveTarget` does
+- [x] run `bash Scripts/test.sh`; must pass before Task 4
+  - 905 tests in 52 suites passed under Xcode 26.6 and under the Command Line Tools, linkage
+    clean, lint and `git diff --check` clean
 
 ### Task 4: Never roll Recent Dictations back to an older read (defect b)
 
