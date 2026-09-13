@@ -2086,6 +2086,7 @@ struct DaemonTests {
         case pidMismatch
         case ineligible
         case unknown
+        case subroleUnread
 
         var testDescription: String { rawValue }
 
@@ -2107,7 +2108,7 @@ struct DaemonTests {
             case .optionOff, .fieldWithFocus, .fieldWithSession: []
             case .noGrant: [.isTrusted]
             case .secureInput: [.isTrusted, .isSecureInputOn]
-            case .noElement, .unreadable, .pidMismatch, .ineligible, .unknown: read
+            case .noElement, .unreadable, .pidMismatch, .ineligible, .unknown, .subroleUnread: read
             }
         }
 
@@ -2120,7 +2121,7 @@ struct DaemonTests {
             case .noElement: "no focused element"
             case .unreadable: "could not read"
             case .pidMismatch: "gone"
-            case .ineligible, .unknown: "text field"
+            case .ineligible, .unknown, .subroleUnread: "text field"
             }
         }
 
@@ -2151,6 +2152,11 @@ struct DaemonTests {
             case .unknown:
                 facts = FieldFacts(role: nil, subrole: nil, valueSettable: nil,
                                    hasSelectedTextRange: nil)
+            case .subroleUnread:
+                // A text field in every other fact, whose subrole read timed out: it could be the
+                // password field, and Secure Input is not relied on to say so.
+                facts = FieldFacts(role: "AXTextField", subrole: nil, subroleAnswered: false,
+                                   valueSettable: true, hasSelectedTextRange: true)
             }
             harness.access.answer(.success(FocusedElement(handle: FieldHandle(token: 1),
                                                           facts: facts)))

@@ -312,13 +312,32 @@ public final class SystemFocusedFieldAccess: FocusedFieldAccess, @unchecked Send
         var names: CFArray?
         let namesStatus = AXUIElementCopyAttributeNames(element, &names)
         let attributeNames = namesStatus == .success ? names as? [String] : nil
+        var subroleValue: CFTypeRef?
+        let subroleStatus = copy(.subrole, of: element, into: &subroleValue)
+        let subrole = Self.subrole(status: subroleStatus, value: subroleValue)
         return FieldFacts(
             role: string(.role, of: element),
-            subrole: string(.subrole, of: element),
+            subrole: subrole.subrole,
+            subroleAnswered: subrole.answered,
             valueSettable: settableStatus == .success ? settable.boolValue : nil,
             // From the list of attribute NAMES: reading the range itself would be reading content.
             hasSelectedTextRange: attributeNames?.contains(kAXSelectedTextRangeAttribute)
         )
+    }
+
+    /// The subrole a read found, told apart from a read that found nothing. F11 saw real text
+    /// fields answer `noValue` and `attributeUnsupported`, and both mean the element has none. Any
+    /// other error -- a timeout above all -- or a value that is not a string says nothing about
+    /// whether this is a password field, and is reported as unanswered.
+    public static func subrole(status: AXError,
+                               value: CFTypeRef?) -> (subrole: String?, answered: Bool) {
+        switch status {
+        case .success:
+            guard let text = value as? String else { return (nil, false) }
+            return (text, true)
+        case .noValue, .attributeUnsupported: return (nil, true)
+        default: return (nil, false)
+        }
     }
 
     private func string(_ attribute: ReadAttribute, of element: AXUIElement) -> String? {

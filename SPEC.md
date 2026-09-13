@@ -629,8 +629,11 @@ admission is a content-free classification of accessibility **metadata**, from F
   than `AXSecureTextField`;
 - **ineligible**: any other role, a value that is not settable, or the secure subrole — which covers
   F11's `AXGroup` tree, its `AXWebArea` page, and the password field named without reading it;
-- **unknown**: the role or the settability could not be read. **Unknown is refused**, never promoted
-  to eligible.
+- **unknown**: the role or the settability could not be read, or — for an element every other fact
+  calls a text field — the subrole read failed with anything but "none" (`noValue` or
+  `attributeUnsupported`, both seen by F11 on real text fields). A timed-out subrole is not an absent
+  one, and Secure Input is not relied on to catch the password field it might be. **Unknown is
+  refused**, never promoted to eligible.
 
 `AXSelectedTextRange` is not an input: F11 found Chromium puts it on a tree, so it discriminates
 nothing. Other text roles (`AXComboBox`, `AXSearchField`) were not measured and stay ineligible until

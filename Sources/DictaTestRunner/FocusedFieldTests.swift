@@ -79,6 +79,26 @@ struct FocusedFieldTests {
         #expect(meter.mostAtOnce == 1)
     }
 
+    @Test("a subrole read that did not answer is told apart from an element with no subrole")
+    func theSubroleTable() {
+        typealias Access = SystemFocusedFieldAccess
+        let secure = Access.subrole(status: .success, value: "AXSecureTextField" as CFString)
+        #expect(secure.subrole == "AXSecureTextField" && secure.answered)
+        // F11 saw both on real text fields: the element has none.
+        for none in [AXError.noValue, .attributeUnsupported] {
+            let read = Access.subrole(status: none, value: nil)
+            #expect(read.subrole == nil && read.answered, "\(none.rawValue)")
+        }
+        // Says nothing about whether it is a password field.
+        for failure in [AXError.cannotComplete, .apiDisabled, .failure, .invalidUIElement,
+                        .illegalArgument, .notImplemented] {
+            let read = Access.subrole(status: failure, value: nil)
+            #expect(read.subrole == nil && !read.answered, "\(failure.rawValue)")
+        }
+        let notAString = Access.subrole(status: .success, value: kCFBooleanTrue)
+        #expect(notAString.subrole == nil && !notAString.answered)
+    }
+
     // MARK: - identity, never content
 
     @Test("the adapter can copy only identity attributes, never a field's value or selected text")
@@ -339,6 +359,8 @@ struct FocusedFieldDeliveryTests {
               FieldFacts(role: "AXTextField", subrole: "AXSecureTextField", valueSettable: true,
                          hasSelectedTextRange: true),
               FieldFacts(role: nil, subrole: nil, valueSettable: nil, hasSelectedTextRange: nil),
+              FieldFacts(role: "AXTextField", subrole: nil, subroleAnswered: false,
+                         valueSettable: true, hasSelectedTextRange: true),
           ])
     func aChangedEligibilityIsNotStarted(_ facts: FieldFacts) {
         let rig = Rig()

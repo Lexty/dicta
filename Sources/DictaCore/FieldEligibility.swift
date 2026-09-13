@@ -11,16 +11,21 @@ public struct FieldFacts: Equatable, Sendable {
     /// `nil` when the element reports none, which F11 saw as both "no value" and "unsupported" on
     /// real text fields. Only the secure subrole means anything to the rule.
     public var subrole: String?
+    /// Whether accessibility answered for the subrole at all. `false` for a timeout or any other
+    /// error that is not "none": `subrole` is then `nil` without meaning the field has none, and a
+    /// password field whose read timed out must not pass as a plain one.
+    public var subroleAnswered: Bool
     /// Whether `kAXValueAttribute` is settable.
     public var valueSettable: Bool?
     /// Whether `kAXSelectedTextRangeAttribute` is present. Read, and deliberately not an input to
     /// the rule: F11 found Chromium puts it on a tree, so it discriminates nothing.
     public var hasSelectedTextRange: Bool?
 
-    public init(role: String?, subrole: String?, valueSettable: Bool?,
-                hasSelectedTextRange: Bool?) {
+    public init(role: String?, subrole: String?, subroleAnswered: Bool = true,
+                valueSettable: Bool?, hasSelectedTextRange: Bool?) {
         self.role = role
         self.subrole = subrole
+        self.subroleAnswered = subroleAnswered
         self.valueSettable = valueSettable
         self.hasSelectedTextRange = hasSelectedTextRange
     }
@@ -31,7 +36,8 @@ public struct FieldFacts: Equatable, Sendable {
 public enum Eligibility: Equatable, Sendable {
     case eligible
     case ineligible
-    /// The role or the settability could not be read. Refused, never promoted to eligible.
+    /// The role, the settability or the subrole could not be read. Refused, never promoted to
+    /// eligible.
     case unknown
 }
 
@@ -51,6 +57,9 @@ public enum FieldEligibility {
         guard let role = facts.role else { return .unknown }
         guard textRoles.contains(role) else { return .ineligible }
         guard let settable = facts.valueSettable else { return .unknown }
-        return settable ? .eligible : .ineligible
+        guard settable else { return .ineligible }
+        // Everything else says text field, and only the subrole could still say password field.
+        // Secure Input does not cover for it (SPEC D31), so an unread subrole is not "none".
+        return facts.subroleAnswered ? .eligible : .unknown
     }
 }

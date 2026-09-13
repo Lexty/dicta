@@ -79,6 +79,25 @@ struct FieldEligibilityTests {
         #expect(FieldEligibility.classify(facts) == .ineligible)
     }
 
+    @Test("a text field whose subrole could not be read is unknown, never eligible")
+    func subroleUnreadIsUnknown() {
+        // A timed-out subrole read on a password field would otherwise pass as a plain field, and
+        // Secure Input is not promised to catch it (SPEC D31).
+        let facts = FieldFacts(role: "AXTextField", subrole: nil, subroleAnswered: false,
+                               valueSettable: true, hasSelectedTextRange: true)
+        #expect(FieldEligibility.classify(facts) == .unknown)
+    }
+
+    @Test("a definite negative still wins over a subrole that could not be read")
+    func definiteNegativeWinsOverUnreadSubrole() {
+        let notSettable = FieldFacts(role: "AXTextArea", subrole: nil, subroleAnswered: false,
+                                     valueSettable: false, hasSelectedTextRange: true)
+        let tree = FieldFacts(role: "AXGroup", subrole: nil, subroleAnswered: false,
+                              valueSettable: false, hasSelectedTextRange: true)
+        #expect(FieldEligibility.classify(notSettable) == .ineligible)
+        #expect(FieldEligibility.classify(tree) == .ineligible)
+    }
+
     @Test("AXSelectedTextRange discriminates nothing")
     func selectedTextRangeIsNotAnInput() {
         for range in [true, false, nil] as [Bool?] {
