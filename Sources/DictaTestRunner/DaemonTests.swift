@@ -2678,6 +2678,14 @@ struct DaemonTests {
             $0.setup == SetupSnapshot(scope: .agtermOnly, offerSeen: false, loadProblem: problem,
                                       saveError: reason)
         })
+        // What the setup window draws from that snapshot: still the problem, with the error beside
+        // it and the same controls, so the person can choose again.
+        let failed = SetupModel(snapshot: watcher.events.last?.snapshot)
+        if case .problem(problem, _) = failed.screen {} else {
+            Issue.record("a failed replacement left the window on \(failed.screen)")
+        }
+        #expect(failed.saveError == reason)
+        #expect(failed.controls.first == .setUpDictation)
 
         fault.set(nil)
         let accepted = harness.send(Request(cmd: .configure, scope: .otherApps, offerSeen: true))
@@ -2686,6 +2694,11 @@ struct DaemonTests {
         #expect(SnapshotPublishingTests.waitFor(watcher) {
             $0.setup == SetupSnapshot(scope: .otherApps, offerSeen: true)
         })
+        let replaced = SetupModel(snapshot: watcher.events.last?.snapshot)
+        if case .checklist = replaced.screen {} else {
+            Issue.record("a successful retry left the window on \(replaced.screen)")
+        }
+        #expect(replaced.saveError == nil)
         // The retry replaced too: the original is kept beside the new file.
         #expect(try Data(contentsOf: store.backupURL) == unusable.bytes)
         if case let .loaded(state) = store.load() {

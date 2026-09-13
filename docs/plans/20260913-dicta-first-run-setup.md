@@ -763,25 +763,35 @@ way.
 - Create: `Sources/DictaTestRunner/SetupModelTests.swift`
 - Modify: `Sources/DictaTestRunner/DaemonTests.swift` (the daemon-to-model sequence)
 
-- [ ] write failing tests for `FirstSnapshotLatch`: `true` once, on the first snapshot even when it
+- [x] write failing tests for `FirstSnapshotLatch`: `true` once, on the first snapshot even when it
   is busy; `false` for every later one, across a simulated reconnect and a window close
-- [ ] write failing tests for `shouldAutoOpen`: no snapshot; not the first snapshot of the launch;
+- [x] write failing tests for `shouldAutoOpen`: no snapshot; not the first snapshot of the launch;
   busy; each scope with and without `offerSeen`; each load problem; `saveError` combined with each
   of those (it neither opens the window alone nor suppresses an open that is otherwise due)
-- [ ] write failing tests: every row of the state-to-screen table, including `.unavailable` for a
+- [x] write failing tests: every row of the state-to-screen table, including `.unavailable` for a
   snapshot without `setup`
-- [ ] write failing tests: every row of the button-payload table; the becoming-key check is sent only
+- [x] write failing tests: every row of the button-payload table; the becoming-key check is sent only
   under `otherApps` and is never `prompt: true`, including right after "Allow Access…" was clicked
-- [ ] write failing tests for checklist rows over `faculties` and `hold`, including
+- [x] write failing tests for checklist rows over `faculties` and `hold`, including
   `accessibilityRequested` switching the action to "Open Accessibility Settings", custom keys,
   `.disabled`, `hold == nil` naming no gesture, the microphone's start-up wording, and a
   `saveError` shown inline on the screen the table picks, `.problem` included, with its controls
-- [ ] write failing tests: no copy contains "every field"
-- [ ] write failing tests in `DaemonTests`: Task 7's failed-replace sequence carried through to
+- [x] write failing tests: no copy contains "every field"
+- [x] write failing tests in `DaemonTests`: Task 7's failed-replace sequence carried through to
   `SetupModel.screen` — `.problem` with the error inline after the failure, `.checklist` or
   `.offer` with no error after the successful retry
-- [ ] implement `SetupModel` and `FirstSnapshotLatch`
-- [ ] run tests — must pass before Task 12
+- [x] implement `SetupModel` and `FirstSnapshotLatch`
+- [x] ➕ the model's shape: `SetupScreen` (the table), `SetupControl` (a button and its title),
+  `ChecklistRow`, and `SetupEffect` (at most a request, a System Settings URL, or an existing
+  `Banner.Action` for the models and microphone rows); `effect(of:)`, `effectOfClosing` and
+  `effectOfBecomingKey`; `heading`, `body` and `controls` carry the copy. `.problem` carries the
+  problem and, as `.fresh` does, whether agterm was found. A control the current screen does not
+  draw sends nothing, so a click landing on a screen the stream has replaced cannot prompt or
+  choose. The hold keys are joined by hand, not by `ListFormatter`, which would localise the
+  conjunction. The daemon-to-model sequence extends "a configure over an unusable setup.json
+  replaces it, and a failed one keeps the problem" rather than duplicating it; §7 rows `:95`, `:96`
+  and `:98` now cite the window-side tests
+- [x] run tests — must pass before Task 12
 
 ### Task 12: the setup window in `DictaMenu`
 
