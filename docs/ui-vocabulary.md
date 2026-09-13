@@ -22,7 +22,7 @@ rather than one value; collapsing them is proposed in `docs/ui-proposal.md` §7 
 | panel | `.frame(width: 300)`, `.padding(12)`, `VStack(spacing: 10)`, `Divider()` between sections |
 | header | tinted SF Symbol + app name `.headline` + one-line status `.caption`/`.secondary`, trailing monospaced timer while active |
 | banner | icon + `.caption` text on `tint.opacity(0.12)` in a `RoundedRectangle(cornerRadius: 6)`, with an optional trailing `xmark` that dismisses it |
-| colours | red = broken now, or the microphone is open; amber = landed but degraded, or working; green = it worked; faint = nothing there |
+| colours | red = broken now, or the microphone is open; amber = landed but degraded, working, or a step the person has not taken yet; green = it worked; faint = nothing there |
 | primary action | `.borderedProminent`, `.controlSize(.large)`, full-width, tinted red when it is a stop |
 | list | `.caption`/`.secondary` section title, at most five rows, each a 7 pt status `Circle` + a one-line primary + `.caption2`/`.secondary` secondary + a trailing borderless icon button; an empty list says so in `.caption`/`.tertiary` |
 | footer | `HStack` at `.caption`: a verb on the left, `Spacer`, an exit verb on the right |
@@ -77,6 +77,7 @@ Written down so they are not later "fixed" into inconsistency.
 | primary action | symmetric Start/Stop | **Stop and Abort only** | a click has no session to aim at (D4, D22, D30) |
 | footer right | `Quit` | `Restart` | launchd `KeepAlive` makes a Quit button a lie |
 | footer left | one verb | `Open Record` and `Set Up…` | the setup window opens by itself only at the first snapshot of a launch, so it needs a door that is always there (D27) |
+| setup window | none | an AppKit `NSWindow`, 440 pt, a checklist of status glyphs, no default button | the one window dicta opens; a SwiftUI `Window` scene beside a `MenuBarExtra` may open or be restored unasked, and a Return meant for another app must not make the choice (D27, D31) |
 | degraded screen | `UnsupportedContent` at 240 pt for macOS 14 | none | dicta needs no capture-era availability gate |
 | history rows | open in Finder | copy to clipboard | dicta's artefact is text, and the UI never injects (D28) |
 | a row with nothing delivered | — | shows what was HEARD, in italic, and has **no copy button at all** | D28's structural half: the clipboard is loaded from `final` and never from `recognised`, so a row that produced no `final` has nothing for a button to carry |

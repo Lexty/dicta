@@ -246,8 +246,8 @@ check_keystrokes() {
     fi
 }
 
-# The other direction, invariant 14. With `--focused-fields` the daemon POSTS keystrokes into another
-# application and reads accessibility to find the field; that is the capability the user grants
+# The other direction, invariant 14. Under the scope `other-apps` the daemon POSTS keystrokes into
+# another application and reads accessibility to find the field; that is the capability the user grants
 # Accessibility for, and it belongs to the daemon's bundle alone, exactly as the microphone does
 # (invariant 8). `dictactl` and `DictaMenu` must name none of the C functions in `POSTING` below.
 # `Dicta` legitimately names them, and check 4b holds the list to what it names: every
@@ -268,7 +268,7 @@ check_keystrokes() {
 # .postToPid(0)` to `dictactl`'s `main.swift` (in a function nothing called — the debug link keeps
 # it). The gate exited 1, printing the symbol and then the failure line (checkout path elided):
 #                  U _CGEventPostToPid
-#   linkage: …/.build/arm64-apple-macosx/debug/dictactl can post keystrokes or read accessibility — only the daemon may, and only with --focused-fields (invariant 14)
+#   linkage: …/.build/arm64-apple-macosx/debug/dictactl can post keystrokes or read accessibility — only the daemon may, and only once other apps are chosen (invariant 14)
 # and exited 0 again once the call was removed.
 # Every accessibility, Secure Input and posting entry point the daemon's focused-field path calls,
 # so a client or menu that reached any of them -- the trust check or a settable attribute included,
@@ -313,7 +313,7 @@ check_posting() {
     hits="$(printf '%s\n' "$symbols" | grep -E "[[:space:]]_($POSTING)\$" || true)"
     if [ -n "$hits" ]; then
         head -20 <<< "$hits" >&2
-        fail "$path can post keystrokes or read accessibility — only the daemon may, and only with --focused-fields (invariant 14)"
+        fail "$path can post keystrokes or read accessibility — only the daemon may, and only once other apps are chosen (invariant 14)"
     fi
 }
 

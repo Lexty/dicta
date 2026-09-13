@@ -138,8 +138,8 @@ stays as the record of the run that built it (decided by the user on 2026-09-13)
   that probe, which is the same lesson as D18 in a different costume.
 - Read or change the setup choice from a shell: `dictactl configure --scope agterm-only|other-apps
   [--offer-seen]` writes what the setup window writes, and `dictactl accessibility [--prompt]` reads
-  the grant (and, with `--prompt`, asks for it) — refused with zero accessibility calls unless the
-  scope is `other-apps`. `cat ~/Library/Application\ Support/dev.personal.dicta/setup.json` shows the
+  and prints the grant (and, with `--prompt`, asks for it first) — refused with zero accessibility
+  calls unless the scope is `other-apps`. `cat ~/Library/Application\ Support/dev.personal.dicta/setup.json` shows the
   stored choice; never edit it while the daemon runs, since the daemon is its only writer.
 - Watch the daemon's state as a stream: `dictactl watch` — one JSON object per transition, plus one
   the instant it attaches. The menu app is the other client of it; this is how to see what the menu
@@ -239,8 +239,8 @@ testing.linker` to the `DictaTests` target — otherwise the failing test cannot
   linked** — SwiftPM finds the module on its own — and then died in dyld on
   `@rpath/Testing.framework` before reaching a single assertion. Silent at build time, fatal at run
   time: D18's shape exactly, a gate that looks like it ran and did not. `bash Scripts/test.sh` is
-  scored under both by setting `DEVELOPER_DIR`, and both give the same run — 583 tests in 34
-  suites, re-scored 2026-09-12.
+  scored under both by setting `DEVELOPER_DIR`, and both give the same run — 867 tests in 47
+  suites, re-scored 2026-09-13.
 - **`xctest` now exists** at `/Applications/Xcode.app/Contents/Developer/usr/bin/xctest`, so D18's
   cause is absent while Xcode is selected. This changes nothing: `Tests/DictaTests` is still denied
   the swift-testing flags and still holds no assertion, `swift test` still gates nothing, and the
@@ -489,10 +489,12 @@ testing.linker` to the `DictaTests` target — otherwise the failing test cannot
   replacement engine, the record schema, the wire types, `Paths`. Anything worth asserting is here,
   **including everything the menu-bar UI decides** — `Presentation` (which glyph, which tint, which
   sentence), `MenuModel` (which banner, whether the daemon is gone rather than idle, what the
-  menu-bar item draws), `DictationRow` (what a row shows and what may be copied), `SessionNames` and
-  `AgtermTool`. That is not UI in the wrong module: `DictaMenu` is an executable target and SwiftPM
-  **cannot import one**, so a decision written there would be unreachable from the test runner. The
-  SwiftUI files turn `Tint.red` into a colour and do nothing else (D19, D27).
+  menu-bar item draws), `DictationRow` (what a row shows and what may be copied), `SessionNames`,
+  `AgtermTool`, `SetupModel` and `FirstSnapshotLatch` (every decision the setup window makes), and
+  `SetupState`/`SetupMigration`/`StartupLines` (what `setup.json` means and what start-up logs).
+  That is not UI in the wrong module: `DictaMenu` is an executable target and SwiftPM **cannot
+  import one**, so a decision written there would be unreachable from the test runner. The SwiftUI
+  files turn `Tint.red` into a colour and do nothing else (D19, D27).
 - `Sources/DictaIPC/` — the Unix-socket transport, **both halves in one module** so the two ends'
   framing cannot drift. Split from `DictaRuntime` for one concrete reason: `dictactl` needs the
   client half, and `DictaRuntime` is where AVFoundation and CoreML land — without the split every
@@ -520,6 +522,7 @@ testing.linker` to the `DictaTests` target — otherwise the failing test cannot
   `EventPoster` and `Pacer` seams, their system adapters and `FocusedFieldInjector`),
   `SystemFeedback.swift` (sounds and notifications where there is no agterm indicator) and
   `FocusedFieldWiring.swift`, whose `FocusedFieldSwitch` builds none of them until its gate opens.
+  `SetupStore.swift` is the one writer of `setup.json`.
 - `Sources/Dicta/` — the daemon executable. Wiring only: flags are parsed by `DaemonOptions` in
   `DictaCore`, so they are testable.
 - `Sources/dictactl/` — the client the keymap invokes. **DictaCore + DictaIPC and nothing else**,
@@ -528,8 +531,8 @@ testing.linker` to the `DictaTests` target — otherwise the failing test cannot
 - `Sources/DictaMenu/` — the menu-bar UI (D27). **`DictaCore` + `DictaIPC` + `DictaRecord` plus
   SwiftUI, and nothing else** — `dictactl`'s dependency budget, one target wider. It opens no
   microphone, loads no model, and links no `DictaRuntime`, which is invariants 8 and 11 and is
-  asserted by `Scripts/linkage.sh` rather than by any test. Wiring only: a socket, a thread and a
-  `@Published`.
+  asserted by `Scripts/linkage.sh` rather than by any test. Wiring only: a socket, a thread, a
+  `@Published`, and `SetupWindowController`, which renders `SetupModel`.
 - `Sources/DictaTestRunner/` — where the tests actually are.
 - `Tests/DictaTests/` — a compile-only stub. Never put an assertion here (see D18 above).
 
@@ -1106,6 +1109,12 @@ The rules, each of which is either a review finding or a trap:
   the pane just dictated into and silence the hold key under D22. That is the reason §13 used to keep
   a settings window out of scope, and it still stands; `NSApp.activate` appears once in the menu's
   sources. The "Set Up…" row and the setup banners open it on purpose at any time.
+- **The setup window is an AppKit `NSWindow`, not a SwiftUI `Window` scene, and has no default
+  button.** A scene declared beside a `MenuBarExtra` may open by itself at launch (only macOS 15 can
+  suppress that, and the package targets 14) and may be restored at login; either would take focus
+  unasked. `isRestorable = false` is deliberate. Because the window can take focus while somebody is
+  typing elsewhere, no choice is bound to Return. A future settings window must answer the same
+  question before reaching for `SettingsLink`.
 - **`SetupModel` is every decision; `SetupWindow.swift` renders and sends.** The screen per state, the
   payload of every button (including what each close sends: the first-time offer records
   `offerSeen`, the others send nothing), and the checklist rows are pure and tested, because

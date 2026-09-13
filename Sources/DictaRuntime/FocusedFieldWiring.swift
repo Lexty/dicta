@@ -40,10 +40,6 @@ public enum FocusedFieldWiring {
 
     /// What the daemon and the trigger are handed once the path has been built.
     public struct Wired: Sendable {
-        /// The ONE frontmost source: the trigger routes on it and the injector re-validates against
-        /// it. Two instances would be two observers that can disagree, and an unobserved one is
-        /// F8a's frozen value.
-        public let frontmost: any FrontmostApplication
         public let access: any FocusedFieldAccess
         public let daemon: Daemon.FocusedFields
         public let trigger: HoldTrigger.FocusedFields
@@ -178,7 +174,6 @@ public final class FocusedFieldSwitch: @unchecked Sendable {
         let access = adapters.access()
         let injector = adapters.injector(access, adapters.poster(), frontmost)
         return FocusedFieldWiring.Wired(
-            frontmost: frontmost,
             access: access,
             daemon: Daemon.FocusedFields(access: access, injector: injector),
             trigger: HoldTrigger.FocusedFields(access: access, feedback: feedback))

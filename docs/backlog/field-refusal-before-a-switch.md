@@ -9,12 +9,10 @@ On the focused-field path the refusals are decided at the threshold (D31, as the
 the grant, then the daemon's Secure Input and eligibility checks. F11 measured a right-hand `⌘Tab`
 with a window being chosen at 490–675 ms, always past the floor, and the frontmost pid changes only
 when `⌘` comes up. So while the switcher is still open the threshold sees the original application,
-and any refusal plays `Basso` and notifies:
-
-- with `--focused-fields` on and no grant, every right-hand `⌘Tab` in any application says the grant
-  is missing;
-- with the grant, a `⌘Tab` from a focus that is not a text field (a Finder list, a page body, a
-  sidebar) says "not a text field".
+and a refusal the daemon decides plays `Basso` and notifies: with the grant, a `⌘Tab` from a focus
+that is not a text field (a Finder list, a page body, a sidebar) says "not a text field". A missing
+grant no longer does: since the first-run setup plan (2026-09-13) the trigger abandons that hold
+silently and the menu shows the notice instead.
 
 A hold whose release switched the application is silent once it started (the `silent` abort); a hold
 refused before it could start is not, because nothing can know at the threshold that a switch is

@@ -20,6 +20,11 @@ struct SetupStoreTests {
         return directory.appendingPathComponent("setup.json")
     }
 
+    /// Removes the directory `scratch()` made for `url`.
+    static func discard(_ url: URL) {
+        try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+    }
+
     static func bytes(_ url: URL) -> Data? {
         try? Data(contentsOf: url)
     }
@@ -78,6 +83,7 @@ struct SetupStoreTests {
     @Test("an absent setup.json loads as absent")
     func absentLoadsAsAbsent() throws {
         let url = try Self.scratch()
+        defer { Self.discard(url) }
         #expect(SetupStore(url: url).load() == .absent)
         #expect(!Self.exists(url))
     }
@@ -85,6 +91,7 @@ struct SetupStoreTests {
     @Test("a valid setup.json loads as the state it holds")
     func validLoads() throws {
         let url = try Self.scratch()
+        defer { Self.discard(url) }
         try Data(#"{"schema":1,"scope":"agterm-only","offerSeen":true}"#.utf8).write(to: url)
         #expect(SetupStore(url: url).load()
             == .loaded(SetupState(scope: .agtermOnly, offerSeen: true)))
@@ -94,6 +101,7 @@ struct SetupStoreTests {
     func unreadableLoadsAsItsProblem() throws {
         for (text, matches) in Self.unreadableFiles {
             let url = try Self.scratch()
+            defer { Self.discard(url) }
             try Data(text.utf8).write(to: url)
             let store = SetupStore(url: url)
             guard case let .unreadable(problem) = store.load() else {
@@ -113,6 +121,7 @@ struct SetupStoreTests {
         // A directory standing where the file should be: present, and not readable as a file.
         // Reading it as absent would re-migrate over somebody's choice.
         let url = try Self.scratch()
+        defer { Self.discard(url) }
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
         guard case .unreadable(.unreadable) = SetupStore(url: url).load() else {
             Issue.record("a directory at setup.json loaded as \(SetupStore(url: url).load())")
@@ -120,11 +129,39 @@ struct SetupStoreTests {
         }
     }
 
+    @Test("a setup.json that is a symbolic link to nothing is unreadable, never migrated over")
+    func danglingSymlinkIsUnreadable() throws {
+        // `agent-seed.sh` counts it as present and drops the seed, so the daemon must not read it
+        // as absent and migrate without one.
+        let url = try Self.scratch()
+        defer { Self.discard(url) }
+        let nowhere = url.deletingLastPathComponent().appendingPathComponent("gone")
+        try FileManager.default.createSymbolicLink(at: url, withDestinationURL: nowhere)
+        let steps = Steps()
+        let store = steps.store(url)
+        guard case .unreadable(.unreadable) = store.load() else {
+            Issue.record("a dangling symlink at setup.json loaded as \(store.load())")
+            return
+        }
+        let bootstrap = store.bootstrap(flag: true, record: .lines(0))
+        #expect(steps.passed.isEmpty)
+        #expect(bootstrap.state == SetupStore.whileUnreadable)
+        #expect(bootstrap.flagIgnored)
+
+        // Choosing again replaces it; a link to nothing has no original to keep.
+        let chosen = SetupState(scope: .otherApps, offerSeen: true)
+        try store.write(chosen)
+        #expect(store.load() == .loaded(chosen))
+        #expect(store.loadProblem == nil)
+        #expect(!Self.exists(store.backupURL))
+    }
+
     // MARK: - saving
 
     @Test("a save writes setup.json.tmp at 0600, syncs it, and renames it over setup.json")
     func saveGoesThroughTheTemporaryFile() throws {
         let url = try Self.scratch()
+        defer { Self.discard(url) }
         let state = SetupState(scope: .otherApps, offerSeen: true)
         let temporary = url.appendingPathExtension("tmp")
         let seenAtRename = Steps(before: { step in
@@ -146,6 +183,7 @@ struct SetupStoreTests {
     @Test("a save ends at 0600 even over a looser file and a temporary file a crash left behind")
     func saveTightensTheMode() throws {
         let url = try Self.scratch()
+        defer { Self.discard(url) }
         let store = SetupStore(url: url)
         try Data("old".utf8).write(to: url)
         try Data("torn".utf8).write(to: store.temporaryURL)
@@ -161,6 +199,7 @@ struct SetupStoreTests {
     @Test("a save into a read-only directory throws with a reason, and the previous file stays")
     func saveIntoReadOnlyDirectoryThrows() throws {
         let url = try Self.scratch()
+        defer { Self.discard(url) }
         let directory = url.deletingLastPathComponent()
         let previous = try SetupState(scope: .agtermOnly, offerSeen: false).encoded()
         try previous.write(to: url)
@@ -188,6 +227,7 @@ struct SetupStoreTests {
           arguments: [SetupStore.Step.writeTemporary, .sync, .rename])
     func saveFailingAtAStep(step: SetupStore.Step) throws {
         let url = try Self.scratch()
+        defer { Self.discard(url) }
         let previous = try SetupState(scope: .agtermOnly, offerSeen: false).encoded()
         try previous.write(to: url)
         let steps = Steps(failing: [step: EIO])
@@ -205,6 +245,7 @@ struct SetupStoreTests {
     @Test("a replacement keeps the unreadable original as setup.json.unreadable, then writes")
     func replaceKeepsTheOriginal() throws {
         let url = try Self.scratch()
+        defer { Self.discard(url) }
         let original = Data("{".utf8)
         try original.write(to: url)
         let steps = Steps()
@@ -221,6 +262,7 @@ struct SetupStoreTests {
     @Test("a replacement removes an older setup.json.unreadable rather than keeping two originals")
     func replaceReplacesAnOlderBackup() throws {
         let url = try Self.scratch()
+        defer { Self.discard(url) }
         let store = SetupStore(url: url)
         try Data("older".utf8).write(to: store.backupURL)
         try Data("{\"schema\":".utf8).write(to: url)
@@ -232,6 +274,7 @@ struct SetupStoreTests {
     @Test("a replacement never has a moment without setup.json")
     func replaceNeverRemovesTheAuthoritativePath() throws {
         let url = try Self.scratch()
+        defer { Self.discard(url) }
         try Data("{".utf8).write(to: url)
         let watched = Steps(before: { step in
             #expect(Self.exists(url), "setup.json was missing before \(step)")
@@ -244,6 +287,7 @@ struct SetupStoreTests {
           arguments: SetupStore.Step.allCases)
     func replaceFailingAtAStep(step: SetupStore.Step) throws {
         let url = try Self.scratch()
+        defer { Self.discard(url) }
         let original = Data("{".utf8)
         try original.write(to: url)
         let steps = Steps(failing: [step: EIO])
@@ -281,6 +325,7 @@ struct SetupStoreTests {
                       (false, .lines(3)), (false, .unreadable), (false, .lines(0))])
     func bootstrapWritesTheMigration(flag: Bool, record: SetupMigration.RecordFact) throws {
         let url = try Self.scratch()
+        defer { Self.discard(url) }
         let store = SetupStore(url: url)
         let bootstrap = store.bootstrap(flag: flag, record: record)
         let expected = SetupMigration.initial(flag: flag, record: record)
@@ -295,6 +340,7 @@ struct SetupStoreTests {
     @Test("an existing setup.json decides, and bootstrap says the flag was ignored")
     func bootstrapIgnoresTheFlagOverAFile() throws {
         let url = try Self.scratch()
+        defer { Self.discard(url) }
         let chosen = SetupState(scope: .agtermOnly, offerSeen: true)
         try chosen.encoded().write(to: url)
         let before = Self.bytes(url)
@@ -311,6 +357,7 @@ struct SetupStoreTests {
     func bootstrapOverUnreadableWritesNothing() throws {
         for (text, matches) in Self.unreadableFiles {
             let url = try Self.scratch()
+            defer { Self.discard(url) }
             try Data(text.utf8).write(to: url)
             let steps = Steps()
             let store = steps.store(url)
@@ -333,6 +380,7 @@ struct SetupStoreTests {
     @Test("a failed first save is a save error, and the migrated state still applies")
     func bootstrapWithAFailedFirstSave() throws {
         let url = try Self.scratch()
+        defer { Self.discard(url) }
         let steps = Steps(failing: [.sync: EIO])
         let store = steps.store(url)
         let bootstrap = store.bootstrap(flag: true, record: .lines(0))
@@ -347,9 +395,30 @@ struct SetupStoreTests {
 
     // MARK: - the configure-style write
 
+    @Test("an unreadable setup.json removed by hand before the choice is replaced still saves")
+    func aReplacementOfAVanishedFileSaves() throws {
+        let url = try Self.scratch()
+        defer { Self.discard(url) }
+        try Data("{".utf8).write(to: url)
+        let steps = Steps()
+        let store = steps.store(url)
+        _ = store.bootstrap(flag: false, record: .lines(0))
+        #expect(store.loadProblem != nil)
+        try FileManager.default.removeItem(at: url)
+
+        let chosen = SetupState(scope: .agtermOnly, offerSeen: true)
+        try store.write(chosen)
+        #expect(steps.passed.contains(.link), "the write did not replace")
+        #expect(!Self.exists(store.backupURL))
+        #expect(store.load() == .loaded(chosen))
+        #expect(store.loadProblem == nil)
+        #expect(store.saveError == nil)
+    }
+
     @Test("after a failed replacement the problem stands, and the next write replaces again")
     func aFailedReplacementIsRetriedAsAReplacement() throws {
         let url = try Self.scratch()
+        defer { Self.discard(url) }
         let original = Data("{".utf8)
         try original.write(to: url)
         let steps = Steps(failing: [.link: EACCES])
@@ -378,6 +447,7 @@ struct SetupStoreTests {
     @Test("with no load problem a write saves, and a success clears the last save error")
     func aWriteWithoutAProblemSaves() throws {
         let url = try Self.scratch()
+        defer { Self.discard(url) }
         let steps = Steps(failing: [.rename: ENOSPC])
         let store = steps.store(url)
         _ = store.bootstrap(flag: false, record: .lines(0))

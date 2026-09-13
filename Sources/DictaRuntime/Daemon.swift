@@ -610,13 +610,13 @@ public final class Daemon: @unchecked Sendable {
         let opens = next.scope == .otherApps
         if opens != (previous.scope == .otherApps) {
             // Opening checks the grant once and reports it, which lands in `faculties` through the
-            // switch's callback; closing leaves nobody to look at it.
+            // switch's callback. Closing leaves the last grant where it is: `snapshot()` hides it
+            // outside `other-apps`, the one rule a late report cannot slip past.
             setup.fieldSwitch.setOpen(opens)
         }
         readinessLock.withLock {
             chosen = next
             faculties.scope = next.scope
-            if !opens { faculties.accessibility = nil }
             setupLoadProblem = setup.store.loadProblem
             setupSaveError = setup.store.saveError
         }
@@ -634,9 +634,13 @@ public final class Daemon: @unchecked Sendable {
         }
         let access = admission.wiring.access
         if prompt { access.requestTrust() }
-        fieldSwitch.report(trusted: access.isTrusted, generation: admission.generation)
+        let trusted = access.isTrusted
+        fieldSwitch.report(trusted: trusted, generation: admission.generation)
         publish()
-        return response(.accepted)
+        // Said in the answer too, so `dictactl accessibility` prints the grant rather than a state.
+        return response(.accepted, message: trusted
+            ? "accessibility is granted"
+            : "accessibility is not granted")
     }
 
     /// D29: block until the user dictates, then hand the text back instead of typing it.

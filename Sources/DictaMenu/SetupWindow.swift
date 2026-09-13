@@ -124,7 +124,9 @@ struct SetupView: View {
     }
 
     /// The choice that turns dictation on is the prominent one; agterm only is the secondary link
-    /// the brainstorm asked for, never a button of equal weight.
+    /// the brainstorm asked for, never a button of equal weight. None is the default action: the
+    /// window can open by itself and take focus while somebody is typing elsewhere, and a Return
+    /// meant for that must not choose to type into other apps.
     @ViewBuilder
     private func button(_ control: SetupControl) -> some View {
         let click = { model.setupClicked(control) }
@@ -133,7 +135,6 @@ struct SetupView: View {
             Button(control.title, action: click)
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .keyboardShortcut(.defaultAction)
         case .useOnlyWithAgterm:
             Button(control.title, action: click)
                 .buttonStyle(.link)

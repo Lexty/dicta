@@ -1345,7 +1345,8 @@ can queue behind a running `stop`, and are read with the pipeline's long client 
 - **`accessibility`** is `rejected`, having made no accessibility call, unless the scope is
   `other-apps`. With `prompt` it requests the grant and then reads it afresh, because asking is not
   evidence of a grant; without `prompt` it only reads it. Either way the result is reported under the
-  gate's generation, so the grant and readiness change together, and the verb answers `accepted`. It
+  gate's generation, so the grant and readiness change together, and the verb answers `accepted` with
+  a message naming what the check found (`accessibility is granted` or `not granted`). It
   is the only verb that can show the Accessibility dialog, and it never changes the scope.
 - No `status` or `watch` is ever an accessibility probe, and no `configure` is sent merely to read
   the grant again.

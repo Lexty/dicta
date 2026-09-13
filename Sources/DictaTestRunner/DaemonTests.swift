@@ -2822,12 +2822,58 @@ struct DaemonTests {
         let response = harness.send(Request(cmd: .accessibility, prompt: prompt))
 
         #expect(response.kind == .accepted)
+        // The answer names the grant, which is what `dictactl accessibility` prints.
+        #expect(response.message == "accessibility is not granted")
         #expect(harness.access.callLog == (prompt ? [.requestTrust, .isTrusted] : [.isTrusted]))
         #expect(harness.fieldSwitch.grant == false)
         let snapshot = try #require(harness.send(Self.status).snapshot)
         #expect(snapshot.faculties?.accessibility == false)
         #expect(snapshot.readiness == .accessibilityForFields)
         #expect(snapshot.setup?.scope == .otherApps)
+
+        harness.access.setTrusted(true)
+        let granted = harness.send(Request(cmd: .accessibility, prompt: prompt))
+        #expect(granted.kind == .accepted)
+        #expect(granted.message == "accessibility is granted")
+        #expect(granted.snapshot?.faculties?.accessibility == true)
+    }
+
+    @Test("a grant reported late, after a close, never shows outside other-apps")
+    func aGrantReportedAfterACloseIsHidden() throws {
+        let harness = Harness(focusedFields: true)
+        harness.daemon.observe {
+            $0.microphone = true
+            $0.models = true
+            $0.terminal = true
+        }
+        #expect(harness.send(Request(cmd: .configure, scope: .agtermOnly)).kind == .accepted)
+        // A report the switch accepted just before the close, delivered just after it: the
+        // callback still writes the grant, and only the snapshot keeps it from being a fact.
+        harness.daemon.observe { $0.accessibility = true }
+
+        let snapshot = try #require(harness.send(Self.status).snapshot)
+        #expect(snapshot.faculties?.accessibility == nil)
+        #expect(snapshot.readiness == .ready)
+    }
+
+    @Test("a first save that failed at start-up is in the first snapshot's setup")
+    func aFailedFirstSaveIsPublished() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("dicta-setup-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = SetupStore(url: directory.appendingPathComponent("setup.json")) { step in
+            step == .sync ? EIO : nil
+        }
+        let bootstrap = store.bootstrap(flag: true, record: .lines(0))
+        let reason = try #require(bootstrap.saveError)
+
+        let harness = Harness(setup: bootstrap.state, persisting: store)
+
+        let setup = try #require(harness.send(Self.status).snapshot?.setup)
+        #expect(setup.saveError == reason)
+        #expect(setup.loadProblem == nil)
+        #expect(setup.scope == bootstrap.state.scope)
     }
 
     @Test("a field start's own grant check reaches the switch and readiness, either way")

@@ -101,7 +101,6 @@ struct FocusedFieldSwitchTests {
         #expect(rig.grants.told == [true])
 
         let wired = admitted.wiring
-        #expect(wired.frontmost as? FakeFrontmost === rig.frontmost)
         #expect(wired.access as? FakeFocusedFieldAccess === rig.counting.access)
         #expect(wired.trigger.access as? FakeFocusedFieldAccess === rig.counting.access)
         #expect(wired.daemon.access as? FakeFocusedFieldAccess === rig.counting.access)

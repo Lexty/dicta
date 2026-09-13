@@ -36,7 +36,8 @@ in `docs/manual-checklist.md`.
 - `agterm` with `agtermctl` on `PATH` — **unless** you choose other applications in the setup window,
   where it is optional: without it the daemon dictates into other applications' fields and refuses
   only what needs agterm (the chords, and the key held in front of agterm). A daemon with no agterm
-  and no choice yet does not exit: it waits for the choice.
+  and no choice yet does not exit: it waits for the choice. Under `--no-hold` it does exit, since
+  then nothing could start a dictation without agterm.
 - For other applications only: the Accessibility permission for `Dicta.app`, asked for from the
   setup window.
 - ~600 MB of disk for the recognition models, and one download to fetch them.
@@ -234,7 +235,8 @@ applications: the system dialog opens and `Dicta` is added to System Settings �
 Accessibility, where you turn it on (add `~/Applications/Dicta.app` with `+` if it is somehow not
 listed). After that the button becomes **Open Accessibility Settings**. The row turns done when you
 come back to the window; nothing polls the permission, so while nobody looks, a grant or a revocation
-is noticed at the next hold instead. `dictactl accessibility` reads the grant from a shell, and
+is noticed at the next hold instead. `dictactl accessibility` reads the grant from a shell and
+prints `accessibility is granted` or `accessibility is not granted`, and
 `dictactl accessibility --prompt` asks, as the button does. Until it is granted, every hold outside
 agterm that passes the floor does nothing, silently, the microphone never opens, and the menu bar
 shows an amber notice. The grant is picked up without a restart, and a rebuild does not revoke it,
@@ -512,6 +514,11 @@ attempt (D14). Losing an utterance costs one keypress.
   names the reason: the Accessibility grant, Secure Input, or a focused thing that is not a text
   field. A refused first dictation into a freshly launched VS Code or Slack is their accessibility
   tree not being ready yet; the next one works.
+- **The log says `setup problem:`.** `setup.json` could not be used — not valid JSON, written by a
+  newer build, or not a readable file — so dicta types only into agterm, and the setup window opens
+  with "Choose where dictation goes again". Choosing again replaces the file and keeps the original
+  beside it as `setup.json.unreadable`. A `setup problem:` naming a step that failed is a choice that
+  could not be saved: it holds for this run only, and the window shows the reason.
 - **Wrong words.** Compare `recognised` with `final`. If they differ, `rules` names what changed it.
   If they agree, it is the recogniser, and a dictionary rule is how you fix it.
 

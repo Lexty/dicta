@@ -109,7 +109,12 @@ public final class SetupStore: SetupPersisting, @unchecked Sendable {
         do {
             data = try Data(contentsOf: url)
         } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
-            return .absent
+            // A symbolic link to nothing reads as missing, but it is a directory entry: present,
+            // as `agent-seed.sh` counts it, so migrating over it would drop a seed the installer
+            // already dropped.
+            var entry = stat()
+            guard lstat(url.path, &entry) == 0 else { return .absent }
+            return .unreadable(.unreadable(reason: "it is a symbolic link to nothing"))
         } catch {
             let reason = (error as NSError).localizedFailureReason ?? "\(error)"
             return .unreadable(.unreadable(reason: "it cannot be read: \(reason)"))
