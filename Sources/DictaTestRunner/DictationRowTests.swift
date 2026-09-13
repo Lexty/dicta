@@ -34,7 +34,7 @@ struct DictationRowTests {
     func everyOutcomeIsDrawn() {
         // The `switch` below has no `default`, which is the actual gate: a twelfth outcome — and
         // D29 added exactly that between the proposal and this suite — fails to COMPILE here rather
-        // than rendering as an unexplained grey dot nobody notices. The loop after it is the
+        // than rendering as an unmarked row nobody notices. The loop after it is the
         // cheaper half, catching an empty label.
         for outcome in AttemptOutcome.allCases {
             switch outcome {
@@ -48,6 +48,44 @@ struct DictationRowTests {
                 #expect(outcome.tint == .faint)
             }
             #expect(!outcome.label.isEmpty)
+        }
+    }
+
+    @Test("the ordinary outcomes carry no marker, absence is faint, and every exception a symbol")
+    func everyOutcomeHasItsMarker() {
+        // acta's rule, "the ordinary is quiet": a dot on nearly every row is a colour the eye
+        // learns to ignore, and the rare row that matters sits in that same field of dots. No
+        // `default` here either, so a new outcome cannot compile without being placed.
+        var symbols: [Tint: Set<String>] = [:]
+        for outcome in AttemptOutcome.allCases {
+            switch outcome {
+            case .injected, .returned:
+                #expect(outcome.marker == nil, "\(outcome.rawValue)")
+            case .empty, .aborted:
+                // Absence is not failure: no symbol, only the faint line.
+                #expect(outcome.marker == .faint, "\(outcome.rawValue)")
+            case .filterFellBack, .dictionaryDegraded, .injectionPartial, .targetGone,
+                 .injectionFailed, .recognitionFailed, .captureFault, .capped:
+                guard case let .symbol(name) = outcome.marker else {
+                    Issue.record("\(outcome.rawValue) has no symbol")
+                    continue
+                }
+                #expect(!name.isEmpty)
+                symbols[outcome.tint, default: []].insert(name)
+            }
+        }
+        // One symbol per tint, so the symbol says what the colour says and nothing more: amber and
+        // red each have one, and they are not the same one.
+        #expect(symbols[.amber]?.count == 1)
+        #expect(symbols[.red]?.count == 1)
+        #expect(symbols[.amber] != symbols[.red])
+        #expect(Set(symbols.keys) == [.amber, .red])
+    }
+
+    @Test("a row's marker is its outcome's")
+    func rowForwardsTheMarker() {
+        for outcome in AttemptOutcome.allCases {
+            #expect(DictationRow(Self.entry(outcome: outcome)).marker == outcome.marker)
         }
     }
 
@@ -197,11 +235,36 @@ struct DictationRowTests {
 
     // MARK: - the second line
 
-    @Test("the second line carries when, what happened, and how long was spoken")
+    @Test("the second line carries what happened, when, and how long was spoken")
     func secondaryLine() {
         let row = DictationRow(Self.entry(outcome: .injected, audioSeconds: 12.4))
         let line = row.secondary(at: Self.when.addingTimeInterval(240))
-        #expect(line == "4m ago · typed · 12s")
+        #expect(line == "typed · 4m ago · 12s")
+    }
+
+    @Test("the second line's parts put the outcome's word first and never repeat it in the details")
+    func secondaryParts() {
+        let later = Self.when.addingTimeInterval(240)
+        for outcome in AttemptOutcome.allCases {
+            let row = DictationRow(Self.entry(outcome: outcome, audioSeconds: 12.4))
+            let parts = row.secondaryParts(at: later)
+            // `AttemptOutcome.label` stays the word's only source.
+            #expect(parts.outcome == outcome.label)
+            #expect(!parts.details.contains(outcome.label))
+            #expect(parts.details == ["4m ago", "12s"])
+            #expect(row.secondary(at: later)
+                == ([parts.outcome] + parts.details).joined(separator: " · "))
+        }
+        // Every detail, in today's order: when, recognised only, raw, how long.
+        let everything = DictationRow(Self.entry(outcome: .capped, final: "", recognised: "heard",
+                                                 mode: .raw, audioSeconds: 600))
+        let parts = everything.secondaryParts(at: later)
+        #expect(parts.outcome == "stopped at the cap")
+        #expect(parts.details == ["4m ago", "recognised only", "raw", "10:00"])
+        #expect(everything.secondary(at: later)
+            == "stopped at the cap · 4m ago · recognised only · raw · 10:00")
+        // Without a duration there is nothing after the time.
+        #expect(DictationRow(Self.entry()).secondaryParts(at: Self.when).details == ["now"])
     }
 
     @Test("`raw` is named and `clean` is not")

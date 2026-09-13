@@ -118,11 +118,41 @@ public extension Readiness {
     }
 }
 
+/// What marks an outcome on a row's second line, when anything does (D19).
+///
+/// **The ordinary is quiet**, which is acta's rule: a green dot on nearly every row is a colour the
+/// eye learns to ignore, and the row that matters sat in that same field of dots with nothing but a
+/// hue to set it apart. So a delivery carries no marker at all, and an exception is marked by a
+/// symbol and by its word, which also survives a user who cannot tell amber from red.
+public enum OutcomeMarker: Equatable, Sendable {
+    /// No symbol, and the second line in the faint colour: there was nothing there, which is
+    /// absence and not failure.
+    case faint
+    /// An SF Symbol drawn before the outcome's word, both in the outcome's tint.
+    case symbol(String)
+}
+
 public extension AttemptOutcome {
-    /// The dot beside a row in `Recent Dictations`.
+    /// How a row marks this outcome, or `nil` when it is ordinary and nothing is drawn.
+    ///
+    /// One symbol per tint, so the symbol says what the colour says and nothing more; the word
+    /// beside it says which exception this is. The names are a proposal a person judges on the
+    /// built panel.
+    var marker: OutcomeMarker? {
+        // Decided from `tint`, so a marker cannot disagree with its colour. No outcome is `quiet`.
+        switch tint {
+        case .green, .quiet: nil
+        case .faint: .faint
+        case .amber: .symbol("exclamationmark.triangle")
+        case .red: .symbol("xmark.circle")
+        }
+    }
+
+    /// The colour of an outcome: of its marker, its word and its reason in `Recent Dictations`.
     ///
     /// Green means the words got somewhere. Amber means they got there but something about the
-    /// journey is worth knowing. Red means they did not arrive. Faint means there were none.
+    /// journey is worth knowing. Red means they did not arrive. Faint means there were none. Green
+    /// is never drawn on a row: a delivery is the ordinary outcome, and `marker` keeps it quiet.
     ///
     /// `returned` is GREEN and that is deliberate: D29's text reached its caller, which is a
     /// delivery and not a failure. It is not `injected` either — see `landedLabel`.

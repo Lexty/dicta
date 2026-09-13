@@ -58,8 +58,11 @@ public struct DictationRow: Sendable, Equatable, Identifiable {
     /// something wrote the outcome where a sentence belonged.
     public var reason: String?
 
-    /// The dot beside the row.
+    /// The colour of the row's marker, word and reason, when the outcome is not ordinary.
     public var tint: Tint { outcome.tint }
+
+    /// What marks the row's second line, or `nil` for an ordinary delivery.
+    public var marker: OutcomeMarker? { outcome.marker }
 
     /// The outcome, in the words `AttemptOutcome.label` chose.
     ///
@@ -91,21 +94,31 @@ public struct DictationRow: Sendable, Equatable, Identifiable {
         }
     }
 
-    /// The second line: when, what happened, and — when it matters — that the words above were
-    /// never typed anywhere.
-    public func secondary(at now: Date) -> String {
-        var parts = [RelativeTime.describe(at, at: now), label]
+    /// The second line, as the parts the panel draws differently: what happened, then when, and —
+    /// when it matters — that the words above were never typed anywhere.
+    ///
+    /// The outcome comes FIRST and apart, as acta draws its marker and word before the stamp: an
+    /// exception's symbol and word are tinted and the details are not, so the view needs the word
+    /// on its own. `label` stays its only source.
+    public func secondaryParts(at now: Date) -> (outcome: String, details: [String]) {
+        var details = [RelativeTime.describe(at, at: now)]
         // Said out loud rather than left to be inferred from the outcome. The outcome says the
         // attempt did not land; this says the sentence the user is reading is raw recogniser
         // output — unreplaced, unsanitised, and not what any pane received (§9, invariant 1's
         // parenthesis).
-        if showsRecognised { parts.append("recognised only") }
+        if showsRecognised { details.append("recognised only") }
         // `clean` is what every ordinary attempt is, so printing it on every row spends a quarter
         // of the line saying "nothing unusual". `raw` is the one the user chose deliberately (D3)
         // and the one that explains a filtered stage that did not run.
-        if mode == .raw { parts.append("raw") }
-        if let audioSeconds { parts.append(Duration.short(audioSeconds)) }
-        return parts.joined(separator: " · ")
+        if mode == .raw { details.append("raw") }
+        if let audioSeconds { details.append(Duration.short(audioSeconds)) }
+        return (label, details)
+    }
+
+    /// The second line as one string: the parts joined, the outcome first.
+    public func secondary(at now: Date) -> String {
+        let parts = secondaryParts(at: now)
+        return ([parts.outcome] + parts.details).joined(separator: " · ")
     }
 
     /// The last `entries` of a record, newest FIRST — which is the order a drawer is read in, and

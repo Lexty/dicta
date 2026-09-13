@@ -707,27 +707,41 @@ case symbol(String) }`.
 - Modify: `Sources/DictaMenu/RecentDictations.swift`
 - Modify: `Sources/DictaTestRunner/DictationRowTests.swift`
 
-- [ ] write failing tests over `AttemptOutcome.allCases`:
+- [x] write failing tests over `AttemptOutcome.allCases`:
   - `injected` and `returned` have no marker;
   - `empty` and `aborted` are `.faint`;
   - every amber and red outcome is `.symbol(_)`, with one name per tint
-- [ ] write failing tests for `secondaryParts(at:)`:
+  - "the ordinary outcomes carry no marker, absence is faint, and every exception a symbol", plus
+    "a row's marker is its outcome's". Watched failing against a stub returning `nil` for every
+    outcome: `(outcome.marker → nil) == .faint`, `Issue recorded` for each exception, and
+    `(symbols[.amber]?.count → nil) == 1`
+- [x] write failing tests for `secondaryParts(at:)`:
   - `outcome` is `label` for every outcome;
   - `details` hold the time, "recognised only", "raw" and the duration in today's order, and never the
     label;
   - `secondary(at:)` joins them with the outcome first.
 
   Update the existing `secondary(at:)` tests for the new order
-- [ ] add `OutcomeMarker`, `AttemptOutcome.marker`, `DictationRow.marker` and `secondaryParts(at:)`,
+  - "the second line's parts put the outcome's word first and never repeat it in the details"; the
+    existing test now expects `typed · 4m ago · 12s`. Watched failing against a stub that split
+    today's line: `(parts.details → ["4m ago", "typed", "12s"]) == ["4m ago", "12s"]` and
+    `(line → "4m ago · typed · 12s") == "typed · 4m ago · 12s"`
+- [x] add `OutcomeMarker`, `AttemptOutcome.marker`, `DictationRow.marker` and `secondaryParts(at:)`,
   and update the doc comments at `Presentation.swift:122` and `DictationRow.swift:61`
-- [ ] update `RecentRow`:
+  - `marker` switches on `tint`, so a marker cannot disagree with its colour and one symbol per tint
+    is structural: `exclamationmark.triangle` for amber, `xmark.circle` for red, pending H44
+- [x] update `RecentRow`:
   - remove the leading `Circle` column;
   - draw the second line as acta does: the 9 pt symbol for `.symbol`, then the outcome word (tinted
     for `.symbol`, faint for `.faint`, `.secondary` for an ordinary outcome), then `· <details>` at
     `.tertiary`;
   - keep the reason line's tint;
   - rewrite the row's comment
-- [ ] run `bash Scripts/test.sh`; must pass before Task 8
+  - the faint word uses `Tint.faint.color` through `row.tint`, so the tint is still said once
+- [x] run `bash Scripts/test.sh`; must pass before Task 8
+  - 933 tests in 52 suites passed under Xcode 26.6 and under the Command Line Tools, linkage
+    clean, lint and `git diff --check` clean. What the row looks like is not checked here; a person
+    scores it in H44
 
 ### Task 8: Sync docs/ui-vocabulary.md and record dicta's decisions
 
