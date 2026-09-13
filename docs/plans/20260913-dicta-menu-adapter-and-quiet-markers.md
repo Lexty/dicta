@@ -821,19 +821,40 @@ case symbol(String) }`.
 
 ### Task 10: Verify acceptance criteria
 
-- [ ] verify each backlog item's criteria:
+- [x] verify each backlog item's criteria:
   - (a), (b) and (c), each with a test that failed first, as recorded in Tasks 3-5;
   - the adapter is outside `DictaRuntime`;
   - `Scripts/linkage.sh` holds;
   - the quiet-marker rules hold;
   - the vocabulary is synced
-- [ ] verify that every shared question follows acta. A difference is acceptable without an acta
+  - (a): `updateTicker()` runs from `.end` and from `finished` before `guard running`, and the
+    recording half is gated on `.connected`; the two panel-closed tests and the panel-open one are
+    in `StatusViewModelTests`. (b): `readsStarted`/`readApplied` guard every completion, success or
+    failure. (c): `RecentState`, with only `.read([])` saying "Nothing yet."
+  - `DictaMenuKit` depends on `DictaCore`, `DictaIPC` and `DictaRecord` only, imports Foundation,
+    Combine and those three, and nothing in `Sources/DictaMenu` or `Sources/DictaMenuKit` names
+    `DictaRuntime`. linkage.sh: "DictaMenu binds SwiftUI, no capture stack, no key stream, no
+    posting"
+  - markers: `marker` switches on `tint`, so `injected`/`returned` draw nothing, `empty`/`aborted`
+    are faint, every amber and red outcome has a symbol, and the word stays from
+    `AttemptOutcome.label`. `RecentDictations.swift` has no `Circle()` left. An outcome dicta does
+    not know fails to decode and is counted as a malformed line, so it is never drawn as ordinary
+  - vocabulary: acta `dev` is still at `16a50db`, the commit the three amendments were copied from
+- [x] verify that every shared question follows acta. A difference is acceptable without an acta
   backlog item only when a dependency or a domain fact forces it, and its reason is written in
   `docs/ui-vocabulary.md`: the view model's module (D27), and the ordinary word kept because dicta
   has two ordinary outcomes. Any other difference is either removed or filed in acta's
   `docs/backlog/` in the same change, per the user's rule
-- [ ] run `bash Scripts/test.sh` and report the test and suite counts; run `Scripts/lint.sh` and
+  - markers, the failed-read label and the setup presenter follow acta. The differences this work
+    touched each carry a written reason in `docs/ui-vocabulary.md`: the view model's module (D27),
+    the ordinary word (two ordinary outcomes), faint absence (the backlog item's "absence is not
+    failure"), and the kept header line (no Start, D30), no Quit (`KeepAlive`) and no revision (the
+    menu cannot read the daemon's). None is a free choice, so nothing was filed in acta's backlog
+- [x] run `bash Scripts/test.sh` and report the test and suite counts; run `Scripts/lint.sh` and
   `git diff --check`
+  - 934 tests in 52 suites passed under Xcode 26.6 and under the Command Line Tools, linkage clean
+    under both, lint clean (138 files, 96 Swift), `git diff --check` clean. No test was added: this
+    task changes no code
 
 ### Task 11: [Final] Update documentation
 
