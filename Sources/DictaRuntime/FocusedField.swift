@@ -121,6 +121,9 @@ public protocol FocusedFieldAccess: Sendable {
     /// Whether this process holds the Accessibility grant. F11: the only check that follows a grant
     /// and a revocation live; without it, posted events are discarded with no error.
     var isTrusted: Bool { get }
+    /// Shows the system's Accessibility dialog when the grant is not held. It answers nothing:
+    /// asking is not evidence of a grant, so a caller takes `isTrusted` afterwards.
+    func requestTrust()
     /// Whether ANY process has Secure Input on. System-wide, so a reason to refuse and never a
     /// password-field detector.
     var isSecureInputOn: Bool { get }
@@ -232,6 +235,8 @@ public final class SystemFocusedFieldAccess: FocusedFieldAccess, @unchecked Send
     public static func requestTrust() {
         _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
     }
+
+    public func requestTrust() { Self.requestTrust() }
 
     public var isSecureInputOn: Bool { lock.withLock { secureInputProbe() } }
 

@@ -579,30 +579,37 @@ way.
   `startupLine` tests move out); create `FocusedFieldSwitchTests.swift`
 - Modify: `docs/manual-checklist.md`
 
-- [ ] write failing tests with counting adapters: a switch that was never opened calls no adapter
+- [x] write failing tests with counting adapters: a switch that was never opened calls no adapter
   (not even the trust check), `current` is `nil`
-- [ ] write failing tests: opening builds the wiring once from the frontmost source given at
+- [x] write failing tests: opening builds the wiring once from the frontmost source given at
   construction (never a second `SystemFrontmost`) and checks the grant once, synchronously; closing
   and reopening builds nothing; `built` survives closing; `current` is `nil` while closed; every
   `setOpen` bumps the generation `current` returns
-- [ ] write failing tests: a grant report with the current generation updates the last known grant
+- [x] write failing tests: a grant report with the current generation updates the last known grant
   and calls `onAccessibility`; a report from a closed switch, or from the generation before a
   close-and-reopen, is discarded and does not overwrite the new generation's grant
-- [ ] write failing tests: no timer exists — after any sequence of opens, closes and reports, the
+- [x] write failing tests: no timer exists — after any sequence of opens, closes and reports, the
   counting access records exactly the checks that were asked for
-- [ ] move `DaemonOptionsTests`' `make(options:)` and `startupLine` tests to
+- [x] move `DaemonOptionsTests`' `make(options:)` and `startupLine` tests to
   `FocusedFieldSwitchTests` against the switch, keeping the checklist-cited names or re-citing them
-- [ ] add `requestTrust()` to `FocusedFieldAccess` (the system adapter calls the existing static;
+- [x] add `requestTrust()` to `FocusedFieldAccess` (the system adapter calls the existing static;
   the fake counts)
-- [ ] implement `FocusedFieldSwitch(frontmost:feedback:adapters:onAccessibility:)` with
+- [x] implement `FocusedFieldSwitch(frontmost:feedback:adapters:onAccessibility:)` with
   `setOpen(_:)`, `current` (wiring and generation), `built`, `report(trusted:generation:) -> Bool`
   (whether the generation was current and the report accepted), and a
   `startupLine`; remove `make(options:)`; in `main.swift` build `SystemFrontmost` once, hand it to
   both the switch and the trigger, and open the switch when `options.focusedFields`, so behaviour
   is unchanged until Task 9
-- [ ] rename the citation of "with focused fields off, the wiring is nil and constructs no system
-  adapter"
-- [ ] run tests — must pass before Task 7
+- [x] rename the citation of "with focused fields off, the wiring is nil and constructs no system
+  adapter" (now "a switch never opened constructs no system adapter and makes no accessibility
+  call", in the checklist's row 14 and AGENTS.md)
+- [x] ➕ `main.swift` publishes the grant the opening checked (`$0.accessibility`) beside
+  `$0.terminal`: since Task 5 a `--focused-fields` daemon otherwise sat at `starting`. The switch's
+  `onAccessibility` is a no-op there until Task 7 hands the switch to the daemon, because the
+  daemon does not exist when the switch first opens; the start-up `requestTrust` reads the switch's
+  grant instead of a second trust check. Every `setOpen` also clears the last known grant, so a
+  grant always belongs to the generation that checked it
+- [x] run tests — must pass before Task 7
 
 ### Task 7: the daemon — `configure`, `accessibility`, and the gate at `beginField`
 

@@ -572,6 +572,7 @@ public final class FakeDaemonDoor: @unchecked Sendable {
 public final class FakeFocusedFieldAccess: FocusedFieldAccess, @unchecked Sendable {
     public enum Call: Equatable, Sendable {
         case isTrusted
+        case requestTrust
         case isSecureInputOn
         case focusedElement(expectedPID: Int32)
         case isSame
@@ -628,6 +629,8 @@ public final class FakeFocusedFieldAccess: FocusedFieldAccess, @unchecked Sendab
             return trusted
         }
     }
+
+    public func requestTrust() { lock.withLock { calls.append(.requestTrust) } }
 
     public var isSecureInputOn: Bool {
         lock.withLock {

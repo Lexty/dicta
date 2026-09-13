@@ -707,6 +707,11 @@ final class OrderedWorld: FocusedFieldAccess, EventPoster, FrontmostApplication,
         return rig.access.isTrusted
     }
 
+    func requestTrust() {
+        note("requestTrust")
+        rig.access.requestTrust()
+    }
+
     var isSecureInputOn: Bool {
         note("isSecureInputOn")
         return rig.access.isSecureInputOn

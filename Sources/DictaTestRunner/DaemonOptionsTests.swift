@@ -3,13 +3,12 @@ import DictaRuntime
 import Foundation
 import Testing
 
-// The daemon's command line and the focused-field path's composition (D31), both of which used to
-// be top-level code in `Sources/Dicta/main.swift` that no test could reach.
+// The daemon's command line, which used to be top-level code in `Sources/Dicta/main.swift` that no
+// test could reach. The focused-field path's composition is `FocusedFieldSwitchTests`.
 //
 // The parser is held to what `main.swift` did before it moved, refusal text included: a wrapper
 // script or a LaunchAgent that worked yesterday must not start failing for a reason that reads
-// differently today. The wiring is held to invariant 14's "only when on": with the option off, not
-// one system adapter is constructed.
+// differently today.
 
 @Suite("daemon options")
 struct DaemonOptionsTests {
@@ -48,7 +47,7 @@ struct DaemonOptionsTests {
         #expect(Self.parse(["--focused-fields"])
             == .run(DaemonOptions(controlSocket: Self.socket, focusedFields: true)))
         // Beside `--no-hold`, which is exactly the combination whose frontmost source must still
-        // be built (`FocusedFieldWiring`).
+        // be built (`FocusedFieldSwitch`).
         #expect(Self.parse(["--no-hold", "--focused-fields"])
             == .run(DaemonOptions(controlSocket: Self.socket, armHoldTrigger: false,
                                   focusedFields: true)))
@@ -123,87 +122,5 @@ struct DaemonOptionsTests {
         }
         #expect(fatal.contains("agtermctl"))
         #expect(fatal.contains("--no-hold"))
-    }
-
-    // MARK: - the wiring
-
-    /// Adapters that count, and hand out fakes.
-    final class CountingAdapters: @unchecked Sendable {
-        private let lock = NSLock()
-        private var made: [String] = []
-        let frontmost = FakeFrontmost(bundleIdentifier: "com.microsoft.VSCode")
-        let access = FakeFocusedFieldAccess()
-        let poster = FakeEventPoster()
-
-        var constructions: [String] { lock.withLock { made } }
-
-        var adapters: FocusedFieldWiring.Adapters {
-            FocusedFieldWiring.Adapters(
-                frontmost: { self.note("frontmost"); return self.frontmost },
-                access: { self.note("access"); return self.access },
-                poster: { self.note("poster"); return self.poster })
-        }
-
-        private func note(_ name: String) { lock.withLock { made.append(name) } }
-    }
-
-    @Test("with focused fields off, the wiring is nil and constructs no system adapter",
-          arguments: [true, false])
-    func wiringOff(armHold: Bool) {
-        let counting = CountingAdapters()
-        let options = DaemonOptions(controlSocket: Self.socket, armHoldTrigger: armHold)
-
-        let wired = FocusedFieldWiring.make(options: options, feedback: FakeNotifier(),
-                                            adapters: counting.adapters)
-
-        #expect(wired == nil)
-        #expect(counting.constructions.isEmpty)
-        #expect(counting.access.callLog.isEmpty)
-        #expect(counting.frontmost.reads == 0)
-    }
-
-    @Test("with focused fields on, one frontmost source is built and shared, even with --no-hold",
-          arguments: [true, false])
-    func wiringOn(armHold: Bool) throws {
-        let counting = CountingAdapters()
-        let options = DaemonOptions(controlSocket: Self.socket, armHoldTrigger: armHold,
-                                    focusedFields: true)
-
-        let wired = try #require(FocusedFieldWiring.make(options: options,
-                                                         feedback: FakeNotifier(),
-                                                         adapters: counting.adapters))
-
-        #expect(counting.constructions.filter { $0 == "frontmost" }.count == 1)
-        #expect(counting.constructions.filter { $0 == "access" }.count == 1)
-        #expect(wired.frontmost as? FakeFrontmost === counting.frontmost)
-        #expect(wired.access as? FakeFocusedFieldAccess === counting.access)
-        #expect(wired.trigger.access as? FakeFocusedFieldAccess === counting.access)
-        #expect(wired.daemon.access as? FakeFocusedFieldAccess === counting.access)
-
-        // The injector re-validates against the SAME source: with the shared one naming another
-        // application, delivery is refused having read it, and nothing is posted.
-        let field = FieldTarget(bundleID: "com.apple.Safari", appName: "Safari", pid: 777)
-        #expect(throws: DeliveryFailure.self) {
-            try wired.daemon.injector.inject("hello", into: field,
-                                             handle: FakeFocusedFieldAccess.textArea().handle)
-        }
-        #expect(counting.frontmost.reads > 0)
-        #expect(counting.poster.posts.isEmpty)
-    }
-
-    @Test("the start-up line names the option and, only when it is on, the grant")
-    func startupLine() {
-        #expect(FocusedFieldWiring.startupLine(nil)
-            == "focused fields: off, accessibility: not checked")
-
-        for trusted in [true, false] {
-            let counting = CountingAdapters()
-            counting.access.setTrusted(trusted)
-            let wired = FocusedFieldWiring.make(
-                options: DaemonOptions(controlSocket: Self.socket, focusedFields: true),
-                feedback: FakeNotifier(), adapters: counting.adapters)
-            #expect(FocusedFieldWiring.startupLine(wired)
-                == "focused fields: on, accessibility: \(trusted ? "granted" : "not granted")")
-        }
     }
 }

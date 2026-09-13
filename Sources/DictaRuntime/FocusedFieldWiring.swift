@@ -1,36 +1,33 @@
 import DictaCore
 import Foundation
 
-// The focused-field path's composition (D31), out of `main.swift` so that "the option off
-// constructs no system adapter" is an assertion rather than a reading of top-level code.
+// The focused-field path's composition (D31), out of `main.swift` so that "a closed gate constructs
+// no system adapter" is an assertion rather than a reading of top-level code.
 //
 // The adapters are built through `Adapters`, whose production value is the system's and whose test
-// value counts. With `--focused-fields` off `make` returns before calling any of them, which is the
-// whole of invariant 14's "only when on" on the daemon side: no `SystemFocusedFieldAccess`, so no
-// messaging timeout set and no trust check; no `SystemEventPoster`; and no second workspace
-// observer.
+// value counts. Until the person's choice first opens `FocusedFieldSwitch` none of them is called,
+// which is the whole of invariant 14's "only under other-apps" on the daemon side: no
+// `SystemFocusedFieldAccess`, so no messaging timeout set and no trust check; and no
+// `SystemEventPoster`. The frontmost source is not an adapter the switch makes: it is handed the
+// process's one `SystemFrontmost`, which the trigger routes on too (F8a).
 
 public enum FocusedFieldWiring {
     /// How each adapter the path needs is made.
     public struct Adapters: Sendable {
-        public var frontmost: @Sendable () -> any FrontmostApplication
         public var access: @Sendable () -> any FocusedFieldAccess
         public var poster: @Sendable () -> any EventPoster
 
-        public init(frontmost: @escaping @Sendable () -> any FrontmostApplication,
-                    access: @escaping @Sendable () -> any FocusedFieldAccess,
+        public init(access: @escaping @Sendable () -> any FocusedFieldAccess,
                     poster: @escaping @Sendable () -> any EventPoster) {
-            self.frontmost = frontmost
             self.access = access
             self.poster = poster
         }
 
-        public static let system = Adapters(frontmost: { SystemFrontmost() },
-                                            access: { SystemFocusedFieldAccess() },
+        public static let system = Adapters(access: { SystemFocusedFieldAccess() },
                                             poster: { SystemEventPoster() })
     }
 
-    /// What the daemon and the trigger are handed when the option is on.
+    /// What the daemon and the trigger are handed once the path has been built.
     public struct Wired: Sendable {
         /// The ONE frontmost source: the trigger routes on it and the injector re-validates against
         /// it. Two instances would be two observers that can disagree, and an unobserved one is
@@ -40,32 +37,132 @@ public enum FocusedFieldWiring {
         public let daemon: Daemon.FocusedFields
         public let trigger: HoldTrigger.FocusedFields
     }
+}
 
-    /// `nil`, having called no adapter, when `--focused-fields` is off.
+/// The focused-field path behind a gate that follows the person's choice (D31).
+///
+/// **The wiring is built at most once**, on the first opening, and kept for the process: an attempt
+/// accepted while the gate was open delivers through it, final validation included, whatever the
+/// gate says by then. Closing never destroys it; it only stops anything new being admitted.
+///
+/// **Admission is by generation.** `current` answers the wiring and the generation it was read
+/// under, or `nil` while closed, and every `setOpen` bumps the generation. A grant check made by an
+/// admitted reader is reported back with that generation and discarded unless it is still the
+/// current one, so a result from before a close -- or from a previous opening -- never overwrites
+/// what the present opening knows.
+///
+/// **The grant is observed with no timer.** It is checked once, synchronously, when the gate opens,
+/// and otherwise only when a reader reports a check it was going to make anyway. A revocation while
+/// nobody looks is noticed at the next check.
+public final class FocusedFieldSwitch: @unchecked Sendable {
+    /// One reader's admission: the wiring, and the generation it must report under.
+    public struct Admission: Sendable {
+        public let wiring: FocusedFieldWiring.Wired
+        public let generation: UInt64
+    }
+
+    private let frontmost: any FrontmostApplication
+    private let feedback: any Notifier
+    private let adapters: FocusedFieldWiring.Adapters
+    private let onAccessibility: @Sendable (Bool) -> Void
+
+    /// Guards the gate, the generation, the wiring and the grant. Held while the wiring is built,
+    /// which makes no check, and never across a trust check or the callback.
+    private let lock = NSLock()
+    /// Serialises accepted reports with their callbacks, so the grant the switch holds and the one
+    /// the callback last delivered cannot disagree. `current` never takes it.
+    private let reportLock = NSLock()
+    private var isOpen = false
+    private var generation: UInt64 = 0
+    private var wired: FocusedFieldWiring.Wired?
+    private var lastGrant: Bool?
+
+    /// Builds nothing and calls no adapter: the gate starts closed.
     ///
-    /// With the option on the frontmost source is built even under `--no-hold`: the injector
-    /// re-validates against it, and it only tracks activations once its observer exists (F8a).
-    /// `feedback` is the daemon's own, since a field has no indicator and its refusals are sounds
-    /// and notifications (D13).
-    public static func make(options: DaemonOptions, feedback: any Notifier,
-                            adapters: Adapters = .system) -> Wired? {
-        guard options.focusedFields else { return nil }
-        let frontmost = adapters.frontmost()
-        let access = adapters.access()
-        let injector = FocusedFieldInjector(access: access, poster: adapters.poster(),
-                                            frontmost: frontmost)
-        return Wired(frontmost: frontmost,
-                     access: access,
-                     daemon: Daemon.FocusedFields(access: access, injector: injector),
-                     trigger: HoldTrigger.FocusedFields(access: access, feedback: feedback))
+    /// `frontmost` is the process's one frontmost source, which the injector re-validates against
+    /// (F8a). `feedback` is the daemon's own, since a field has no indicator and its refusals are
+    /// sounds and notifications (D13). `onAccessibility` is told every accepted grant result, so
+    /// readiness follows the same facts as `grant`.
+    public init(frontmost: any FrontmostApplication, feedback: any Notifier,
+                adapters: FocusedFieldWiring.Adapters = .system,
+                onAccessibility: @escaping @Sendable (Bool) -> Void) {
+        self.frontmost = frontmost
+        self.feedback = feedback
+        self.adapters = adapters
+        self.onAccessibility = onAccessibility
+    }
+
+    /// Opens or closes the gate, bumping the generation either way. Opening builds the wiring if it
+    /// was never built, then checks the grant once and reports it under the new generation.
+    public func setOpen(_ open: Bool) {
+        let admitted = lock.withLock { () -> Admission? in
+            generation += 1
+            isOpen = open
+            // A new generation knows nothing about the grant until it has looked.
+            lastGrant = nil
+            guard open else { return nil }
+            let wiring = wired ?? build()
+            wired = wiring
+            return Admission(wiring: wiring, generation: generation)
+        }
+        guard let admitted else { return }
+        report(trusted: admitted.wiring.access.isTrusted, generation: admitted.generation)
+    }
+
+    /// The wiring and the generation to report under, or `nil` while the gate is closed.
+    public var current: Admission? {
+        lock.withLock {
+            guard isOpen, let wired else { return nil }
+            return Admission(wiring: wired, generation: generation)
+        }
+    }
+
+    /// The wiring if it was ever built, open or closed: what an accepted attempt delivers through.
+    public var built: FocusedFieldWiring.Wired? { lock.withLock { wired } }
+
+    /// The grant as last reported under the current generation; `nil` while closed or not yet
+    /// checked.
+    public var grant: Bool? { lock.withLock { lastGrant } }
+
+    /// Takes a grant check made under `generation`. Accepted -- `grant` updated and
+    /// `onAccessibility` called -- only while the gate is open and the generation is current;
+    /// otherwise discarded, and the answer says so, so a reader admitted before a close can stop.
+    @discardableResult
+    public func report(trusted: Bool, generation reported: UInt64) -> Bool {
+        reportLock.withLock {
+            let accepted = lock.withLock { () -> Bool in
+                guard isOpen, reported == generation else { return false }
+                lastGrant = trusted
+                return true
+            }
+            if accepted { onAccessibility(trusted) }
+            return accepted
+        }
     }
 
     /// The start-up line naming both facts a user debugging "the hold does nothing in VS Code"
-    /// needs first. With the option off the grant is not looked at -- the trust check is an
-    /// accessibility call, and the option off makes none -- so it says so rather than guessing.
-    public static func startupLine(_ wired: Wired?) -> String {
-        guard let wired else { return "focused fields: off, accessibility: not checked" }
-        let grant = wired.access.isTrusted ? "granted" : "not granted"
-        return "focused fields: on, accessibility: \(grant)"
+    /// needs first. It makes no call of its own: with the gate closed nothing may look at the
+    /// grant, and with it open the opening has already looked.
+    public var startupLine: String {
+        let (open, grant) = lock.withLock { (isOpen, lastGrant) }
+        guard open else { return "focused fields: off, accessibility: not checked" }
+        let described = switch grant {
+        case true?: "granted"
+        case false?: "not granted"
+        case nil: "not checked"
+        }
+        return "focused fields: on, accessibility: \(described)"
+    }
+
+    /// Under `lock`, once. The factories construct; none of them checks the grant or reads a field.
+    private func build() -> FocusedFieldWiring.Wired {
+        let access = adapters.access()
+        let injector = FocusedFieldInjector(access: access, poster: adapters.poster(),
+                                            frontmost: frontmost)
+        return FocusedFieldWiring.Wired(
+            frontmost: frontmost,
+            access: access,
+            daemon: Daemon.FocusedFields(access: access, injector: injector),
+            trigger: HoldTrigger.FocusedFields(access: access, feedback: feedback))
     }
 }

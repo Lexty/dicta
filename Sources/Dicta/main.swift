@@ -91,9 +91,19 @@ let defaultAgtermSocket = options.agtermSocket
 // refusal on a machine without agterm.
 let feedback = SystemFeedback()
 
-// The focused-field path, or nothing at all (invariant 14): with the option off this constructs no
-// adapter, so the process makes no accessibility call and posts no event.
-let focusedFields = FocusedFieldWiring.make(options: options, feedback: feedback)
+// The ONE frontmost source (F8a): the trigger routes on it, and the focused-field injector
+// re-validates against it. Built here even under `--no-hold`, because it only tracks activations
+// once its observer exists, and a source built later would start from a frozen value.
+let frontmost = SystemFrontmost()
+
+// The focused-field path behind its gate (invariant 14): closed, it constructs no adapter, so the
+// process makes no accessibility call and posts no event. Opened only with the option on. The
+// daemon does not exist yet when the opening checks the grant, so that result is read back from the
+// switch and published below, once it does.
+let fieldSwitch = FocusedFieldSwitch(frontmost: frontmost, feedback: feedback,
+                                     onAccessibility: { _ in })
+if options.focusedFields { fieldSwitch.setOpen(true) }
+let focusedFields = fieldSwitch.built
 
 // The microphone. It belongs to this bundle's TCC grant and to nothing else (D11, invariant 8):
 // `dictactl` links none of this, and a second binary opening the device would fracture the grant.
@@ -161,14 +171,20 @@ log("listening on \(controlSocket)")
 // defaulted, because `Faculties` distinguishes "known good" from "nobody has looked", and a daemon
 // that left this `nil` would sit at `starting` for ever. Without agterm it is `false`, which blocks
 // dictation only with `--focused-fields` off -- and that combination has already exited above.
+// With the option on, the grant the opening checked is recorded beside it for the same reason: the
+// scope is `other-apps`, where an unknown grant is `starting`. With it off the grant stays `nil`.
 let foundAgterm = agtermctl != nil
-daemon.observe { $0.terminal = foundAgterm }
-log(FocusedFieldWiring.startupLine(focusedFields))
+let openingGrant = fieldSwitch.grant
+daemon.observe {
+    $0.terminal = foundAgterm
+    $0.accessibility = openingGrant
+}
+log(fieldSwitch.startupLine)
 // Asked for at startup, with the option on and only then (invariant 14), for the microphone's
 // reason below: the dialog is read at the user's pace, not in the middle of a hold. It is also what
 // lists Dicta under Accessibility at all (F11); the per-hold check picks the grant up live.
-if let focusedFields, !focusedFields.access.isTrusted {
-    SystemFocusedFieldAccess.requestTrust()
+if let focusedFields, openingGrant == false {
+    focusedFields.access.requestTrust()
 }
 
 // Push-to-talk (D5), armed after the socket is bound because the trigger reaches the daemon through
@@ -192,8 +208,8 @@ if options.armHoldTrigger {
     } ?? feedback
     let trigger = HoldTrigger(
         configuration: configuration,
-        // The one frontmost source the injector shares when the option is on (F8a).
-        frontmost: focusedFields?.frontmost ?? SystemFrontmost(),
+        // The one frontmost source the injector shares (F8a).
+        frontmost: frontmost,
         notifier: notifier,
         fields: focusedFields?.trigger,
         send: { try ControlClient.send($0, to: configuration.socketPath) }

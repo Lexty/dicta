@@ -497,7 +497,7 @@ testing.linker` to the `DictaTests` target — otherwise the failing test cannot
   The focused-field adapters are here too — `FocusedField.swift` (the `FocusedFieldAccess`,
   `EventPoster` and `Pacer` seams, their system adapters and `FocusedFieldInjector`),
   `SystemFeedback.swift` (sounds and notifications where there is no agterm indicator) and
-  `FocusedFieldWiring.swift`, which builds none of them when the option is off.
+  `FocusedFieldWiring.swift`, whose `FocusedFieldSwitch` builds none of them until its gate opens.
 - `Sources/Dicta/` — the daemon executable. Wiring only: flags are parsed by `DaemonOptions` in
   `DictaCore`, so they are testable.
 - `Sources/dictactl/` — the client the keymap invokes. **DictaCore + DictaIPC and nothing else**,
@@ -911,9 +911,9 @@ did not ask for this.** The chords stay agterm-only, so outside agterm `raw` can
 The rules, each of which is either a measurement or a mistake a first draft made:
 
 - **The option off means zero AX calls, and a test holds it rather than a habit.**
-  `FocusedFieldWiring.make` returns `nil` before it calls a single adapter factory
-  (`test: with focused fields off, the wiring is nil and constructs no system adapter`), and the
-  trigger, handed a live fake with the option off, never calls it
+  `FocusedFieldSwitch` calls no adapter factory until it is first opened
+  (`test: a switch never opened constructs no system adapter and makes no accessibility call`),
+  and the trigger, handed a live fake with the option off, never calls it
   (`test: with focused fields off, the accessibility fake records zero calls in every scenario`).
   That is also why the start-up line reads `accessibility: not checked` with the option off: the
   trust check is itself an accessibility call.
