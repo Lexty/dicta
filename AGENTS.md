@@ -913,8 +913,8 @@ The rules, each of which is either a measurement or a mistake a first draft made
 - **The option off means zero AX calls, and a test holds it rather than a habit.**
   `FocusedFieldSwitch` calls no adapter factory until it is first opened
   (`test: a switch never opened constructs no system adapter and makes no accessibility call`),
-  and the trigger, handed a live fake with the option off, never calls it
-  (`test: with focused fields off, the accessibility fake records zero calls in every scenario`).
+  and the trigger, reading a closed gate at the press and again at the threshold, never calls it
+  (`test: with the gate closed, the accessibility fake records zero calls in every scenario`).
   That is also why the start-up line reads `accessibility: not checked` with the option off: the
   trust check is itself an accessibility call.
 - **The field path starts on the poll loop's threshold edge, never by sleeping in the sender.** On
@@ -962,8 +962,9 @@ The rules, each of which is either a measurement or a mistake a first draft made
 - **A field refusal is said once, by the daemon, and a switch is said by nobody.** The daemon's
   refusal of a field start plays `Basso` and notifies through `SystemFeedback` (a Focus mode
   suppresses the notification, F11), so the trigger says nothing more for a `rejected` start; it
-  speaks only for what the daemon never heard — the missing grant it checks first, and a send that
-  failed. The abort of a hold whose release switched the application carries `silent`, which drops
+  speaks only for a send that failed. The missing grant it checks first is silent, and reported to
+  the switch with the generation it was admitted under: readiness and the setup window show it, and
+  a sound at every long right-hand combination would not. The abort of a hold whose release switched the application carries `silent`, which drops
   the machine's `blocked` and notification for a focused-field attempt only (an agterm indicator
   must still be put out); the record keeps its `aborted` line. Tests pairing the trigger with a real
   `Daemon` hold both, because each half faked alone passed while every refusal was said twice.

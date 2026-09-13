@@ -213,8 +213,8 @@ the pane, it has the indicator, and it needs no permission (D31).
 macOS discards them silently (F11). The daemon asks for it once at start-up, when it runs with the
 option and does not have it: the system dialog opens and `Dicta` is added to System Settings →
 Privacy & Security → Accessibility, where you turn it on (add `~/Applications/Dicta.app` with `+` if
-it is somehow not listed). Until then, every hold outside agterm that passes the floor is refused with
-`Basso` and a notification naming the grant, and the microphone never opens. The grant is picked up
+it is somehow not listed). Until then, every hold outside agterm that passes the floor does nothing,
+silently, and the microphone never opens. The grant is picked up
 without a restart, and a rebuild does not revoke it, for the same signing reason as the
 microphone's. The daemon's log says which it is at start-up: `focused fields: on, accessibility:
 granted` or `not granted`. **Without the option, dicta makes no accessibility call and posts no

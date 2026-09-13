@@ -195,10 +195,8 @@ if let focusedFields, openingGrant == false {
 var holdTrigger: HoldTrigger?
 if options.armHoldTrigger {
     let configuration = options.holdKeys.isEmpty
-        ? HoldTrigger.Configuration(socketPath: controlSocket,
-                                    focusedFields: options.focusedFields)
-        : HoldTrigger.Configuration(keys: options.holdKeys, socketPath: controlSocket,
-                                    focusedFields: options.focusedFields)
+        ? HoldTrigger.Configuration(socketPath: controlSocket)
+        : HoldTrigger.Configuration(keys: options.holdKeys, socketPath: controlSocket)
     // Only as a notifier. The target is resolved inside the daemon, from one tree read, because the
     // trigger asks for it with `focus: true` rather than looking it up itself (§5). Without agterm,
     // the refusal of a hold in front of it is said through `feedback` instead.
@@ -210,7 +208,9 @@ if options.armHoldTrigger {
         // The one frontmost source the injector shares (F8a).
         frontmost: frontmost,
         notifier: notifier,
-        fields: focusedFields?.trigger,
+        // The switch's gate, read at the press and at the threshold: the person's choice applies
+        // to the next hold without a restart, and never to one already started (D31).
+        gate: .of(fieldSwitch),
         send: { try ControlClient.send($0, to: configuration.socketPath) }
     )
     trigger.start()

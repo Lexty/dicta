@@ -585,6 +585,7 @@ public final class FakeFocusedFieldAccess: FocusedFieldAccess, @unchecked Sendab
     private var upcoming: [Result<FocusedElement, FocusedFieldError>] = []
     private var standing: Result<FocusedElement, FocusedFieldError>
     private var onRead: (@Sendable () -> Void)?
+    private var onTrustCheck: (@Sendable () -> Void)?
 
     /// An eligible text area, as F11 found the VS Code editor.
     public static func textArea(token: Int = 1) -> FocusedElement {
@@ -627,11 +628,20 @@ public final class FakeFocusedFieldAccess: FocusedFieldAccess, @unchecked Sendab
     /// takes long enough for the clock to pass a deadline, or for focus to move.
     public func duringRead(_ body: (@Sendable () -> Void)?) { lock.withLock { onRead = body } }
 
+    /// Runs once, on the next trust check, after it is logged and outside the lock: the gate
+    /// closing while a check already admitted is in flight.
+    public func duringNextTrustCheck(_ body: (@Sendable () -> Void)?) {
+        lock.withLock { onTrustCheck = body }
+    }
+
     public var isTrusted: Bool {
-        lock.withLock {
+        let (answer, hook) = lock.withLock { () -> (Bool, (@Sendable () -> Void)?) in
             calls.append(.isTrusted)
-            return trusted
+            defer { onTrustCheck = nil }
+            return (trusted, onTrustCheck)
         }
+        hook?()
+        return answer
     }
 
     public func requestTrust() { lock.withLock { calls.append(.requestTrust) } }

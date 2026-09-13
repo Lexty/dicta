@@ -639,7 +639,7 @@ struct HoldTriggerTests {
         #expect(rig.notifier.signals.isEmpty)
     }
 
-    @Test("with focused fields off, the hold key does nothing at all in another application")
+    @Test("with the gate closed, the hold key does nothing at all in another application")
     func notFrontmostIsSilent() {
         // Invariant 13 and D22. Silent is the assertion, not merely "does not dictate": a
         // notification here would fire on every right-Control combination typed in a browser.
@@ -842,7 +842,7 @@ struct FocusedFieldTriggerTests {
     static let target = FieldTarget(bundleID: "com.microsoft.VSCode", appName: "Code", pid: 4_242)
     static let settle: TimeInterval = 0.25
 
-    /// A trigger with the focused-field path wired to fakes, and VS Code frontmost.
+    /// A trigger behind a real `FocusedFieldSwitch` built out of fakes, and VS Code frontmost.
     struct Rig {
         let trigger: HoldTrigger
         let modifiers = FakeModifiers()
@@ -850,33 +850,55 @@ struct FocusedFieldTriggerTests {
         let notifier = FakeNotifier()
         let feedback: FakeNotifier
         let access: FakeFocusedFieldAccess
+        let fieldSwitch: FocusedFieldSwitch
         let daemon = FakeDaemonDoor()
         let clock = FakeClock()
         let pacer: FakePacer
+        /// Every grant the switch accepted, in order.
+        let reported = DaemonTests.Locked<[Bool]>([])
 
-        /// `send` replaces the fake door -- a real `Daemon`, when what is asserted is what the two
-        /// halves say together -- and `feedback` is then that daemon's own. `wired: false` hands
-        /// the trigger no `FocusedFields` at all.
-        init(enabled: Bool = true, trusted: Bool = true, wired: Bool = true,
-             feedback: FakeNotifier = FakeNotifier(),
+        /// `open: false` leaves the gate closed, as any scope but `other-apps` does. `harness` puts
+        /// a real `Daemon` behind the trigger -- when what is asserted is what the two halves say
+        /// together -- and the switch, the access and the feedback are then that daemon's own.
+        /// `send` replaces whichever door that chose.
+        init(open: Bool = true, trusted: Bool = true, harness: DaemonTests.Harness? = nil,
              send: HoldTrigger.Sender? = nil) {
-            access = FakeFocusedFieldAccess(trusted: trusted)
             pacer = FakePacer(clock: clock)
-            self.feedback = feedback
             frontmost.activate(FocusedFieldTriggerTests.code)
+            if let harness {
+                access = harness.access
+                feedback = harness.feedback
+                fieldSwitch = harness.fieldSwitch
+                access.setTrusted(trusted)
+            } else {
+                let access = FakeFocusedFieldAccess(trusted: trusted)
+                self.access = access
+                feedback = FakeNotifier()
+                fieldSwitch = FocusedFieldSwitch(
+                    frontmost: frontmost, feedback: feedback,
+                    adapters: FocusedFieldWiring.Adapters(access: { access },
+                                                          poster: { FakeEventPoster() }))
+                let reported = reported
+                fieldSwitch.tellAccessibility { reported.set(reported.value + [$0]) }
+                if open { fieldSwitch.setOpen(true) }
+                // The opening checked the grant once; each test's log starts after it.
+                access.forgetCalls()
+                reported.set([])
+            }
             let daemon = daemon
+            let door = harness?.daemon
             trigger = HoldTrigger(
                 configuration: HoldTrigger.Configuration(
-                    floor: 0.3, focusedFields: enabled,
-                    settleWindow: FocusedFieldTriggerTests.settle),
+                    floor: 0.3, settleWindow: FocusedFieldTriggerTests.settle),
                 modifiers: modifiers,
                 frontmost: frontmost,
                 notifier: notifier,
                 clock: clock,
-                fields: wired
-                    ? HoldTrigger.FocusedFields(access: access, feedback: feedback, pacer: pacer)
-                    : nil,
-                send: send ?? { try daemon.send($0) }
+                gate: .of(fieldSwitch, pacer: pacer),
+                send: send ?? { request in
+                    if let door { return door.handle(.request(request)) }
+                    return try daemon.send(request)
+                }
             )
             _ = trigger.sample()
         }
@@ -1084,16 +1106,140 @@ struct FocusedFieldTriggerTests {
         #expect(late.pacer.pauses.isEmpty)
     }
 
-    @Test("with the grant missing, a threshold refuses once, audibly, and sends nothing")
-    func noGrantRefusesAtTheThreshold() {
+    @Test("with the grant missing, a threshold is silent, sends nothing, and reports the grant")
+    func noGrantIsSilentAtTheThreshold() {
+        // Readiness and the setup window show a missing grant; a sound here would come with every
+        // long right-hand combination.
         let rig = Rig(trusted: false)
         rig.hold(for: 3)
         #expect(rig.daemon.requests.isEmpty)
         #expect(rig.access.callLog == [.isTrusted])
-        #expect(rig.feedback.announcements == [.blocked])
-        #expect(rig.feedback.messages.count == 1)
-        #expect(rig.feedback.messages.first?.contains("Accessibility") == true)
-        #expect(rig.notifier.signals.isEmpty)
+        #expect(rig.silent)
+        #expect(rig.reported.value == [false])
+        #expect(rig.fieldSwitch.grant == false)
+        // With the grant, the same check reports it, under the same generation.
+        let granted = Rig()
+        granted.hold(for: 3)
+        #expect(granted.daemon.verbs == [.start, .stop])
+        #expect(granted.reported.value == [true])
+        #expect(granted.fieldSwitch.grant == true)
+    }
+
+    @Test("a gate closed at the press ignores the hold, even when it opens before the threshold")
+    func aGateClosedAtThePress() throws {
+        let rig = Rig(open: false)
+        let down = try #require(rig.press())
+        #expect(down.route == .ignore)
+        rig.perform([down])
+        rig.fieldSwitch.setOpen(true)
+        rig.access.forgetCalls()
+        // No threshold was armed for a hold that was ignored at the press.
+        #expect(rig.wait(0.35) == nil)
+        rig.clock.advance(by: 1)
+        rig.perform([rig.release()])
+        #expect(rig.access.callLog.isEmpty)
+        #expect(rig.daemon.requests.isEmpty)
+        #expect(rig.silent)
+    }
+
+    @Test("a gate closed before the threshold abandons the hold silently, with no AX call")
+    func aGateClosedBeforeTheThreshold() throws {
+        let rig = Rig()
+        let down = try #require(rig.press())
+        #expect(down.route == .focusedFieldAfterFloor(Self.target))
+        rig.perform([down])
+        rig.fieldSwitch.setOpen(false)
+        let threshold = try #require(rig.wait(0.35))
+        #expect(threshold.edge == .threshold)
+        rig.perform([threshold])
+        rig.clock.advance(by: 1)
+        rig.perform([rig.release()])
+        #expect(rig.access.callLog.isEmpty)
+        #expect(rig.daemon.requests.isEmpty)
+        #expect(rig.reported.value.isEmpty)
+        #expect(rig.silent)
+    }
+
+    @Test("a started field hold is stopped after the gate closes, through what it captured")
+    func aStartedHoldOutlivesTheGate() {
+        // Closed, and closed then reopened: either way the release ends the attempt it started,
+        // with the settle window's wait from the path admitted at the threshold.
+        for reopen in [false, true] {
+            let rig = Rig()
+            rig.perform([rig.press(), rig.wait(0.35)])
+            #expect(rig.daemon.verbs == [.start])
+            rig.fieldSwitch.setOpen(false)
+            if reopen { rig.fieldSwitch.setOpen(true) }
+            rig.access.forgetCalls()
+            rig.clock.advance(by: 1)
+            rig.perform([rig.release()])
+            #expect(rig.daemon.verbs == [.start, .stop])
+            #expect(rig.daemon.requests[1].attempt == 1)
+            #expect(rig.pacer.pauses == [Self.settle])
+            #expect(rig.access.callLog.isEmpty)
+            #expect(rig.silent)
+        }
+    }
+
+    @Test("a gate closing during the threshold's grant check discards the report; nothing follows")
+    func aGateClosedDuringTheGrantCheck() throws {
+        for reopen in [false, true] {
+            let rig = Rig()
+            rig.perform([rig.press()])
+            let threshold = try #require(rig.wait(0.35))
+            let readsBefore = rig.frontmost.reads
+            let fieldSwitch = rig.fieldSwitch
+            let access = rig.access
+            // The admitted check answers `true`; the gate closes while it runs. Reopened, the new
+            // generation checks for itself and finds the grant gone.
+            access.duringNextTrustCheck {
+                fieldSwitch.setOpen(false)
+                guard reopen else { return }
+                access.setTrusted(false)
+                fieldSwitch.setOpen(true)
+            }
+            rig.perform([threshold])
+            // The one admitted check, and in the reopened case the reopening's own: no field read.
+            #expect(rig.access.callLog == (reopen ? [.isTrusted, .isTrusted] : [.isTrusted]))
+            #expect(rig.frontmost.reads == readsBefore)
+            #expect(rig.daemon.requests.isEmpty)
+            // The stale `true` never overwrote what the present generation knows.
+            #expect(rig.fieldSwitch.grant == (reopen ? false : nil))
+            #expect(rig.reported.value == (reopen ? [false] : []))
+            rig.clock.advance(by: 1)
+            rig.perform([rig.release()])
+            #expect(rig.daemon.requests.isEmpty)
+            #expect(rig.silent)
+        }
+    }
+
+    @Test("a start already sent when the gate closes is refused by the daemon, with no more calls")
+    func aGateClosedBeforeTheDaemonStarts() throws {
+        let harness = DaemonTests.Harness(focusedFields: true)
+        let daemon = harness.daemon
+        // The person chooses agterm only after the threshold's report was accepted and before the
+        // socket handles its `start`.
+        let rig = Rig(harness: harness, send: { request in
+            if request.cmd == .start {
+                _ = daemon.handle(.request(Request(cmd: .configure, scope: .agtermOnly)))
+            }
+            return daemon.handle(.request(request))
+        })
+
+        rig.perform([rig.press(), rig.wait(0.35)])
+
+        #expect(harness.fieldSwitch.current == nil)
+        // The trigger's one admitted check; the daemon's re-read of the gate makes none.
+        #expect(harness.access.callLog == [.isTrusted])
+        #expect(harness.capture.callLog.isEmpty)
+        #expect(harness.daemon.state == .idle)
+        #expect(harness.feedback.messages.count == 1)
+        #expect(harness.feedback.messages.first?.contains("not set up to type into other apps")
+                == true)
+        rig.clock.advance(by: 1)
+        rig.perform([rig.release()])
+        #expect(harness.feedback.messages.count == 1)
+        #expect(harness.fieldInjector.delivered.isEmpty)
     }
 
     @Test("a threshold after the user switched away sends nothing and says nothing")
@@ -1123,8 +1269,7 @@ struct FocusedFieldTriggerTests {
     func aRefusalThroughTheRealDaemonIsSaidOnce() throws {
         let harness = DaemonTests.Harness(focusedFields: true)
         harness.access.setSecureInput(true)
-        let daemon = harness.daemon
-        let rig = Rig(feedback: harness.feedback, send: { daemon.handle(.request($0)) })
+        let rig = Rig(harness: harness)
 
         rig.hold(for: 2)
 
@@ -1140,8 +1285,7 @@ struct FocusedFieldTriggerTests {
         // What H32 (b) scores: a right-hand `⌘Tab` held past the floor opens the microphone, and
         // then must cost no `Basso` and no "aborted" notification -- only the record's line.
         let harness = DaemonTests.Harness(focusedFields: true)
-        let daemon = harness.daemon
-        let rig = Rig(feedback: harness.feedback, send: { daemon.handle(.request($0)) })
+        let rig = Rig(harness: harness)
 
         rig.perform([rig.press(.rightCommand), rig.wait(0.35)])
         let id = try #require(harness.daemon.currentAttempt?.id)
@@ -1183,18 +1327,31 @@ struct FocusedFieldTriggerTests {
         #expect(rig.notifier.signals.isEmpty)
     }
 
-    @Test("the option on with no focused-field wiring routes nothing into the field path")
-    func theOptionWithoutWiringIsIgnored() throws {
-        let rig = Rig(wired: false)
-        let down = try #require(rig.press())
+    @Test("a trigger handed no gate routes nothing into the field path")
+    func noGateIsClosed() throws {
+        let modifiers = FakeModifiers()
+        let frontmost = FakeFrontmost()
+        frontmost.activate(Self.code)
+        let notifier = FakeNotifier()
+        let door = FakeDaemonDoor()
+        let clock = FakeClock()
+        let trigger = HoldTrigger(configuration: HoldTrigger.Configuration(floor: 0.3),
+                                  modifiers: modifiers, frontmost: frontmost, notifier: notifier,
+                                  clock: clock, send: { try door.send($0) })
+        _ = trigger.sample()
+        modifiers.press(.rightControl)
+        let down = try #require(trigger.sample())
         #expect(down.route == .ignore)
-        rig.perform([down, rig.wait(2), rig.release()])
-        #expect(rig.daemon.requests.isEmpty)
-        #expect(rig.access.callLog.isEmpty)
-        #expect(rig.silent)
+        trigger.perform(down)
+        clock.advance(by: 2)
+        #expect(trigger.sample() == nil)
+        modifiers.release(.rightControl)
+        if let up = trigger.sample() { trigger.perform(up) }
+        #expect(door.requests.isEmpty)
+        #expect(notifier.signals.isEmpty)
     }
 
-    @Test("agterm frontmost with focused fields on still starts on key-down")
+    @Test("agterm frontmost with the gate open still starts on key-down")
     func agtermKeepsItsPath() {
         let rig = Rig()
         rig.frontmost.activate(Self.agterm)
@@ -1210,9 +1367,9 @@ struct FocusedFieldTriggerTests {
         #expect(rig.pacer.pauses.isEmpty)
     }
 
-    @Test("with focused fields off, the accessibility fake records zero calls in every scenario")
-    func optionOffMakesNoAccessibilityCall() {
-        let rig = Rig(enabled: false)
+    @Test("with the gate closed, the accessibility fake records zero calls in every scenario")
+    func gateClosedMakesNoAccessibilityCall() {
+        let rig = Rig(open: false)
         // Another application: long, short, and both keys.
         rig.hold(for: 3)
         rig.hold(.rightCommand, for: 0.15)

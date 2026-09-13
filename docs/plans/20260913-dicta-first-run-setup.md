@@ -666,28 +666,34 @@ way.
 - Modify: `Sources/Dicta/main.swift`
 - Modify: `Sources/DictaTestRunner/HoldTriggerTests.swift`, `docs/manual-checklist.md`
 
-- [ ] write failing tests: gate closed at the press → `.ignore`, zero accessibility calls, even if it
+- [x] write failing tests: gate closed at the press → `.ignore`, zero accessibility calls, even if it
   opens during the hold
-- [ ] write failing tests: gate open at the press and closed before the threshold → the hold is
+- [x] write failing tests: gate open at the press and closed before the threshold → the hold is
   abandoned silently with zero accessibility calls and no `start` sent
-- [ ] write failing tests: gate closed (and closed-and-reopened) after a `.started` field hold → its
+- [x] write failing tests: gate closed (and closed-and-reopened) after a `.started` field hold → its
   release still stops it, using the `FocusedFields` it captured
-- [ ] write failing tests: the gate closes between the threshold's gate read and its `isTrusted` →
+- [x] write failing tests: the gate closes between the threshold's gate read and its `isTrusted` →
   that one admitted check may run; `switch.report` returns that its generation was stale, the
   trigger abandons on that answer, no frontmost read or field read follows, and no `start` is sent
-- [ ] write failing tests, separately, with the daemon in the loop: the gate closes after the
+- [x] write failing tests, separately, with the daemon in the loop: the gate closes after the
   threshold's accepted report but before the socket handles its `start` → `beginField` refuses it
   with zero further calls
-- [ ] write failing tests: a threshold without the grant sends nothing, plays no sound, posts no
+- [x] write failing tests: a threshold without the grant sends nothing, plays no sound, posts no
   notification, and reports `false` with its generation; a threshold with the grant reports `true`
-- [ ] replace `Configuration.focusedFields` and `fields` with `@Sendable () ->
+- [x] replace `Configuration.focusedFields` and `fields` with `@Sendable () ->
   (FocusedFields, generation)?` read at the press and at the threshold, and a report callback;
   `FieldHold` carries `FocusedFields` only once `.started`
-- [ ] rename the citations of "with focused fields off, the accessibility fake records zero calls in
+- [x] rename the citations of "with focused fields off, the accessibility fake records zero calls in
   every scenario", "with focused fields off, the hold key does nothing at all in another
   application" (both places) and "with the grant missing, a threshold refuses once, audibly, and
   sends nothing"
-- [ ] run tests — must pass before Task 9
+- [x] ➕ the closure and the callback travel together as `HoldTrigger.FieldGate` (`admit`,
+  `report`; `.closed` is the default, `.of(switch, pacer:)` the switch's own), so a trigger built
+  with no gate cannot reach the field path. The trigger's audible no-grant refusal goes (SPEC
+  already said silent since Task 1), and README's and AGENTS.md's sentences describing it are
+  corrected here rather than in Task 14. `FakeFocusedFieldAccess.duringNextTrustCheck` is the seam
+  for a close landing inside the admitted check
+- [x] run tests — must pass before Task 9
 
 ### Task 9: start-up — bootstrap the choice, never exit for agterm, no prompt
 

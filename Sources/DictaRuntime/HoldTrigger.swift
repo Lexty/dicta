@@ -193,9 +193,6 @@ public final class HoldTrigger: @unchecked Sendable {
         public var agtermBundleIdentifier: String
         /// dicta's own control socket -- the same one `dictactl` connects to.
         public var socketPath: String
-        /// `--focused-fields` (D31). Off, a hold outside agterm is D22's silent no-op and the
-        /// trigger makes no accessibility call, whatever it was handed.
-        public var focusedFields: Bool
         /// How long after the release a field attempt waits for the application to change before it
         /// is stopped rather than silently aborted (D31). `⌘Tab` activates the chosen application
         /// when `⌘` is released, so the switch lands just after the `up`.
@@ -206,14 +203,12 @@ public final class HoldTrigger: @unchecked Sendable {
                     pollInterval: TimeInterval = 0.016,
                     agtermBundleIdentifier: String = HoldTrigger.agtermBundleIdentifier,
                     socketPath: String = Paths.current.socket.path,
-                    focusedFields: Bool = false,
                     settleWindow: TimeInterval = HoldTrigger.defaultSettleWindow) {
             self.keys = keys
             self.floor = floor
             self.pollInterval = pollInterval
             self.agtermBundleIdentifier = agtermBundleIdentifier
             self.socketPath = socketPath
-            self.focusedFields = focusedFields
             self.settleWindow = settleWindow
         }
     }
@@ -228,8 +223,8 @@ public final class HoldTrigger: @unchecked Sendable {
     /// misplaced text.
     public static let defaultSettleWindow: TimeInterval = 0.25
 
-    /// What the focused-field path needs beyond the agterm path (D31). Handed over only when
-    /// `--focused-fields` is on; nothing here is touched while it is off.
+    /// What the focused-field path needs beyond the agterm path (D31). Reached only through a
+    /// `FieldGate` that admitted the hold; nothing here is touched while the gate is closed.
     public struct FocusedFields: Sendable {
         /// The grant check at the threshold. The trigger reads nothing else through it.
         public var access: any FocusedFieldAccess
@@ -244,6 +239,43 @@ public final class HoldTrigger: @unchecked Sendable {
             self.access = access
             self.feedback = feedback
             self.pacer = pacer
+        }
+    }
+
+    /// The focused-field path behind the person's choice (D31), read rather than held.
+    ///
+    /// `admit` is asked at the press and again at the threshold, and answers the path and the
+    /// generation it was admitted under, or `nil` while the scope is not `other-apps`. The
+    /// threshold's grant check goes back through `report` with that generation, and the answer
+    /// says whether it was still current: a hold admitted before a close stops on that answer, so
+    /// the one check already admitted is the last accessibility call it makes.
+    public struct FieldGate: Sendable {
+        public typealias Admission = (fields: FocusedFields, generation: UInt64)
+
+        public var admit: @Sendable () -> Admission?
+        public var report: @Sendable (_ trusted: Bool, _ generation: UInt64) -> Bool
+
+        public init(admit: @escaping @Sendable () -> Admission?,
+                    report: @escaping @Sendable (_ trusted: Bool, _ generation: UInt64) -> Bool) {
+            self.admit = admit
+            self.report = report
+        }
+
+        /// Never admits: the hold key means nothing outside agterm.
+        public static let closed = FieldGate(admit: { nil }, report: { _, _ in false })
+
+        /// The switch's own gate. `pacer` replaces the settle window's wait, for a test that must
+        /// not sleep; the path is otherwise the switch's wiring, built once.
+        public static func of(_ fieldSwitch: FocusedFieldSwitch,
+                              pacer: (any Pacer)? = nil) -> FieldGate {
+            FieldGate(
+                admit: {
+                    guard let admission = fieldSwitch.current else { return nil }
+                    var fields = admission.wiring.trigger
+                    if let pacer { fields.pacer = pacer }
+                    return (fields, admission.generation)
+                },
+                report: { fieldSwitch.report(trusted: $0, generation: $1) })
         }
     }
 
@@ -275,7 +307,7 @@ public final class HoldTrigger: @unchecked Sendable {
     private let notifier: any Notifier
     private let clock: any Clock
     private let send: Sender
-    private let fields: FocusedFields?
+    private let gate: FieldGate
 
     private var watch: HoldWatch
     private var gesture: HoldToTalk
@@ -287,8 +319,9 @@ public final class HoldTrigger: @unchecked Sendable {
         enum Phase {
             /// Down, and waiting for its threshold.
             case pending
-            /// The daemon accepted the start and named this attempt.
-            case started(AttemptID)
+            /// The daemon accepted the start and named this attempt. The path it was admitted
+            /// through is kept for the release, whatever the gate says by then.
+            case started(AttemptID, FocusedFields)
             /// Nothing began, or nothing will: the release must be silent.
             case abandoned
         }
@@ -311,14 +344,14 @@ public final class HoldTrigger: @unchecked Sendable {
                 frontmost: any FrontmostApplication = SystemFrontmost(),
                 notifier: any Notifier,
                 clock: any Clock = SystemClock(),
-                fields: FocusedFields? = nil,
+                gate: FieldGate = .closed,
                 send: @escaping Sender = { try ControlClient.send($0) }) {
         self.configuration = configuration
         self.modifiers = modifiers
         self.frontmost = frontmost
         self.notifier = notifier
         self.clock = clock
-        self.fields = fields
+        self.gate = gate
         self.send = send
         self.watch = HoldWatch(keys: configuration.keys, floor: configuration.floor)
         self.gesture = HoldToTalk(floor: configuration.floor)
@@ -391,7 +424,7 @@ public final class HoldTrigger: @unchecked Sendable {
             let facts = frontmost.current
             let route = HoldRoute.decide(frontmost: facts,
                                          agtermBundleID: configuration.agtermBundleIdentifier,
-                                         focusedFieldsEnabled: fieldsEnabled)
+                                         focusedFieldsEnabled: gate.admit() != nil)
             if case .focusedFieldAfterFloor = route { watch.armThreshold() }
             // Liveness before the edge is queued: no sender sees an edge the snapshot has not.
             liveness.pressed(held.key, generation: generation)
@@ -406,10 +439,6 @@ public final class HoldTrigger: @unchecked Sendable {
                            generation: generation, route: nil)
         }
     }
-
-    /// The option is on AND the trigger was given what the field path needs. Either alone leaves
-    /// the route closed, so a trigger built without accessibility can never be routed into it.
-    private var fieldsEnabled: Bool { configuration.focusedFields && fields != nil }
 
     // MARK: - the sender
 
@@ -439,7 +468,7 @@ public final class HoldTrigger: @unchecked Sendable {
                 fieldHold = FieldHold(generation: pending.generation, target: target,
                                       phase: .pending)
             case .ignore, nil:
-                // D22, and silent on purpose: with the option off the key means nothing outside
+                // D22, and silent on purpose: with the gate closed the key means nothing outside
                 // agterm, and §6's rule is that a no-op makes no sound. A notification here would
                 // fire every time the user pressed a combination with one of the armed keys in
                 // their browser -- and with right Command among them (F6a) that is every `⌘V` and
@@ -516,28 +545,35 @@ public final class HoldTrigger: @unchecked Sendable {
 
     // MARK: - the focused-field path (D31)
 
-    /// A live threshold, in D31's order: liveness, then the grant, then the frontmost pid, then the
+    /// A live threshold, in D31's order: the gate, liveness, the grant, the frontmost pid, then the
     /// start. Everything after the liveness check runs with no lock held.
     private func beginField(_ pending: Pending) {
         guard var hold = fieldHold, hold.generation == pending.generation,
               case .pending = hold.phase else { return }
+        // The gate again, before any accessibility call: the person may have chosen agterm only
+        // since the press. Silent, like the press it would have been with the gate closed then.
+        guard let admission = gate.admit() else {
+            abandonField()
+            return
+        }
+        let (fields, generation) = admission
         // Queue order is history, not liveness. A threshold whose key the poll loop has already
         // seen come up -- or whose generation a newer press replaced -- is dropped, and costs no
         // accessibility call, no request and no notification.
-        guard liveness.isHeld(generation: pending.generation), let fields else {
+        guard liveness.isHeld(generation: pending.generation) else {
             abandonField()
             return
         }
         let target = Target.focusedField(hold.target)
-        // No grant, and posting would be discarded with no error (F11): refused here, before the
-        // daemon is asked for anything, so the microphone never opens. `Basso` as well as the
-        // notification, because a Focus mode suppresses the notification (F11).
-        guard fields.access.isTrusted else {
+        // The one admitted check, reported either way so readiness follows it. No grant, and
+        // posting would be discarded with no error (F11): abandoned before the daemon is asked for
+        // anything, so the microphone never opens -- and silently, because readiness and the setup
+        // window are where a missing grant is shown, and a sound here would come with every long
+        // right-hand combination. A report the switch discarded means the gate closed since the
+        // read above: nothing newly admitted follows, not even the frontmost read.
+        let trusted = fields.access.isTrusted
+        guard gate.report(trusted, generation), trusted else {
             abandonField()
-            fields.feedback.announce(.blocked, for: target)
-            fields.feedback.notify("dicta cannot type into \(hold.target.appName) without the "
-                                   + "Accessibility grant: allow Dicta in System Settings > "
-                                   + "Privacy & Security > Accessibility", for: target)
             return
         }
         // The user switched away during the hold: silent, like D22, because whatever they were
@@ -558,7 +594,7 @@ public final class HoldTrigger: @unchecked Sendable {
             // `HoldToTalk` is not consulted: the floor was passed by sampled time before this
             // threshold existed, and applying it again from here would abort a hold released just
             // after a slow start.
-            hold.phase = .started(attempt)
+            hold.phase = .started(attempt, fields)
             fieldHold = hold
         } catch {
             abandonField()
@@ -577,7 +613,7 @@ public final class HoldTrigger: @unchecked Sendable {
         fieldHold = nil
         // Released before the floor, or refused at the threshold: nothing was started, so nothing
         // is said.
-        guard case let .started(attempt) = hold.phase, let fields else { return }
+        guard case let .started(attempt, fields) = hold.phase else { return }
         if switchedApplication(from: hold.target.pid, releasedAt: releasedAt, pacer: fields.pacer) {
             // The user's decision, 2026-09-13: like D21's floor, no text, no sound and no
             // notification -- and the answer is not reported either, since a refusal here would be
