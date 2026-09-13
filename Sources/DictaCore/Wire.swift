@@ -47,6 +47,17 @@ public enum Command: String, Codable, Sendable, CaseIterable {
     /// timeouts are all sized as "how long may one answer take". See `WatchEvent` for what travels,
     /// and `ControlTimeouts.watchIdle` for the timeout that had to be invented rather than reused.
     case watch
+    /// Record where dictation goes, as the person chose it in the setup window (D31).
+    ///
+    /// Carries `scope`, `offerSeen`, or both. The daemon persists the choice to `setup.json`
+    /// before it applies it, so a choice that could not be written is refused rather than applied
+    /// until the next restart forgets it.
+    case configure
+    /// Read the Accessibility grant, and with `prompt` ask the system for it first (D31).
+    ///
+    /// The one verb that can put the system's "control your computer" dialog on screen, and only
+    /// while the scope is `other-apps`: the window that sends it has already said why.
+    case accessibility
 
     /// Whether the daemon serves this command **without waiting for the one already in flight**.
     ///
@@ -81,6 +92,9 @@ public enum Command: String, Codable, Sendable, CaseIterable {
         // neither. It also outlives every command that does, so holding the lock for its lifetime
         // would not merely delay a chord, it would stop the daemon serving any at all.
         case .watch: true
+        // Both change what the next field start is admitted under, and `beginField` reads the gate
+        // once because `configure` cannot land beside it. Serialised is what makes one read enough.
+        case .configure, .accessibility: false
         case .status, .toggle, .start, .stop, .last: false
         }
     }
@@ -111,6 +125,9 @@ public enum Command: String, Codable, Sendable, CaseIterable {
         // watching — and a UI that could not reach the daemon says so in its own window, which is
         // the one place the user is already looking.
         case .watch: true
+        // Sent by the setup window, which reads every consequence from its own stream, or typed as
+        // `dictactl configure` by somebody reading the answer. No chord sends either.
+        case .configure, .accessibility: true
         case .toggle, .start, .stop, .abort: false
         }
     }
@@ -360,6 +377,14 @@ public struct Request: Codable, Sendable, Equatable {
     /// of a hold whose release switched the application (D31), which is a gesture that meant
     /// nothing, like D21's floor. The attempt still ends and is still recorded as `aborted`.
     public var silent: Bool?
+    /// `configure`: the scope the person chose. `undecided` is refused by the daemon and never
+    /// spelled by `dictactl`: undeciding is not a choice a person makes.
+    public var scope: SetupScope?
+    /// `configure`: the one-time offer was answered, whatever the answer was.
+    public var offerSeen: Bool?
+    /// `accessibility`: ask the system for the grant before reading it. Asking is not evidence of a
+    /// grant, so the daemon still reads it afterwards.
+    public var prompt: Bool?
 
     public init(
         cmd: Command,
@@ -371,7 +396,10 @@ public struct Request: Codable, Sendable, Equatable {
         timeout: Double? = nil,
         verbatim: Bool? = nil,
         field: FieldTarget? = nil,
-        silent: Bool? = nil
+        silent: Bool? = nil,
+        scope: SetupScope? = nil,
+        offerSeen: Bool? = nil,
+        prompt: Bool? = nil
     ) {
         self.cmd = cmd
         self.focus = focus
@@ -383,6 +411,9 @@ public struct Request: Codable, Sendable, Equatable {
         self.verbatim = verbatim
         self.field = field
         self.silent = silent
+        self.scope = scope
+        self.offerSeen = offerSeen
+        self.prompt = prompt
     }
 
     /// Why this request names two targets at once, or `nil` when it names at most one.

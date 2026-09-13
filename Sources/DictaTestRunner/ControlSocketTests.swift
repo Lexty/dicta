@@ -498,6 +498,12 @@ struct ControlSocketTests {
         // the daemon is slow. Crying wolf there is the worst of the set.
         #expect(ControlTimeouts.read(for: .abort) == ControlTimeouts.pipelineRead,
                 "abort must not cry wolf about the daemon that is cancelling for it")
+        // The setup verbs are typed by hand and still take the long read: both are serialised, so
+        // either may queue behind a `stop` that is recognising.
+        for setup in [Command.configure, .accessibility] {
+            #expect(ControlTimeouts.read(for: setup) == ControlTimeouts.pipelineRead,
+                    "\(setup.rawValue) queues behind the handler lock")
+        }
         for typed in [Command.status, .last] {
             #expect(ControlTimeouts.read(for: typed) == ControlTimeouts.clientRead,
                     "\(typed.rawValue) is typed by hand and costs no utterance")
@@ -513,7 +519,8 @@ struct ControlSocketTests {
         // inherit one. Everything but `abort` either begins an attempt or ends one, and two of
         // those resolving at once is what the serialisation and D7 exist to prevent.
         #expect(Command.abort.isServedConcurrently)
-        for serialised in [Command.status, .toggle, .start, .stop, .last] {
+        for serialised in [Command.status, .toggle, .start, .stop, .last, .configure,
+                           .accessibility] {
             #expect(!serialised.isServedConcurrently,
                     "\(serialised.rawValue) must not overtake a live attempt")
         }

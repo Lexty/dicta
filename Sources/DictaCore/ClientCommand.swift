@@ -41,6 +41,10 @@ public enum ClientCommand {
         case unknownMode(String)
         case unexpectedArgument(String)
         case unknownTimeout(String)
+        /// `configure` with nothing to record.
+        case nothingToConfigure
+        /// A scope nobody can choose: unknown, empty, or `undecided`.
+        case unchoosableScope(String)
 
         public var description: String {
             switch self {
@@ -63,6 +67,11 @@ public enum ClientCommand {
                 "\"\(raw)\" is not a number of seconds"
             case let .unexpectedArgument(argument):
                 "unexpected argument \"\(argument)\""
+            case .nothingToConfigure:
+                "configure needs --scope, --offer-seen or both"
+            case let .unchoosableScope(scope):
+                "scope \"\(scope)\" cannot be chosen — expected "
+                    + ClientCommand.choosableScopes.map(\.rawValue).joined(separator: " or ")
             }
         }
     }
@@ -91,14 +100,16 @@ public enum ClientCommand {
     usage: dictactl <verb> [options]
 
     verbs:
-      toggle   start if idle, otherwise stop and deliver — what every chord calls (D7)
-      start    begin an attempt
-      stop     end an attempt and deliver in the given mode
-      abort    end an attempt and deliver nothing
-      status   print the daemon's current state
-      last     print the text of the most recent attempt
-      watch    print the daemon's state as one JSON line per change, until it stops (D27)
-      dictate  wait for the next dictation and print its text — nothing is typed anywhere (D29)
+      toggle         start if idle, otherwise stop and deliver — what every chord calls (D7)
+      start          begin an attempt
+      stop           end an attempt and deliver in the given mode
+      abort          end an attempt and deliver nothing
+      status         print the daemon's current state
+      last           print the text of the most recent attempt
+      watch          print the daemon's state as one JSON line per change, until it stops (D27)
+      dictate        wait for the next dictation and print its text — nothing is typed (D29)
+      configure      record where dictation goes, as the setup window does (D31)
+      accessibility  read the Accessibility grant; with --prompt, ask the system for it first
 
     options:
       --mode <clean|raw>   clean runs the filter, raw skips it and nothing else (§2)
@@ -109,6 +120,10 @@ public enum ClientCommand {
       --recognised         on last: print the recogniser's verbatim output instead of what was
                            injected — the two together are how a replacement misfire is diagnosed
       --timeout <seconds>  on dictate: how long to wait for the user to speak before giving up
+      --scope <agterm-only|other-apps>
+                           on configure: agterm's panes only, or the focused field of other apps too
+      --offer-seen         on configure: the one-time offer to type into other apps was answered
+      --prompt             on accessibility: show the system's permission dialog (other-apps only)
 
     examples:
       # dictate into a native dialog that dicta cannot type into: collect the text first,
@@ -122,13 +137,21 @@ public enum ClientCommand {
     private static let controlFlag = "--control"
     private static let recognisedFlag = "--recognised"
     private static let timeoutFlag = "--timeout"
+    private static let scopeFlag = "--scope"
+    private static let offerSeenFlag = "--offer-seen"
+    private static let promptFlag = "--prompt"
 
     private static let allFlags = [modeFlag, sessionFlag, agtermSocketFlag, controlFlag,
-                                   recognisedFlag, timeoutFlag]
+                                   recognisedFlag, timeoutFlag, scopeFlag, offerSeenFlag,
+                                   promptFlag]
 
-    /// Flags that are their own value. The only one, and it stays a list because a parser with a
-    /// special case for exactly one flag grows a second special case the next time.
-    private static let booleanFlags = [recognisedFlag]
+    /// Flags that are their own value. It was one flag once, and it stayed a list, which is why the
+    /// next two cost one line each.
+    private static let booleanFlags = [recognisedFlag, offerSeenFlag, promptFlag]
+
+    /// The scopes a person can choose. `undecided` is where nobody has chosen yet, and the daemon
+    /// refuses it too; spelling it here would only move the refusal one round trip later.
+    public static let choosableScopes: [SetupScope] = [.agtermOnly, .otherApps]
 
     /// Which flags each verb accepts. `--socket` and `--control` are universal because both are
     /// about *reaching* something rather than about what to do; `--session` is not, because only
@@ -145,6 +168,10 @@ public enum ClientCommand {
         // exposed on the client at all so a person can see the stream without building the UI —
         // the same reason `last` is there.
         case .abort, .status, .watch: [agtermSocketFlag, controlFlag]
+        // The setup verbs take no `--socket`: they reach dicta and nothing of agterm's, and are
+        // typed by hand, so there is no agterm notification for that socket to carry either.
+        case .configure: [scopeFlag, offerSeenFlag, controlFlag]
+        case .accessibility: [promptFlag, controlFlag]
         }
     }
 
@@ -224,6 +251,21 @@ public enum ClientCommand {
             timeout = parsed
         }
 
+        // Read from `values` rather than through `given`: an empty scope is not a keymap line's
+        // unset variable, it is somebody who typed `--scope ""`, and a `configure` that quietly
+        // recorded only the rest would claim a choice was saved that was never made.
+        var scope: SetupScope?
+        if let raw = values[scopeFlag] {
+            guard let parsed = SetupScope(rawValue: raw), choosableScopes.contains(parsed) else {
+                return .failure(.unchoosableScope(raw))
+            }
+            scope = parsed
+        }
+        let offerSeen = switches.contains(offerSeenFlag) ? true : nil
+        if command == .configure, scope == nil, offerSeen == nil {
+            return .failure(.nothingToConfigure)
+        }
+
         var session: String?
         if needsSession(command) {
             guard let value = given(sessionFlag) else { return .failure(.missingSession(command)) }
@@ -239,7 +281,10 @@ public enum ClientCommand {
                 timeout: timeout,
                 // `nil` rather than `false` when it was not asked for, so the frame a chord sends
                 // carries only what the chord actually said.
-                verbatim: switches.contains(recognisedFlag) ? true : nil
+                verbatim: switches.contains(recognisedFlag) ? true : nil,
+                scope: scope,
+                offerSeen: offerSeen,
+                prompt: switches.contains(promptFlag) ? true : nil
             ),
             controlSocket: given(controlFlag)
         ))

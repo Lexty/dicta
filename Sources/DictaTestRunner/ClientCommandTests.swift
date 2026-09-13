@@ -33,9 +33,11 @@ struct ClientCommandTests {
     func everyCommandIsReachable(command: Command) throws {
         // A command the daemon understands and the client cannot spell is a dead branch that will
         // be discovered by someone trying to use it.
-        let arguments = command == .toggle || command == .start
-            ? [command.rawValue, "--session", "session:1"]
-            : [command.rawValue]
+        let arguments = switch command {
+        case .toggle, .start: [command.rawValue, "--session", "session:1"]
+        case .configure: [command.rawValue, "--offer-seen"]
+        default: [command.rawValue]
+        }
         switch ClientCommand.parse(arguments) {
         case let .success(invocation): #expect(invocation.request.cmd == command)
         case let .failure(error): Issue.record("\(command.rawValue): \(error)")
@@ -151,6 +153,78 @@ struct ClientCommandTests {
     @Test("a stray positional argument is refused")
     func unexpectedArgument() throws {
         #expect(try Self.usageError(["status", "please"]) == .unexpectedArgument("please"))
+    }
+
+    // MARK: - the setup verbs (D31)
+
+    @Test("configure carries the scope, the answered offer, or both",
+          arguments: [(["configure", "--scope", "other-apps"],
+                       Request(cmd: .configure, scope: .otherApps)),
+                      (["configure", "--scope", "agterm-only"],
+                       Request(cmd: .configure, scope: .agtermOnly)),
+                      (["configure", "--offer-seen"],
+                       Request(cmd: .configure, offerSeen: true)),
+                      (["configure", "--offer-seen", "--scope", "other-apps"],
+                       Request(cmd: .configure, scope: .otherApps, offerSeen: true))])
+    func configureParses(arguments: [String], request: Request) {
+        #expect(ClientCommand.parse(arguments)
+            == .success(ClientCommand.Invocation(request: request)))
+    }
+
+    @Test("configure with nothing to record is refused")
+    func configureNeedsAnOption() throws {
+        #expect(try Self.usageError(["configure"]) == .nothingToConfigure)
+        #expect(try Self.usageError(["configure", "--control", "/tmp/dicta.sock"])
+            == .nothingToConfigure)
+    }
+
+    @Test("a scope nobody can choose is refused: undecided, unknown or empty",
+          arguments: ["undecided", "everywhere", "other_apps", ""])
+    func unchoosableScopeIsRefused(scope: String) throws {
+        #expect(try Self.usageError(["configure", "--scope", scope]) == .unchoosableScope(scope))
+        // Not rescued by another option: a choice that was typed and cannot be made is refused
+        // whole, never recorded as the half that could.
+        #expect(try Self.usageError(["configure", "--offer-seen", "--scope", scope])
+            == .unchoosableScope(scope))
+    }
+
+    @Test("configure takes no attempt, mode, session or prompt")
+    func configureRefusesOtherOptions() throws {
+        for flag in ["--mode", "--session", "--socket", "--prompt", "--recognised", "--timeout"] {
+            #expect(try Self.usageError(["configure", flag, "x"])
+                == .flagNotAccepted(flag: flag, by: .configure))
+        }
+        #expect(try Self.usageError(["configure", "--scope"]) == .missingValue(flag: "--scope"))
+    }
+
+    @Test("accessibility reads the grant, and asks for it only with --prompt")
+    func accessibilityParses() throws {
+        #expect(try Self.parsed("accessibility").request == Request(cmd: .accessibility))
+        #expect(try Self.parsed("accessibility", "--prompt").request
+            == Request(cmd: .accessibility, prompt: true))
+        #expect(try Self.parsed("accessibility", "--control", "/tmp/d.sock").controlSocket
+            == "/tmp/d.sock")
+    }
+
+    @Test("accessibility refuses every other option")
+    func accessibilityRefusesOtherOptions() throws {
+        for flag in ["--scope", "--offer-seen", "--mode", "--session", "--socket", "--recognised",
+                     "--timeout"] {
+            #expect(try Self.usageError(["accessibility", flag, "x"])
+                == .flagNotAccepted(flag: flag, by: .accessibility))
+        }
+        #expect(try Self.usageError(["accessibility", "--prompt", "yes"])
+            == .unexpectedArgument("yes"))
+    }
+
+    @Test("no other verb takes the setup options")
+    func setupOptionsBelongToTheSetupVerbs() throws {
+        for command in Command.allCases where command != .configure && command != .accessibility {
+            for flag in ["--scope", "--offer-seen", "--prompt"] {
+                #expect(try Self.usageError([command.rawValue, flag, "x"])
+                    == .flagNotAccepted(flag: flag, by: command))
+            }
+        }
     }
 
     @Test("the exit codes are four distinct values")
@@ -307,6 +381,9 @@ struct ClientCommandTests {
             (.missingSession(.toggle), "--session"),
             (.unknownMode("shouty"), "shouty"),
             (.unexpectedArgument("stray"), "stray"),
+            (.unknownTimeout("3O"), "3O"),
+            (.nothingToConfigure, "--scope"),
+            (.unchoosableScope("undecided"), "undecided"),
         ]
         for (error, subject) in cases {
             #expect(error.description.contains(subject),

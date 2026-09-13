@@ -126,6 +126,9 @@ public enum ControlTimeouts {
     public static func read(for command: Command) -> TimeInterval {
         switch command {
         case .stop, .toggle, .start, .abort: pipelineRead
+        // Typed by hand, and still the long read: both are serialised, so either can queue behind a
+        // `stop` that is recognising, and a `configure` also writes and syncs a file.
+        case .configure, .accessibility: pipelineRead
         // The handshake, not the stream. `watch`'s first frame is an ordinary accept-or-refuse
         // `Response` and arrives as fast as the daemon can take its lock; `watchIdle` governs
         // everything after it, and is applied by the watching client rather than looked up here —

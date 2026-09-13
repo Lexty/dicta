@@ -523,6 +523,11 @@ public final class Daemon: @unchecked Sendable {
             return awaitDictation(request)
         case .start, .toggle:
             return begin(request)
+        // On the wire before the daemon can serve them, so the build holds while the store and the
+        // switch are wired in. Refused out loud rather than accepted: nothing was saved.
+        case .configure, .accessibility:
+            return response(.rejected,
+                            message: "\(request.cmd.rawValue) is not available in this build")
         }
     }
 

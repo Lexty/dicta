@@ -345,6 +345,20 @@ struct DaemonTests {
         #expect(harness.notifier.signals == [.announce(.listening, Self.target)])
     }
 
+    @Test("configure and accessibility are refused as not available in this build",
+          arguments: [Request(cmd: .configure, scope: .otherApps, offerSeen: true),
+                      Request(cmd: .accessibility, prompt: true)])
+    func setupVerbsAreRefusedUntilWired(request: Request) {
+        let harness = Harness()
+        let response = harness.send(request)
+
+        #expect(response.kind == .rejected)
+        #expect(response.message == "\(request.cmd.rawValue) is not available in this build")
+        #expect(response.state == .idle)
+        #expect(harness.capture.callLog.isEmpty)
+        #expect(harness.daemon.state == .idle)
+    }
+
     @Test("a warming attempt that is never confirmed announces nothing, ever")
     func warmingNeverConfirmedAnnouncesNothing() {
         let harness = Harness()

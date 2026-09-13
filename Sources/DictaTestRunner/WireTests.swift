@@ -37,7 +37,8 @@ struct WireTests {
     @Test("the commands are exactly the verbs dictactl offers")
     func commandsMatchTheClient() {
         #expect(Set(Command.allCases.map(\.rawValue)) ==
-            ["status", "toggle", "start", "stop", "abort", "last", "dictate", "watch"])
+            ["status", "toggle", "start", "stop", "abort", "last", "dictate", "watch",
+             "configure", "accessibility"])
     }
 
     // MARK: - attempt id and target
@@ -74,6 +75,49 @@ struct WireTests {
         #expect(try Wire.decode(Request.self, from: Wire.encode(silent)) == silent)
         let ordinary = Request(cmd: .abort, attempt: 4)
         #expect(!String(decoding: try Wire.encode(ordinary), as: UTF8.self).contains("silent"))
+    }
+
+    // MARK: - the setup verbs (D31)
+
+    @Test("configure carries a scope, the answered offer, or both, and each round-trips",
+          arguments: [Request(cmd: .configure, scope: .otherApps),
+                      Request(cmd: .configure, scope: .agtermOnly),
+                      Request(cmd: .configure, offerSeen: true),
+                      Request(cmd: .configure, scope: .otherApps, offerSeen: true)])
+    func configureRoundTrips(request: Request) throws {
+        #expect(try Wire.decode(Request.self, from: Wire.encode(request)) == request)
+    }
+
+    @Test("accessibility carries the prompt when asked, and round-trips either way")
+    func accessibilityRoundTrips() throws {
+        for request in [Request(cmd: .accessibility), Request(cmd: .accessibility, prompt: true)] {
+            #expect(try Wire.decode(Request.self, from: Wire.encode(request)) == request)
+        }
+        let frame = Data(#"{"cmd":"accessibility","prompt":true}"#.utf8)
+        #expect(try Wire.decode(Request.self, from: frame).prompt == true)
+    }
+
+    @Test("the scope travels as the raw value setup.json keeps")
+    func scopeTravelsAsItsRawValue() throws {
+        let json = String(decoding: try Wire.encode(Request(cmd: .configure, scope: .agtermOnly,
+                                                            offerSeen: true)), as: UTF8.self)
+        #expect(json.contains(#""scope":"agterm-only""#))
+        #expect(json.contains(#""offerSeen":true"#))
+        let frame = Data(#"{"cmd":"configure","scope":"other-apps"}"#.utf8)
+        #expect(try Wire.decode(Request.self, from: frame).scope == .otherApps)
+        // An unknown scope is a decode error at the edge, never a string the daemon re-reads.
+        #expect(throws: DecodingError.self) {
+            try Wire.decode(Request.self, from: Data(#"{"cmd":"configure","scope":"all"}"#.utf8))
+        }
+    }
+
+    @Test("no other verb's frame carries the setup fields", arguments: Command.allCases)
+    func setupFieldsAreAbsentElsewhere(command: Command) throws {
+        let json = String(decoding: try Wire.encode(Request(cmd: command, sessionID: "s")),
+                          as: UTF8.self)
+        for key in ["scope", "offerSeen", "prompt"] {
+            #expect(!json.contains(key), "\(command.rawValue) carries \(key): \(json)")
+        }
     }
 
     // MARK: - the target's two shapes (D31)

@@ -14,7 +14,8 @@ struct WatchProtocolTests {
         // deadlock. The test the list encodes: does the verb begin an attempt or end one?
         #expect(Command.abort.isServedConcurrently)
         #expect(Command.dictate.isServedConcurrently)
-        for command in [Command.status, .toggle, .start, .stop, .last] {
+        for command in [Command.status, .toggle, .start, .stop, .last, .configure,
+                        .accessibility] {
             #expect(!command.isServedConcurrently, "\(command.rawValue) must stay serialised (D7)")
         }
     }
@@ -25,6 +26,17 @@ struct WatchProtocolTests {
         // audience — the UI's own window. §7's notification exists for a chord, whose stderr goes
         // nowhere.
         #expect(Command.watch.isTypedByHand)
+    }
+
+    @Test("the setup verbs are typed by hand, and no chord verb is")
+    func setupVerbsAreTypedByHand() {
+        // The setup window reads every consequence from its own stream, and `dictactl configure`
+        // is run by somebody reading the answer: a desktop notification would shout at them.
+        #expect(Command.configure.isTypedByHand)
+        #expect(Command.accessibility.isTypedByHand)
+        for chord in [Command.toggle, .start, .stop, .abort] {
+            #expect(!chord.isTypedByHand, "\(chord.rawValue) is sent by a chord")
+        }
     }
 
     @Test("the stream's idle timeout is its own number, not one borrowed from a one-answer verb")

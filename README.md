@@ -313,14 +313,16 @@ The client the chords invoke. It is also usable by hand:
 usage: dictactl <verb> [options]
 
 verbs:
-  toggle   start if idle, otherwise stop and deliver — what every chord calls (D7)
-  start    begin an attempt
-  stop     end an attempt and deliver in the given mode
-  abort    end an attempt and deliver nothing
-  status   print the daemon's current state
-  last     print the text of the most recent attempt
-  watch    print the daemon's state as one JSON line per change, until it stops (D27)
-  dictate  wait for the next dictation and print its text — nothing is typed anywhere (D29)
+  toggle         start if idle, otherwise stop and deliver — what every chord calls (D7)
+  start          begin an attempt
+  stop           end an attempt and deliver in the given mode
+  abort          end an attempt and deliver nothing
+  status         print the daemon's current state
+  last           print the text of the most recent attempt
+  watch          print the daemon's state as one JSON line per change, until it stops (D27)
+  dictate        wait for the next dictation and print its text — nothing is typed (D29)
+  configure      record where dictation goes, as the setup window does (D31)
+  accessibility  read the Accessibility grant; with --prompt, ask the system for it first
 
 options:
   --mode <clean|raw>   clean runs the filter, raw skips it and nothing else (§2)
@@ -331,6 +333,10 @@ options:
   --recognised         on last: print the recogniser's verbatim output instead of what was
                        injected — the two together are how a replacement misfire is diagnosed
   --timeout <seconds>  on dictate: how long to wait for the user to speak before giving up
+  --scope <agterm-only|other-apps>
+                       on configure: agterm's panes only, or the focused field of other apps too
+  --offer-seen         on configure: the one-time offer to type into other apps was answered
+  --prompt             on accessibility: show the system's permission dialog (other-apps only)
 
 examples:
   # dictate into a native dialog that dicta cannot type into: collect the text first,

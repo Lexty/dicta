@@ -519,19 +519,19 @@ way.
 - Modify: `Sources/DictaTestRunner/WireTests.swift`, `ClientCommandTests.swift`,
   `ControlSocketTests.swift`, `DaemonTests.swift`
 
-- [ ] write failing tests: both verbs encode and decode; `Request.scope`/`offerSeen`/`prompt` round
+- [x] write failing tests: both verbs encode and decode; `Request.scope`/`offerSeen`/`prompt` round
   trip and are absent from every other verb's JSON
-- [ ] write failing tests: neither is served concurrently; both are typed by hand; both read with
+- [x] write failing tests: neither is served concurrently; both are typed by hand; both read with
   `pipelineRead` (extend the existing table tests)
-- [ ] write failing tests: `dictactl configure --scope other-apps|agterm-only`, `--offer-seen`, both;
+- [x] write failing tests: `dictactl configure --scope other-apps|agterm-only`, `--offer-seen`, both;
   refusals for no option, `--scope undecided`, an unknown or empty scope;
   `dictactl accessibility` with and without `--prompt`, refusing any other option; give the parity
   test verb-specific arguments for `configure`, as it already does for `toggle` and `start`
-- [ ] implement the cases, fields, tables and `ClientCommand` parsing and usage; update README's
+- [x] implement the cases, fields, tables and `ClientCommand` parsing and usage; update README's
   quoted usage block in this task (`DocumentationTests`)
-- [ ] `Daemon.handle`: both verbs answer `rejected` "not available in this build" (test it), replaced
+- [x] `Daemon.handle`: both verbs answer `rejected` "not available in this build" (test it), replaced
   in Task 7
-- [ ] run tests — must pass before Task 5
+- [x] run tests — must pass before Task 5
 
 ### Task 5: readiness that follows the scope, and faults told apart from pending steps
 
