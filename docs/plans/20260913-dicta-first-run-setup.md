@@ -434,33 +434,33 @@ way.
 - Modify: `SPEC.md`
 - Modify: `docs/manual-checklist.md`
 
-- [ ] D31: the scope is the person's choice in `setup.json`, made in the setup window or with
+- [x] D31: the scope is the person's choice in `setup.json`, made in the setup window or with
   `dictactl configure`; `--focused-fields` is a seed; the migration and per-state tables; the daemon
   no longer exits for a missing agterm (except under `--no-hold`)
-- [ ] D5, invariant 13 and invariant 14 reworded as in Technical Details (admission, and the
+- [x] D5, invariant 13 and invariant 14 reworded as in Technical Details (admission, and the
   exemption of an accepted attempt's final validation); the grant is requested only by
   `accessibility` with `prompt`; rewrite checklist rows 13 and 14 so their invariant cells contain
   the new bold titles verbatim (`ChecklistTests.swift:223`), keeping their existing citations for now
-- [ ] D27 and §13: a setup window is in scope; it activates only when opened on purpose or at the
+- [x] D27 and §13: a setup window is in scope; it activates only when opened on purpose or at the
   first snapshot of a menu launch, only if that snapshot is idle, never later, so it cannot take
   focus from agterm mid-session; the menu still makes no accessibility call
-- [ ] §6 wire: the two verbs, fields, timeouts, `dictactl` spellings; readiness: the table above,
+- [x] §6 wire: the two verbs, fields, timeouts, `dictactl` spellings; readiness: the table above,
   `isFault`, `SetupSnapshot`, `faculties` and `hold` in the snapshot
-- [ ] §7 rows: `configure` cannot write, including a failed replace over an unreadable file;
+- [x] §7 rows: `configure` cannot write, including a failed replace over an unreadable file;
   `setup.json` unreadable or newer (including "the one case a config file blocks a dictation");
   `accessibility` outside `otherApps`; grant revoked while `otherApps` (noticed at the next check,
   readiness, no window, silent holds); the menu not running; `configure` during a dictation
   (affects the next start only); the gate closing between the threshold's read and its trust check;
   the hold on the field path without the grant becomes silent (replaces the notifying row at
   checklist `:83`, citation kept until Task 8)
-- [ ] `docs/manual-checklist.md`: a row per new §7 row citing H items until a test exists; rewrite
+- [x] `docs/manual-checklist.md`: a row per new §7 row citing H items until a test exists; rewrite
   every procedure that names the flag, so each states the persisted scope as its precondition and
   none runs `install.sh --focused-fields`: H11 (c), H19 (c), H24, H28 (a) (no start-up dialog; the
   hold without the grant is silent), H28 (c), H28 (e) (silence under a Focus mode too, not `Basso`),
   H32, H33; in the `:83` row, drop H28 (e) and the generic sound-and-notification test as evidence
   for the missing-grant hold (that test stays cited where a refusal is still audible); add H35
   onwards (see Post-Completion), keeping the H numbers contiguous
-- [ ] run `bash Scripts/lint.sh` and `bash Scripts/test.sh` — must pass before Task 2
+- [x] run `bash Scripts/lint.sh` and `bash Scripts/test.sh` — must pass before Task 2
 
 ### Task 2: `SetupState` and the migration, as pure values
 
