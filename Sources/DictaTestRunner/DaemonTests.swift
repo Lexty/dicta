@@ -2956,6 +2956,21 @@ struct DaemonTests {
         #expect(prompts.first?.hasPrefix("FocusedField.swift:") == true)
     }
 
+    @Test("a refused second daemon is refused before it bootstraps setup.json")
+    func secondInstanceIsRefusedBeforeTheSetupRecord() throws {
+        // A flagless second start beside a running agent that still carries `--focused-fields`
+        // must not write `setup.json`: the installer reads that file as the choice and drops the
+        // agent's seed. `main.swift` is not reachable behaviourally, so the order is read from it.
+        let main = try BundleTests.text(at: "Sources/Dicta/main.swift")
+        let probe = try #require(
+            main.range(of: "try ControlServer.refuseIfRunning(path: controlSocket)"))
+        let bootstrap = try #require(main.range(of: "setupStore.bootstrap("))
+        let start = try #require(main.range(of: "try daemon.start"))
+        #expect(probe.lowerBound < bootstrap.lowerBound)
+        #expect(bootstrap.lowerBound < start.lowerBound)
+        #expect(!main[..<probe.lowerBound].contains("SetupStore("))
+    }
+
     @Test("a daemon given no setup refuses both verbs and reports no choice, and carries its hold")
     func aDaemonWithoutSetup() throws {
         let daemon = Self.daemonWithoutAgterm(feedback: FakeNotifier(),

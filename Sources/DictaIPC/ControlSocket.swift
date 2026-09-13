@@ -579,6 +579,20 @@ public final class ControlServer: @unchecked Sendable {
     /// is to try connecting — refused means nobody is home.
     private func clearStaleSocket() throws {
         guard FileManager.default.fileExists(atPath: path) else { return }
+        try Self.refuseIfRunning(path: path)
+        unlink(path)
+    }
+
+    /// Throws `alreadyRunning` when something is listening on `path`, and changes nothing either
+    /// way: a stale socket file is left for `start` to remove.
+    ///
+    /// Public so that the daemon can ask BEFORE anything it does at start-up leaves a trace. A
+    /// second instance that got as far as `start` would already have written `setup.json` from its
+    /// own command line, and that file is what the installer reads to decide whether the running
+    /// agent's `--focused-fields` is still needed as a seed. `start` asks again, because the answer
+    /// can change in between.
+    public static func refuseIfRunning(path: String) throws {
+        guard FileManager.default.fileExists(atPath: path) else { return }
         var address: sockaddr_un
         do {
             address = try unixAddress(for: path)
@@ -591,7 +605,6 @@ public final class ControlServer: @unchecked Sendable {
         if withSockaddr(&address, { connect(probe, $0, $1) }) == 0 {
             throw ServerError.alreadyRunning(path: path)
         }
-        unlink(path)
     }
 
     /// Errors that say "not now" rather than "not ever". Fatal for the front door is the wrong

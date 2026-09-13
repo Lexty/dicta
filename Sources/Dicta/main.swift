@@ -69,6 +69,18 @@ if options.fetchModels {
     exit(0)
 }
 
+// The second-instance refusal (§7), asked before anything below leaves a trace. `daemon.start` is
+// where it is enforced, but by then `setup.json` has been bootstrapped from THIS command line: a
+// flagless manual start beside a running agent that still carries `--focused-fields` would record
+// `agterm-only` and then exit, and the next install would read that file as the choice and drop the
+// agent's seed.
+do {
+    try ControlServer.refuseIfRunning(path: controlSocket)
+} catch {
+    log("\(error)")
+    exit(EXIT_FAILURE)
+}
+
 // Diagnosed here rather than on the first chord (§7). A missing agterm is said and survived
 // whatever the person has chosen, because the choice changes without a restart; only `--no-hold`
 // without agterm leaves nothing that could ever start a dictation, and that exits (D31).

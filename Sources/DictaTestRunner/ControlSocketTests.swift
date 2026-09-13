@@ -431,6 +431,27 @@ struct ControlSocketTests {
         }
     }
 
+    @Test("the start-up probe refuses a live daemon and leaves a stale or missing socket alone")
+    func startupProbe() throws {
+        let fixture = try Self.makeServer { _ in Self.ok() }
+        defer { fixture.tearDown() }
+        #expect(throws: ControlServer.ServerError.alreadyRunning(path: fixture.path)) {
+            try ControlServer.refuseIfRunning(path: fixture.path)
+        }
+
+        let directory = Self.temporaryDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("c.sock").path
+        try ControlServer.refuseIfRunning(path: path)
+        #expect(!FileManager.default.fileExists(atPath: path))
+
+        try Self.leaveStaleSocket(at: path)
+        try ControlServer.refuseIfRunning(path: path)
+        // Removing it is `start`'s business; the probe only asks.
+        #expect(FileManager.default.fileExists(atPath: path))
+    }
+
     @Test("a socket left by a crashed daemon is replaced rather than refused")
     func staleSocketIsReplaced() throws {
         let directory = Self.temporaryDirectory()
