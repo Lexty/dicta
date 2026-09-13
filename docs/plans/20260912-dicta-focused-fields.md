@@ -830,8 +830,9 @@ about `returned`.
     missing role or settability is `.unknown`. Both refuse.
   - ⚠️ **`AXSearchField` is a subrole on macOS, not a role.** D31 lists it among unmeasured roles
     that stay ineligible; the rule as written (text role, settable, not secure) admits an
-    `AXTextField` whose subrole is `AXSearchField`. The test covers it only as a role. Left as the
-    spec's rule states; a human item or a spec amendment should settle which is meant.
+    `AXTextField` whose subrole is `AXSearchField`. Settled in review: `classify` now refuses the
+    search subrole as it does the secure one, D31 names it as a subrole, and a test covers it the
+    way macOS reports it.
   - Mutation check: breaking the packing boundary, the secure-subrole rule and the pre-count bound
     together gave 9 failures. Tests: 619 in 36 suites green under Xcode 26.6 (Swift 6.3.3); lint
     clean (swiftlint not installed, built-in checks only).

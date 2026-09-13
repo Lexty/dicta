@@ -626,9 +626,10 @@ field is refused by it — the eligibility rule is what names the password field
 focused button, list or page can act as commands or type-to-select, and §1 excludes voice control. So
 admission is a content-free classification of accessibility **metadata**, from F11's table:
 - **eligible**: role `AXTextArea` or `AXTextField`, **and** a settable value, **and** a subrole other
-  than `AXSecureTextField`;
-- **ineligible**: any other role, a value that is not settable, or the secure subrole — which covers
-  F11's `AXGroup` tree, its `AXWebArea` page, and the password field named without reading it;
+  than `AXSecureTextField` or `AXSearchField`;
+- **ineligible**: any other role, a value that is not settable, or the secure or search subrole —
+  which covers F11's `AXGroup` tree, its `AXWebArea` page, and the password field named without
+  reading it;
 - **unknown**: the role or the settability could not be read, or — for an element every other fact
   calls a text field — the subrole read failed with anything but "none" (`noValue` or
   `attributeUnsupported`, both seen by F11 on real text fields). A timed-out subrole is not an absent
@@ -636,8 +637,8 @@ admission is a content-free classification of accessibility **metadata**, from F
   refused**, never promoted to eligible.
 
 `AXSelectedTextRange` is not an input: F11 found Chromium puts it on a tree, so it discriminates
-nothing. Other text roles (`AXComboBox`, `AXSearchField`) were not measured and stay ineligible until
-a human item shows them. **The daemon reads identity, never content**: never a field's value, never
+nothing. Other text fields (the `AXComboBox` role, and the `AXSearchField` subrole a search field
+reports under role `AXTextField`) were not measured and stay ineligible until a human item shows them. **The daemon reads identity, never content**: never a field's value, never
 its selected text (invariant 14).
 
 **Where focus is read, and what dicta does to another application to read it.** The focused element

@@ -112,6 +112,19 @@ struct DaemonOptionsTests {
         #expect(notice.contains("focused fields"))
     }
 
+    @Test("a missing agtermctl is fatal under --no-hold even with focused fields on")
+    func agtermAtStartupWithoutTrigger() {
+        let unarmed = DaemonOptions(controlSocket: Self.socket, armHoldTrigger: false,
+                                    focusedFields: true)
+        #expect(unarmed.agtermAtStartup(found: true) == .present)
+        guard case let .fatal(fatal) = unarmed.agtermAtStartup(found: false) else {
+            Issue.record("--no-hold without agterm must stop the daemon")
+            return
+        }
+        #expect(fatal.contains("agtermctl"))
+        #expect(fatal.contains("--no-hold"))
+    }
+
     // MARK: - the wiring
 
     /// Adapters that count, and hand out fakes.

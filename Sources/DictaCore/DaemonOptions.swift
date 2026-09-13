@@ -142,12 +142,18 @@ public struct DaemonOptions: Sendable, Equatable {
     /// Diagnosed at start-up rather than on the first chord (§7). With `--focused-fields` off a
     /// daemon without agterm has nowhere to put text, so starting it would only move the discovery
     /// to a chord that loses an utterance; with the option on, every other application's field is
-    /// still a target.
+    /// still a target. Only the hold trigger ever starts a focused-field attempt -- no chord and no
+    /// `dictactl` command names a field -- so under `--no-hold` the option delivers nothing either,
+    /// and a daemon reporting "ready without agterm" would be the same silent dead end.
     public func agtermAtStartup(found: Bool) -> AgtermAtStartup {
         if found { return .present }
         guard focusedFields else {
             return .fatal("agtermctl is not installed -- dicta cannot reach agterm, so nothing "
                           + "would be delivered")
+        }
+        guard armHoldTrigger else {
+            return .fatal("agtermctl is not installed and --no-hold leaves nothing to start a "
+                          + "focused-field dictation, so nothing would be delivered")
         }
         return .optional("agtermctl is not installed -- agterm chords and a hold in front of "
                          + "agterm will be refused; focused fields still work")

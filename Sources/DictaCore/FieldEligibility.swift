@@ -48,12 +48,15 @@ public enum FieldEligibility {
     public static let textRoles: Set<String> = ["AXTextArea", "AXTextField"]
     /// The password field, named by its subrole without reading it.
     public static let secureSubrole = "AXSecureTextField"
+    /// A search field is an `AXTextField` whose SUBROLE is `AXSearchField` -- macOS does not report
+    /// it as a role -- so the role set alone would let it through. Unmeasured, so refused (D31).
+    public static let searchSubrole = "AXSearchField"
 
     public static func classify(_ facts: FieldFacts) -> Eligibility {
         // A definite negative wins over a missing fact: the secure subrole, a known non-text role
         // or a value known not to be settable each settle the answer whatever else went unread.
         // Both refusals refuse, so the order only decides which of the two is reported.
-        if facts.subrole == secureSubrole { return .ineligible }
+        if facts.subrole == secureSubrole || facts.subrole == searchSubrole { return .ineligible }
         guard let role = facts.role else { return .unknown }
         guard textRoles.contains(role) else { return .ineligible }
         guard let settable = facts.valueSettable else { return .unknown }

@@ -117,4 +117,12 @@ struct FieldEligibilityTests {
                                hasSelectedTextRange: true)
         #expect(FieldEligibility.classify(facts) == .ineligible)
     }
+
+    /// How macOS actually reports a search field: a text-field role, with the search subrole.
+    @Test("a text field with the search subrole stays ineligible")
+    func searchSubrole() {
+        let facts = FieldFacts(role: "AXTextField", subrole: "AXSearchField", valueSettable: true,
+                               hasSelectedTextRange: true)
+        #expect(FieldEligibility.classify(facts) == .ineligible)
+    }
 }
