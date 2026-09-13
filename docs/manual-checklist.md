@@ -118,7 +118,7 @@ something outside dicta rewrites (**H24**–**H27**), and a move of focus inside
 delivery (**H31**).
 
 **The setup rows (the choice in `setup.json`, D31 as amended on 2026-09-13) began the same way.**
-They were written from `docs/plans/20260913-dicta-first-run-setup.md` before any of their code,
+They were written from `docs/plans/completed/20260913-dicta-first-run-setup.md` before any of their code,
 citing the human item that scores each (**H35**–**H43**), and every one now cites tests beside it.
 What stays human is what a person sees: the window coming forward, System Settings, and a hold on a
 real machine. The gate closing between the threshold's two reads cannot be reached by hand at all,

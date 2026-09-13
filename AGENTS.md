@@ -5,8 +5,8 @@ specifics; Codex, and anything else, reads this file.
 
 Voice dictation into **agterm**'s input line: hold the right Control key, speak, let go, the text
 appears where you were typing. Primarily for dictating prompts to Claude Code and instructions to agents
-running inside agterm. With `--focused-fields`, also into the focused text field of any other
-application, and agterm becomes optional. Everything is local; the audio never leaves the machine.
+running inside agterm. Once the person chooses other apps in the menu bar's setup window, also into
+the focused text field of any other application, and agterm becomes optional. Everything is local; the audio never leaves the machine.
 
 `SPEC.md` is normative — decisions are cited as D*, measurements as F*, invariants as §8. This file
 is the operating manual: what to run, what the environment actually is, and the rules that are
@@ -90,7 +90,8 @@ microphone denied, that a dictation which went nowhere reaches the clipboard fro
 that `Stop and type` lands in the pane the chord was pressed in.
 
 **Dictating into any application's focused field is built — `docs/plans/completed/20260912-dicta-focused-fields.md`,
-all thirteen tasks, behind the daemon's `--focused-fields` (D31, D32, invariant 14).** A target is
+all thirteen tasks (D31, D32, invariant 14).** It shipped behind the daemon's `--focused-fields`;
+the first-run setup below replaced that switch with a stored choice. A target is
 now a sum, `.agterm(AgtermTarget)` or `.focusedField(FieldTarget)`, and an agterm record line is
 byte-identical to what it was. The measurements came first, as F11 (the probe was `c3b9aba`), and
 fixed the delivery: Unicode keystrokes posted to the captured pid in chunks of 20 UTF-16 units, at
@@ -99,8 +100,8 @@ through `NSSound` and notifications through `osascript`. The pure decisions are 
 (`HoldRoute`, `FieldEligibility`, `KeystrokeChunks`, `DaemonOptions`), the adapters in
 `DictaRuntime/FocusedField.swift`, `SystemFeedback.swift` and `FocusedFieldWiring.swift`, and
 `Scripts/render-agent.sh` renders the agent, which carries the flag only as a seed
-(`Scripts/agent-seed.sh`). With the option off, every agterm behaviour is unchanged and the daemon
-makes no accessibility call.
+(`Scripts/agent-seed.sh`). Until the choice is other apps, every agterm behaviour is unchanged and
+the daemon makes no accessibility call.
 
 What is left is what only a person can score, **H24–H34**: VS Code's editor and terminal, Slack and
 Safari, the grant from a clean state, Secure Input, a non-text focus, focus moving around a
@@ -108,6 +109,20 @@ delivery, a day of right-hand shortcuts, a machine without agterm and the delive
 constants are provisional because nobody has measured them yet: `HoldTrigger.defaultSettleWindow`
 (the ⌘Tab activation lag) and `SystemFocusedFieldAccess.manualAccessibilitySettle` (how long
 Electron takes to build its tree).
+
+**Choosing where dictation goes is a setup window, not a flag — `docs/plans/completed/20260913-dicta-first-run-setup.md`,
+all fourteen tasks (D27 and D31 as amended, invariants 13 and 14 reworded).** The choice lives in
+`setup.json`, which only the daemon writes (`SetupStore`), and the menu's setup window changes it
+through two new verbs, `configure` and `accessibility`, applied live with no restart. The daemon no
+longer exits for a missing agterm (except under `--no-hold`) and no longer asks for the Accessibility
+grant at start-up; `install.sh` no longer takes `--focused-fields`, which survives only as a seed read
+while `setup.json` does not exist. Every decision the window makes is `SetupModel` in `DictaCore`;
+`DictaMenu/SetupWindow.swift` renders it. "The setup choice, and its one writer" below carries the
+rules. What only a person can score is **H35–H43**: a fresh install on a clean account, the upgrade
+from agterm-only (with every way of closing the offer) and from a `--focused-fields` install, grant
+and revoke seen from the window, the choice reversed from the window alone, the armed keys, focus
+never taken mid-session, an unreadable `setup.json`, and one measurement (a second prompt while the
+first dialog is open).
 
 A plan is written in `docs/plans/` and moved to `docs/plans/completed/` when it finishes, where it
 stays as the record of the run that built it (decided by the user on 2026-09-13).
@@ -121,6 +136,11 @@ stays as the record of the run that built it (decided by the user on 2026-09-13)
   mechanical checks (Cyrillic, tabs, line length, trailing whitespace, script permissions) always.
   Each check was probed with a file that should trip it; two of them were silently passing until
   that probe, which is the same lesson as D18 in a different costume.
+- Read or change the setup choice from a shell: `dictactl configure --scope agterm-only|other-apps
+  [--offer-seen]` writes what the setup window writes, and `dictactl accessibility [--prompt]` reads
+  the grant (and, with `--prompt`, asks for it) — refused with zero accessibility calls unless the
+  scope is `other-apps`. `cat ~/Library/Application\ Support/dev.personal.dicta/setup.json` shows the
+  stored choice; never edit it while the daemon runs, since the daemon is its only writer.
 - Watch the daemon's state as a stream: `dictactl watch` — one JSON object per transition, plus one
   the instant it attaches. The menu app is the other client of it; this is how to see what the menu
   is being told, and it costs the keypress path nothing measurable.
@@ -741,8 +761,9 @@ Distilled from SPEC.md §3. Each one is a mistake already made, or one the spec 
   guess but a ceiling over the daemon's own ceilings — `patience` + `inferenceCeiling` +
   `worstCaseCallsPerStop` × `worstCaseCallSeconds` — and `daemonCeilingsFitTheClientTimeout` asserts
   the sum still fits. Do not read a number off this page and trust it; read the constants. The
-  consequence worth keeping in view: a chord arriving during the one start-up model load waits up to
-  17 s and must not be reported as an unreachable daemon.
+  consequence worth keeping in view: a chord arriving during the start-up model load waits for as
+  long as the load takes — 0.2–0.5 s on every start measured since, and 17 s only the one time CoreML
+  compiled the encoder — and must not be reported as an unreachable daemon.
 - **`abort` is the ONE verb `ControlServer` does not serialise** (`Command.isServedConcurrently`),
   and that is a requirement of §6 rather than an optimisation. The handler runs the whole tail of an
   attempt inline, so an abort taking `handlerLock` was decided only *after* the dictation it meant to
@@ -855,9 +876,9 @@ More rules that are not obvious from the code:
   somebody else.
 - **Frontmost is read at the press, not in the sender.** `NSWorkspace.frontmostApplication` matched
   against `com.umputun.agterm` (D22), captured in the poll loop, because the sender thread can be
-  seconds behind the keypress and D4 forbids re-deciding a target mid-attempt. With
-  `--focused-fields` off, not frontmost is **silent** — a notification there would fire on every
-  right-Control combination typed in a browser. With it on, another application frontmost takes the
+  seconds behind the keypress and D4 forbids re-deciding a target mid-attempt. With the gate
+  closed (the scope is not `other-apps`), not frontmost is **silent** — a notification there would fire on every
+  right-Control combination typed in a browser. With it open, another application frontmost takes the
   focused-field path once the hold outlasts the floor (see "Focused fields, and why the permission
   is opt-in"). A session that cannot be resolved is loud, because the key did mean something and
   produced nothing.
@@ -902,22 +923,22 @@ non-overcommit pool does not grow when its threads block.
 
 ## Focused fields, and why the permission is opt-in
 
-**`--focused-fields` makes the focused text field of any other application a second kind of target
-(D31), delivered as Unicode keystrokes posted to that application's pid (D32).** The routing is
-`HoldRoute`: agterm frontmost takes the agterm path whether the option is on or off, and any other
-application is a silent no-op with it off and the field path with it on. Posting into another
-process needs the Accessibility grant, and that is why the option exists: **with it off the daemon
-makes no accessibility call and posts no event, so D5's "no permission" still holds for everyone who
-did not ask for this.** The chords stay agterm-only, so outside agterm `raw` cannot be reached.
+**The scope `other-apps` makes the focused text field of any other application a second kind of
+target (D31), delivered as Unicode keystrokes posted to that application's pid (D32).** The routing
+is `HoldRoute`: agterm frontmost takes the agterm path whatever the scope, and any other application
+is a silent no-op with the gate closed and the field path with it open. Posting into another process
+needs the Accessibility grant, and that is why it is a choice: **until the person chooses other apps
+the daemon makes no accessibility call and posts no event, so D5's "no permission" still holds for
+everyone who did not ask for this.** The chords stay agterm-only, so outside agterm `raw` cannot be reached.
 
 The rules, each of which is either a measurement or a mistake a first draft made:
 
-- **The option off means zero AX calls, and a test holds it rather than a habit.**
+- **A closed gate means zero AX calls, and a test holds it rather than a habit.**
   `FocusedFieldSwitch` calls no adapter factory until it is first opened
   (`test: a switch never opened constructs no system adapter and makes no accessibility call`),
   and the trigger, reading a closed gate at the press and again at the threshold, never calls it
   (`test: with the gate closed, the accessibility fake records zero calls in every scenario`).
-  That is also why the start-up line reads `accessibility: not checked` with the option off: the
+  That is also why the start-up line reads `accessibility: not checked` with the gate closed: the
   trust check is itself an accessibility call.
 - **The field path starts on the poll loop's threshold edge, never by sleeping in the sender.** On
   this path nothing is sent until the hold outlasts the floor, because right Control and right
@@ -934,7 +955,8 @@ The rules, each of which is either a measurement or a mistake a first draft made
 - **One observer-backed frontmost source, shared.** `SystemFrontmost` stores bundle id, pid and name
   together from the activation notification's `NSRunningApplication`, never re-reading
   `NSWorkspace.shared.frontmostApplication` (F8a). The trigger and the injector share one instance,
-  and it is built whenever the option is on, **even under `--no-hold`**, so the observer exists.
+  and `main.swift` builds it unconditionally, **even under `--no-hold`** and before any choice, so the
+  observer exists by the time a gate opens; it reads `NSWorkspace`, which is no accessibility call.
   `FocusedFieldAccess` deliberately has no `frontmostPID`: a second, unobserved source would bring
   back F8a's frozen value.
 - **AX never runs on the poll thread**, and never hops to the main run loop either, which the
@@ -1006,9 +1028,89 @@ The rules, each of which is either a measurement or a mistake a first draft made
 - **Feedback without agterm goes through `SystemFeedback`**: `Pop`, `Tink`, `Basso` and an
   `osascript` notification, which a Focus mode suppresses (F11), leaving the sound. It is also the
   notifier for untargeted refusals whenever there is no agterm. `Terminal` is optional in the daemon:
-  with the option on and no `agtermctl`, start-up logs it and carries on, readiness is `.fieldsOnly`
-  rather than a fault, and a chord is refused with a reason naming `agtermctl`. With the option off,
-  a missing `agtermctl` stays fatal.
+  with no `agtermctl`, start-up logs it and carries on whatever the scope, and a chord is refused with
+  a reason naming `agtermctl`. What readiness says depends on the scope — `.fieldsOnly` under
+  `other-apps`, `.setupNeeded` while undecided, `.terminalMissing` (a fault) under `agterm-only`. The
+  one start-up exit left is no `agtermctl` under `--no-hold`, where nothing could start a dictation.
+
+## The setup choice, and its one writer
+
+**Where dictation goes is one persisted choice, `setup.json`, with one writer: the daemon.**
+`SetupState` (`DictaCore`) is three facts — `scope` (`undecided` | `agterm-only` | `other-apps`),
+`offerSeen` and `schema` — never one revision number, because a schema bump must not re-ask anybody.
+`SetupStore` (`DictaRuntime`) reads and writes it at `Paths.setup`, beside `config.json`, which stays
+D9b's. The menu never touches the file; it sends `configure` and reads the result off `watch`.
+
+The rules, each of which is either a review finding or a trap:
+
+- **When the file does not exist, the daemon decides fresh versus update** (`SetupMigration`, pure):
+  `--focused-fields` in the agent seeds `other-apps` with the offer seen; otherwise a record with any
+  line — or an unreadable record — is an existing agterm user, `agterm-only` with the offer not
+  seen; otherwise `undecided`. Having agterm installed is never taken as intent. Once the file exists
+  the flag is ignored, and the start-up log says so (`StartupLines`).
+- **An unreadable file is never overwritten by the reader.** Invalid JSON, an unknown scope or a
+  newer schema is a typed `SetupLoadProblem`, behaves as `agterm-only`, and stands until a
+  replacement succeeds — so every `configure` while it stands, a retry after a failed one included,
+  goes through `replace`: write and `fsync` `setup.json.tmp`, hard-link the original to
+  `setup.json.unreadable`, then `rename(2)` over `setup.json`. A failure before the rename leaves
+  `setup.json` byte-identical, so a restart still reports the problem and **never re-migrates**, not
+  even with a legacy flag still in the agent. A failed write is a separate `saveError`, cleared by
+  the next write that succeeds; it never replaces the load problem. This is an operational failure
+  contract, not a power-loss transaction.
+- **`configure` persists, then sets the gate, then publishes** — in that order, under the handler
+  lock. A failed write is `rejected`, changes nothing, and publishes `setup.saveError` so the window
+  shows it from the stream; the menu's `send` still drops the response. `scope: undecided` is
+  refused: undeciding is not a choice a person makes. It applies to the next start and never to a
+  live attempt.
+- **`accessibility` is the only verb that can prompt, and only under `other-apps`.** Under any other
+  scope it is refused with zero accessibility calls. With `prompt` it calls
+  `SystemFocusedFieldAccess.requestTrust()` and then takes a fresh `AXIsProcessTrusted` — asking is
+  not evidence of a grant — and reports the result through the switch. Start-up asks for nothing;
+  `test: start-up never asks for the grant: only the accessibility verb with prompt does` reads the
+  sources to hold that `requestTrust()` has one caller. Both verbs are serialised and take
+  `pipelineRead`, because they can queue behind a running `stop`.
+- **`FocusedFieldSwitch` is the live gate, and admission is by generation, not a lock across calls.**
+  The field wiring is built lazily, at most once, on the first opening, and kept for the process.
+  Every `setOpen` bumps a generation. A reader is admitted by reading `current` — the wiring and the
+  generation, or `nil` while closed. The trigger reads it at the press and again at the threshold;
+  `beginField` reads it once, which is enough only because it is serialised with `configure` under
+  `ControlServer`'s handler lock. A grant result is reported with the generation it was admitted
+  under and **discarded** unless that generation is current and the gate is open, so a check made
+  before a close, or during a previous opening, never reaches readiness. A close landing between the
+  trigger's threshold read and its trust check lets that one admitted check run, and nothing after
+  it: the `start` it would send is refused by `beginField`'s own read.
+- **An accepted attempt finishes under the rules it was accepted under.** It delivers through the
+  built wiring whatever the gate says by then — the wiring is never destroyed — including the
+  injector's final validation and its grant check. Invariant 14's wording exempts that final
+  validation explicitly; never remove the check to satisfy a literal reading of "no AX call after a
+  close".
+- **There is no grant poll, and none may be added.** The grant is checked when the gate opens, when
+  the window asks (`accessibility` without `prompt`, on opening the checklist and each time the window
+  becomes key — the person coming back from System Settings), after a prompt, and by the checks every
+  field start already makes. Every accepted result updates the switch's grant and readiness together.
+  No timer, no lease: a revocation while nobody looks is noticed at the next check. This is the same
+  refusal as 1 Hz `status` polling, and no `status`, `watch` or `configure` is ever an AX probe.
+- **`isFault` is not `blocksDictation`.** `blocksDictation` says whether a hold or chord pressed now
+  would be refused; `isFault` says whether something is broken rather than a step not yet taken. Only
+  a fault — `microphoneDenied`, `modelsMissing`, `terminalMissing` — draws the red triangle and a red
+  banner. `setupNeeded` and `accessibilityNeeded` block and are amber; `accessibilityForFields` and
+  `fieldsOnly` do neither. The three setup verdicts come after `starting`, so a notice never claims a
+  readiness nobody has established, and their banner action is `openSetup`.
+- **The snapshot carries facts, not only the verdict**: `setup` (effective scope, `offerSeen`,
+  `loadProblem`, `saveError`), `faculties` (with `accessibility` nil unless the scope is
+  `other-apps`, since reporting it would be a call nobody asked for) and `hold` (`.armed(keys)` or an
+  explicit `.disabled`; `nil` means an older daemon that did not say). All decode from older JSON.
+- **The window opens by itself once per menu process, on its first snapshot, and only when idle.**
+  `FirstSnapshotLatch` answers `true` exactly once — consumed even when that snapshot is busy — and
+  never resets on a reconnect or a close, because a window that opened later would take focus from
+  the pane just dictated into and silence the hold key under D22. That is the reason §13 used to keep
+  a settings window out of scope, and it still stands; `NSApp.activate` appears once in the menu's
+  sources. The "Set Up…" row and the setup banners open it on purpose at any time.
+- **`SetupModel` is every decision; `SetupWindow.swift` renders and sends.** The screen per state, the
+  payload of every button (including what each close sends: the first-time offer records
+  `offerSeen`, the others send nothing), and the checklist rows are pure and tested, because
+  `DictaMenu` is not reachable from the test runner. A test reads the menu's sources to hold that it
+  spells no `configure` or `accessibility` request of its own.
 
 ## The menu bar, and why the daemon does not know it exists
 
@@ -1090,6 +1192,13 @@ real delivery into VS Code (editor and terminal, with Claude Code), Slack and Sa
 `tccutil reset` through a rebuild; Secure Input; a non-text focus receiving nothing; focus moving
 around a delivery; right-hand shortcuts costing nothing over a day; a machine without agterm; and
 the delivery bound.
+
+The setup window adds **H35–H43**, also unscored: the window on a fresh account (H35); the upgrade
+from agterm-only, with every real close path of the offer reaching `SetupModel`'s close effect (H36),
+and from a `--focused-fields` install, with the log's seed and ignored lines (H37); grant and revoke
+followed from the window (H38); the choice reversed from the window alone (H39); the armed keys named
+(H40); focus never taken mid-session (H41); an unreadable `setup.json` (H42); and whether a second
+prompt while the first dialog is open shows a second dialog (H43).
 
 **`docs/manual-checklist.md` is the list, and it is complete** — every item states the observation
 that counts as a pass, so two people scoring it agree. In short: that the chords fire and

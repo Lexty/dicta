@@ -863,13 +863,13 @@ way.
 
 ### Task 14: [Final] Update documentation
 
-- [ ] `README.md`: Install without `--focused-fields`; "Dictating into any app" starts from the setup
+- [x] `README.md`: Install without `--focused-fields`; "Dictating into any app" starts from the setup
   window and `dictactl configure`; the Accessibility paragraph follows the new flow
-- [ ] `AGENTS.md`: where it stands; `setup.json` and its one writer; admission by generation, and the
+- [x] `AGENTS.md`: where it stands; `setup.json` and its one writer; admission by generation, and the
   exemption of an accepted attempt's final validation; no grant poll; the two verbs; `isFault`
   versus `blocksDictation`;
   correct the model-load sentence in any text copied from this plan (17 s was a one-time cost)
-- [ ] move this plan to `docs/plans/completed/` and update the paths that cite it (AGENTS.md)
+- [x] move this plan to `docs/plans/completed/` and update the paths that cite it (AGENTS.md)
 
 ## Post-Completion
 

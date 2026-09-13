@@ -5,10 +5,10 @@ one a MacBook keyboard actually has), speak, let go, and the text appears in the
 typing in. It is meant for dictating prompts to Claude Code and instructions
 to agents running inside agterm.
 
-With `--focused-fields` it also types into **the focused text field of any other application** — the
-VS Code editor and its integrated terminal, Slack, a Safari text area — and agterm becomes optional.
-That is opt-in, because it needs the Accessibility permission; see
-[Dictating into any app](#dictating-into-any-app).
+It can also type into **the focused text field of any other application** — the VS Code editor and
+its integrated terminal, Slack, a Safari text area — and then agterm becomes optional. That is a
+choice you make once, in the menu bar's setup window, because it needs the Accessibility permission;
+see [Dictating into any app](#dictating-into-any-app).
 
 Everything is local. The audio is recognised on this machine by Parakeet TDT 0.6B v3 on the Apple
 Neural Engine, is never written to disk, and never leaves the computer.
@@ -25,17 +25,20 @@ this file is for using it.
 **Status: steps 1–3 of SPEC.md §10 are implemented.** The external filter (step 4) is not: the seam
 exists as a pass-through, which is all `raw` mode needs in order to be *defined* as the mode that
 skips it.
-Dictating into the focused field of any application is implemented behind `--focused-fields`
-(D31, D32); what only a person can score about it is H24–H34 in `docs/manual-checklist.md`.
+Dictating into the focused field of any application is implemented (D31, D32), and is chosen in the
+setup window; what only a person can score about it is H24–H34, and about the setup window H35–H43,
+in `docs/manual-checklist.md`.
 
 ## Requirements
 
 - macOS on Apple silicon (measured on macOS 26.6, M3 Pro).
 - Swift 6.3+ — Command Line Tools are enough; full Xcode is not required.
-- `agterm` with `agtermctl` on `PATH` — **unless** the daemon runs with `--focused-fields`, where it
-  is optional: without it the daemon starts, dictates into other applications' fields, and refuses
-  only what needs agterm (the chords, and the key held in front of agterm).
-- For `--focused-fields` only: the Accessibility permission for `Dicta.app`.
+- `agterm` with `agtermctl` on `PATH` — **unless** you choose other applications in the setup window,
+  where it is optional: without it the daemon dictates into other applications' fields and refuses
+  only what needs agterm (the chords, and the key held in front of agterm). A daemon with no agterm
+  and no choice yet does not exit: it waits for the choice.
+- For other applications only: the Accessibility permission for `Dicta.app`, asked for from the
+  setup window.
 - ~600 MB of disk for the recognition models, and one download to fetch them.
 
 ## Install
@@ -55,12 +58,25 @@ That one command builds a release, signs `Dicta.app`, installs the pieces and re
 | the menu's agent | `~/Library/LaunchAgents/dev.personal.dicta.menu.plist` | starts the menu-bar item at login |
 | the log | `~/Library/Logs/dicta.log` | the daemon's stderr |
 
-The installer does not choose where dictation goes. The menu-bar item's setup window does: it opens
-by itself when a choice is pending, and "Set Up…" in the panel reopens it (`dictactl configure` is
-the same choice from a shell). `install.sh --focused-fields` is refused. An agent installed with that
-flag before the choice was stored keeps it for one more start, so the daemon can seed the choice from
-it; afterwards the stored choice decides. The installer prints the keymap step only when it finds
-`agtermctl`, and ends by naming the setup window.
+The installer does not choose where dictation goes, and takes no option for it. The menu-bar item's
+setup window does: it opens by itself when a choice is pending, and "Set Up…" in the panel reopens it
+(`dictactl configure` is the same choice from a shell). `install.sh --focused-fields` is refused. An
+agent installed with that flag before the choice was stored keeps it for one more start, so the
+daemon can seed the choice from it; afterwards the stored choice decides. The installer prints the
+keymap step only when it finds `agtermctl`, and ends by naming the setup window.
+
+**What the setup window asks, and when.** On a fresh install it says what dicta does and offers
+**Set up dictation**, which is the choice to type into other applications; "Use only with agterm" is
+a secondary link, shown only when agterm is found. If you were already dictating into agterm before
+this window existed, nothing changes until you answer: it offers "Dicta can now type into other apps"
+once, with Enable and Keep agterm only, and closing it counts as keeping. Until a choice is made,
+agterm dictation works exactly as before, other applications stay closed, and no accessibility call
+is made. The choice is stored in
+`~/Library/Application Support/dev.personal.dicta/setup.json`, which only the daemon writes, and it
+takes effect at the next hold without a restart — never in the middle of a dictation. It stays
+reversible from the same window, in both directions. The window opens by itself only at the first
+state the menu receives after it launches, and only when nothing is being dictated, so it never takes
+focus from a pane in the middle of a session.
 
 The signing identity is self-signed, created in a dedicated keychain by `Scripts/setup-signing.sh`,
 which `bundle.sh` calls on its own when it is missing. It matters because the resulting *designated
@@ -114,9 +130,11 @@ Clicking it opens a small panel:
 
 - **what dicta is doing right now**, and — if it cannot dictate at all — one red sentence saying why,
   with the single button that fixes it: the microphone was denied (opens the right Settings pane),
-  the models are not downloaded (runs `--fetch-models`), `agtermctl` is not on the PATH. With
-  `--focused-fields` on, a missing `agtermctl` is not a fault: the panel says "Ready, without
-  agterm" with an amber notice, and dictation into other applications works.
+  the models are not downloaded (runs `--fetch-models`), `agtermctl` is not on the PATH while the
+  choice is agterm only. A step you have not taken yet is not a fault and is never red: a choice not
+  made, or the Accessibility permission not granted, is an amber notice whose button opens the setup
+  window. With other applications chosen, a missing `agtermctl` is an amber notice too, and
+  dictation into other applications works.
 - **where the current dictation is going**, by session name and pane (or by application name, for a
   focused field), with `Stop and type` and
   `Abort`. They are there only while something is being dictated. There is no Start, and there
@@ -156,8 +174,8 @@ you press first owns the dictation until you let it go, and pressing the other o
 does nothing at all. Pass `--hold-key rightOption` (repeatable) to the daemon to arm something else;
 `--hold-key` replaces the pair rather than adding to it.
 
-It asks for **no permission** — unless you turn on `--focused-fields`, which needs Accessibility to
-type into another application, not to read the key — and that is worth being precise about, because every other
+It asks for **no permission** — unless you choose other applications in the setup window, which
+needs Accessibility to type into another application, not to read the key — and that is worth being precise about, because every other
 push-to-talk tool on this platform asks for Input Monitoring or Accessibility. dicta does not read
 your keyboard. It reads the *state of the modifier keys* — a word of flags that says which of Shift,
 Control, Option, Command and Fn are down right now, and carries no key code and no character. There
@@ -174,11 +192,11 @@ Two rules follow from holding a key rather than pressing a chord:
   300 ms is `⌘Tab` — do that with the right-hand Command inside agterm and you spend a dictation
   that recognises nothing. Nothing is typed anywhere; if it becomes a nuisance, arm right Option
   instead.
-- **Without `--focused-fields`, it does nothing unless agterm is in front.** A chord carries the
+- **Unless other applications are chosen, it does nothing unless agterm is in front.** A chord carries the
   session it fired in; a held key carries nothing, so the session comes from live focus — and live
   focus is only meaningful while you are looking at agterm. Hold it in a browser and nothing at all
-  happens, silently (D22). With the option on, the same hold in a browser dictates into the focused
-  field instead; agterm in front always takes the agterm path.
+  happens, silently (D22). With other applications chosen, the same hold in a browser dictates into
+  the focused field instead; agterm in front always takes the agterm path.
 
 ## The chords
 
@@ -198,22 +216,36 @@ end it, and the text comes back unfiltered. Letting go afterwards is silent (D23
 
 ## Dictating into any app
 
-Choose other applications with `dictactl configure --scope other-apps` (`--focused-fields` in the
-agent makes that the initial choice, and is read only while `setup.json` does not exist yet), and
-**holding the key in any application types into the text field that has focus there**.
-agterm in front still takes the agterm path, exactly as without the option: it knows the session and
-the pane, it has the indicator, and it needs no permission (D31).
+Start from the setup window: click the menu-bar microphone, then **Set Up…**, and choose **Set up
+dictation** (or **Enable**, if you had kept agterm only). From a shell the same choice is `dictactl
+configure --scope other-apps`, and `dictactl configure --scope agterm-only` takes it back. From then
+on, **holding the key in any application types into the text field that has focus there**. agterm in
+front still takes the agterm path, exactly as before: it knows the session and the pane, it has the
+indicator, and it needs no permission (D31).
+
+The window then shows a checklist of what a dictation still needs: the Accessibility permission, the
+models, the microphone, and the hold key that is actually armed (or that none is, under `--no-hold`).
+"Use only with agterm" on the same screen is the way back.
 
 **The Accessibility permission.** Posting keystrokes into another process needs it, and without it
-macOS discards them silently (F11). The daemon never asks for it at start-up; `dictactl
-accessibility --prompt` asks, and only once the choice is other applications: the system dialog
-opens and `Dicta` is added to System Settings → Privacy & Security → Accessibility, where you turn it
-on (add `~/Applications/Dicta.app` with `+` if it is somehow not listed). Until then, every hold outside agterm that passes the floor does nothing,
-silently, and the microphone never opens. The grant is picked up
-without a restart, and a rebuild does not revoke it, for the same signing reason as the
-microphone's. The daemon's log says which it is at start-up: `focused fields: on, accessibility:
-granted` or `not granted`. **Without the option, dicta makes no accessibility call and posts no
-event at all**, so the permission is never needed and never asked about.
+macOS discards them silently (F11). The daemon never asks for it at start-up. The checklist's
+**Allow Access…** asks — after the window has said why — and only once the choice is other
+applications: the system dialog opens and `Dicta` is added to System Settings → Privacy & Security →
+Accessibility, where you turn it on (add `~/Applications/Dicta.app` with `+` if it is somehow not
+listed). After that the button becomes **Open Accessibility Settings**. The row turns done when you
+come back to the window; nothing polls the permission, so while nobody looks, a grant or a revocation
+is noticed at the next hold instead. `dictactl accessibility` reads the grant from a shell, and
+`dictactl accessibility --prompt` asks, as the button does. Until it is granted, every hold outside
+agterm that passes the floor does nothing, silently, the microphone never opens, and the menu bar
+shows an amber notice. The grant is picked up without a restart, and a rebuild does not revoke it,
+for the same signing reason as the microphone's. The daemon's log says where the choice came from
+(`setup: other-apps, from setup.json`) and what it found: `focused fields: on, accessibility:
+granted` or `not granted`. **Until other applications are chosen, dicta makes no accessibility call
+and posts no event at all**, so the permission is never needed and never asked about.
+
+**An install from before the setup window** that ran `install.sh --focused-fields` is not asked
+again: on its first start the daemon records that choice in `setup.json` and logs that the flag
+seeded it; afterwards it logs that the flag was ignored, because the file decides.
 
 **Outside agterm, the start waits for the floor.** Right Control and right Command are real
 modifiers, so a right-hand `⌘C` looks like the start of a dictation until 300 ms have passed. On
@@ -286,9 +318,9 @@ While a caller is waiting like this, holding the key **does** work in front of a
 which it otherwise refuses to do, because the text would land in the terminal behind the dialog
 (D24). With somewhere for the words to go, that refusal has nothing to protect.
 
-With `--focused-fields`, a hold in another application also feeds a waiting `dictactl dictate`, and
-nothing is typed there. The refusals still apply as if it were typing: the grant, Secure Input, and
-a focused element that has to be a text field.
+With other applications chosen, a hold in another application also feeds a waiting `dictactl
+dictate`, and nothing is typed there. The refusals still apply as if it were typing: the grant,
+Secure Input, and a focused element that has to be a text field.
 
 Each chord is one `toggle`, because start-or-stop is resolved inside the daemon atomically —
 writing it in the shell as `status | grep idle && start || stop` leaves a window in which one
