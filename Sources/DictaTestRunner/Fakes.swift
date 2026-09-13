@@ -602,6 +602,10 @@ public final class FakeFocusedFieldAccess: FocusedFieldAccess, @unchecked Sendab
 
     public var callLog: [Call] { lock.withLock { calls } }
 
+    /// Empties the log. For a fixture whose own construction made a check -- a gate opened for
+    /// `other-apps` checks the grant once -- so a test's log starts from what the test did.
+    public func forgetCalls() { lock.withLock { calls.removeAll() } }
+
     public func setTrusted(_ value: Bool) { lock.withLock { trusted = value } }
 
     public func setSecureInput(_ value: Bool) { lock.withLock { secureInput = value } }
@@ -753,5 +757,61 @@ public final class FakeSoundPlayer: SoundPlayer, @unchecked Sendable {
 
     public func play(_ name: String) {
         lock.withLock { log.append(name) }
+    }
+}
+
+// MARK: - the person's choice (D31)
+
+/// `setup.json`'s store, in memory: every write logged as the save or the replacement it would have
+/// been, a failure on demand, and a hook run inside the write, where "persisted before the gate
+/// moved" is observable.
+public final class FakeSetupStore: SetupPersisting, @unchecked Sendable {
+    public enum Write: Equatable, Sendable {
+        case save(SetupState)
+        case replace(SetupState)
+    }
+
+    public struct Refused: Error, CustomStringConvertible {
+        public var description: String
+    }
+
+    private let lock = NSLock()
+    private var log: [Write] = []
+    private var failure: String?
+    private var problem: SetupLoadProblem?
+    private var lastError: String?
+    private var onWrite: (@Sendable (SetupState) -> Void)?
+
+    public init(loadProblem: SetupLoadProblem? = nil) {
+        problem = loadProblem
+    }
+
+    public var writes: [Write] { lock.withLock { log } }
+
+    /// The reason every write fails with from now on; `nil` lets them succeed.
+    public func setFailure(_ reason: String?) { lock.withLock { failure = reason } }
+
+    /// Runs inside every write, before it is judged, outside the lock.
+    public func duringWrite(_ body: (@Sendable (SetupState) -> Void)?) {
+        lock.withLock { onWrite = body }
+    }
+
+    public var loadProblem: SetupLoadProblem? { lock.withLock { problem } }
+
+    public var saveError: String? { lock.withLock { lastError } }
+
+    /// `SetupStore.write`'s contract: a replacement while a load problem stands, which only a
+    /// success clears, and a failure kept as the save error.
+    public func write(_ state: SetupState) throws {
+        lock.withLock { onWrite }?(state)
+        try lock.withLock {
+            log.append(problem != nil ? .replace(state) : .save(state))
+            if let failure {
+                lastError = failure
+                throw Refused(description: failure)
+            }
+            problem = nil
+            lastError = nil
+        }
     }
 }

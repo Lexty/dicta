@@ -63,12 +63,24 @@ public struct SetupBootstrap: Sendable, Equatable {
     }
 }
 
+/// What the daemon needs of the store once start-up is over: a person's choice written, and the two
+/// facts that outlive a write. A protocol so a daemon test can observe the order `configure` keeps
+/// -- persist, then the gate, then publish -- from inside the write, and fail one on demand.
+public protocol SetupPersisting: AnyObject, Sendable {
+    /// Writes `state` as `configure` does, replacing while a load problem stands; throws why not.
+    func write(_ state: SetupState) throws
+    /// The load problem standing until a replacement succeeds.
+    var loadProblem: SetupLoadProblem? { get }
+    /// The last failed write, cleared by the next one that succeeds.
+    var saveError: String? { get }
+}
+
 /// The one writer of `setup.json`.
 ///
 /// A class, and locked, because the two facts it keeps — the standing load problem and the last
 /// save error — are what decide whether the next write saves or replaces, and a daemon reads them
 /// from the snapshot while a `configure` may be writing.
-public final class SetupStore: @unchecked Sendable {
+public final class SetupStore: SetupPersisting, @unchecked Sendable {
     /// The named steps a write goes through, in order. A replacement runs all five; a save skips
     /// the two that keep the original.
     public enum Step: String, Sendable, CaseIterable {

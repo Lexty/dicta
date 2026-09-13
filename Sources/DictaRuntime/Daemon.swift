@@ -84,13 +84,14 @@ public final class Daemon: @unchecked Sendable {
     /// Builds the trio for the agterm socket the chord carried; `nil` means agterm's default.
     ///
     /// Answers `nil` when there is no agterm to build it for -- `agtermctl` is not installed, which
-    /// `--focused-fields` makes survivable (D31). Every agterm chord is then refused with a reason
+    /// a daemon survives (D31). Every agterm chord is then refused with a reason
     /// naming `agtermctl`, and feedback that belongs to no pane goes through `feedback` instead.
     public typealias TerminalProvider = @Sendable (String?) -> Terminal?
 
-    /// What the focused-field path needs (D31), handed over only when `--focused-fields` is on. A
-    /// daemon without it refuses every field start before reaching any accessibility call, which is
-    /// how the option off means no permission prompt (D5, invariant 14).
+    /// What the focused-field path needs (D31), built by `FocusedFieldSwitch` on its first opening.
+    /// A daemon whose gate is closed refuses every field start before reaching any accessibility
+    /// call, which is how a choice other than `other-apps` means no permission prompt (D5,
+    /// invariant 14).
     public struct FocusedFields: Sendable {
         /// The checks before capture: the grant, Secure Input, and the one focused-element read.
         public var access: any FocusedFieldAccess
@@ -100,6 +101,24 @@ public final class Daemon: @unchecked Sendable {
         public init(access: any FocusedFieldAccess, injector: any FieldInjector) {
             self.access = access
             self.injector = injector
+        }
+    }
+
+    /// The person's choice and everything that follows from it (D31): the gate the focused-field
+    /// path sits behind, the store `configure` writes through, and the state start-up decided.
+    public struct Setup: Sendable {
+        /// Handed over closed. The daemon tells it where grants go, then opens it when `state` is
+        /// `other-apps`, so the grant the opening checks reaches readiness like any other.
+        public var fieldSwitch: FocusedFieldSwitch
+        public var store: any SetupPersisting
+        /// The state in force at start-up: read, migrated, or `SetupStore.whileUnreadable`.
+        public var state: SetupState
+
+        public init(fieldSwitch: FocusedFieldSwitch, store: any SetupPersisting,
+                    state: SetupState) {
+            self.fieldSwitch = fieldSwitch
+            self.store = store
+            self.state = state
         }
     }
 
@@ -213,8 +232,11 @@ public final class Daemon: @unchecked Sendable {
     /// Where a notification goes when there is no agterm to show it, and everything a focused
     /// field is told, since a field has no indicator (D13, D31).
     private let feedback: any Notifier
-    /// `nil` while `--focused-fields` is off.
-    private let fields: FocusedFields?
+    /// `nil` for a daemon given nowhere to keep a choice: agterm only, with the gate never opened
+    /// and both setup verbs refused. The executable always passes one.
+    private let setup: Setup?
+    /// What the hold trigger was armed with, carried into every snapshot unchanged.
+    private let hold: HoldSnapshot?
     private let dictionary: DictionaryProvider
 
     /// Guards the machine and the small amount of per-attempt state that travels with it. Held for
@@ -262,6 +284,13 @@ public final class Daemon: @unchecked Sendable {
     /// dictate. Written from outside (`observe`), because each fact is already known by the code
     /// that owns it — the warm-up thread, the microphone callback, the `agtermctl` lookup.
     private var faculties = Faculties()
+    /// **Guarded by `readinessLock`.** The choice in force. Its scope is `faculties.scope`, written
+    /// in the same acquisition, so the snapshot's setup and its readiness cannot disagree.
+    private var chosen = SetupState(scope: .agtermOnly, offerSeen: false)
+    /// **Guarded by `readinessLock`.** The store's two standing facts, as of its last write, kept
+    /// here so a snapshot never waits on a write in progress.
+    private var setupLoadProblem: SetupLoadProblem?
+    private var setupSaveError: String?
     /// **Guarded by `readinessLock`.** The newest transition already sent to watchers, so a stale
     /// one that lost a race is dropped rather than rewriting the UI backwards.
     private var lastPublishedSequence: UInt64 = 0
@@ -318,8 +347,8 @@ public final class Daemon: @unchecked Sendable {
     /// `feedback` has no default either, for `history`'s reason in a quieter key: the obvious
     /// one -- `SystemFeedback()` -- plays real sounds and posts real notifications from a test run.
     ///
-    /// `fields` does, and the default is the option off: a daemon nobody asked to type into other
-    /// applications makes no accessibility call (invariant 14).
+    /// `setup` does, and the default is none: a daemon nobody gave a choice to is agterm only and
+    /// makes no accessibility call (invariant 14). `hold` defaults to not reported.
     public init(
         configuration: Configuration,
         capture: any Capture,
@@ -329,7 +358,8 @@ public final class Daemon: @unchecked Sendable {
         clock: any Clock = SystemClock(),
         dictionary: @escaping DictionaryProvider = { .none },
         feedback: any Notifier,
-        fields: FocusedFields? = nil,
+        setup: Setup? = nil,
+        hold: HoldSnapshot? = nil,
         terminal provider: @escaping TerminalProvider
     ) {
         self.configuration = configuration
@@ -341,13 +371,24 @@ public final class Daemon: @unchecked Sendable {
         self.dictionary = dictionary
         self.provider = provider
         self.feedback = feedback
-        self.fields = fields
+        self.setup = setup
+        self.hold = hold
         // Known at construction, unlike the three faculties: whether a missing `agtermctl` blocks
-        // dictation or is only a notice is decided by the scope, which for now is whether this
-        // daemon was handed the field wiring at all.
-        faculties = Faculties(scope: fields != nil ? .otherApps : .agtermOnly)
+        // dictation or is only a notice is decided by the scope.
+        if let setup {
+            chosen = setup.state
+            setupLoadProblem = setup.store.loadProblem
+            setupSaveError = setup.store.saveError
+        }
+        faculties = Faculties(scope: chosen.scope)
         terminal = provider(nil)
         machine = StateMachine(nextID: Self.firstUnusedID(in: history))
+        guard let setup else { return }
+        // Told before opening, so the grant the opening checks is readiness's too.
+        setup.fieldSwitch.tellAccessibility { [weak self] trusted in
+            self?.observe { $0.accessibility = trusted }
+        }
+        if chosen.scope == .otherApps { setup.fieldSwitch.setOpen(true) }
     }
 
     /// Where this process's attempt ids start, read off the record it is about to append to.
@@ -524,12 +565,78 @@ public final class Daemon: @unchecked Sendable {
             return awaitDictation(request)
         case .start, .toggle:
             return begin(request)
-        // On the wire before the daemon can serve them, so the build holds while the store and the
-        // switch are wired in. Refused out loud rather than accepted: nothing was saved.
-        case .configure, .accessibility:
-            return response(.rejected,
-                            message: "\(request.cmd.rawValue) is not available in this build")
+        case .configure:
+            return configure(request)
+        case .accessibility:
+            return checkAccessibility(prompt: request.prompt == true)
         }
+    }
+
+    /// `configure` (D31): validate, then persist, then set the gate, then publish, in that order.
+    ///
+    /// Persisted first, so a scope in force is never one a restart would not find; the gate before
+    /// the publish, so no snapshot claims a scope the next field start would not be admitted under.
+    /// Serialised with `beginField` under the handler lock, which is why a live attempt is never
+    /// touched: it was admitted already, and delivers through the wiring it was accepted with.
+    ///
+    /// Answered without a notification, as `last` is: the menu reads the outcome from the stream,
+    /// and a shell has the message on stdout.
+    private func configure(_ request: Request) -> Response {
+        guard let setup else {
+            return response(.rejected, message: "dicta has nowhere to keep a choice in this daemon")
+        }
+        if request.scope == .undecided {
+            return response(.rejected, message: "scope undecided cannot be chosen: it is where "
+                            + "nobody has chosen yet")
+        }
+        guard request.scope != nil || request.offerSeen == true else {
+            return response(.rejected, message: "configure needs a scope, offerSeen or both")
+        }
+        let previous = readinessLock.withLock { chosen }
+        // The offer, once answered, stays answered: `offerSeen` only ever moves forward.
+        let next = SetupState(scope: request.scope ?? previous.scope,
+                              offerSeen: previous.offerSeen || request.offerSeen == true)
+        do {
+            try setup.store.write(next)
+        } catch {
+            // Nothing changes but the save error, which is how the window learns of it (D27).
+            readinessLock.withLock {
+                setupLoadProblem = setup.store.loadProblem
+                setupSaveError = setup.store.saveError ?? Self.reason(error)
+            }
+            publish()
+            return response(.rejected, message: Self.reason(error))
+        }
+        let opens = next.scope == .otherApps
+        if opens != (previous.scope == .otherApps) {
+            // Opening checks the grant once and reports it, which lands in `faculties` through the
+            // switch's callback; closing leaves nobody to look at it.
+            setup.fieldSwitch.setOpen(opens)
+        }
+        readinessLock.withLock {
+            chosen = next
+            faculties.scope = next.scope
+            if !opens { faculties.accessibility = nil }
+            setupLoadProblem = setup.store.loadProblem
+            setupSaveError = setup.store.saveError
+        }
+        publish()
+        return response(.accepted)
+    }
+
+    /// `accessibility` (D31): the one verb that may show the system's dialog, and only through an
+    /// open gate. Asking is not evidence of a grant, so a prompt is followed by a fresh check, and
+    /// that check -- not the fact that it asked -- is what readiness hears.
+    private func checkAccessibility(prompt: Bool) -> Response {
+        guard let fieldSwitch = setup?.fieldSwitch, let admission = fieldSwitch.current else {
+            return response(.rejected, message: "dicta is not set up to type into other apps, so "
+                            + "it does not look at the Accessibility grant")
+        }
+        let access = admission.wiring.access
+        if prompt { access.requestTrust() }
+        fieldSwitch.report(trusted: access.isTrusted, generation: admission.generation)
+        publish()
+        return response(.accepted)
     }
 
     /// D29: block until the user dictates, then hand the text back instead of typing it.
@@ -643,7 +750,7 @@ public final class Daemon: @unchecked Sendable {
     }
 
     /// A start into another application's focused field (D31), refused BEFORE capture unless every
-    /// check passes: the option is on, the grant is held, Secure Input is off, and the application
+    /// check passes: the gate is open, the grant is held, Secure Input is off, and the application
     /// the trigger captured at the press has a focused element that is an eligible text field.
     ///
     /// Every accessibility call is made here, on the socket thread, with no lock held: a hung
@@ -654,11 +761,17 @@ public final class Daemon: @unchecked Sendable {
     /// No agterm is adopted or needed, so a daemon without `agtermctl` still takes this road.
     private func beginField(_ request: Request, _ field: FieldTarget) -> Response {
         let target = Target.focusedField(field)
-        guard let fields else {
-            return reject("dicta was not started with --focused-fields, so it does not type into "
+        // Read ONCE, at the top: `configure` is serialised with this under the handler lock, so the
+        // gate cannot move while this start is being judged, and nothing below asks again.
+        guard let fieldSwitch = setup?.fieldSwitch, let admission = fieldSwitch.current else {
+            return reject("dicta is not set up to type into other apps, so it does not type into "
                           + "\(field.appName)", for: target)
         }
-        guard fields.access.isTrusted else {
+        let fields = admission.wiring.daemon
+        // Reported either way, so a grant found missing -- or found again -- reaches readiness.
+        let trusted = fields.access.isTrusted
+        fieldSwitch.report(trusted: trusted, generation: admission.generation)
+        guard trusted else {
             return reject("dicta cannot type into \(field.appName) without the Accessibility "
                           + "grant: allow Dicta in System Settings > Privacy & Security > "
                           + "Accessibility", for: target)
@@ -1173,8 +1286,11 @@ public final class Daemon: @unchecked Sendable {
                 try injector.inject(final, into: target)
             case let .focusedField(field):
                 // The handle THIS attempt captured, by its id. Unreachable without one -- a field
-                // start is accepted only together with its handle -- and nothing was typed.
-                guard let fields, let handle = fieldHandle(for: id) else {
+                // start is accepted only together with its handle -- and nothing was typed. Through
+                // the wiring as built, whatever the gate says now: an accepted attempt finishes
+                // under the rules it was accepted under, final validation included (D31).
+                guard let fields = setup?.fieldSwitch.built?.daemon,
+                      let handle = fieldHandle(for: id) else {
                     throw DeliveryFailure.notStarted(
                         target, reason: "the focused field was not captured for this attempt")
                 }
@@ -1693,8 +1809,19 @@ public final class Daemon: @unchecked Sendable {
              machine.currentAttempt?.target ?? rememberedTarget,
              draft?.speechStartedAt)
         }
-        // One read, so the verdict and the facts it came from cannot disagree in one snapshot.
-        let facts = readinessLock.withLock { faculties }
+        // One read, so the verdict, the facts it came from and the choice cannot disagree in one
+        // snapshot.
+        let (facts, setupSnapshot) = readinessLock.withLock { () -> (Faculties, SetupSnapshot?) in
+            var facts = faculties
+            // A grant is a fact only under `other-apps`: a report that landed around a close
+            // describes a gate nobody may look through any more.
+            if facts.scope != .otherApps { facts.accessibility = nil }
+            let snapshot = setup.map { _ in
+                SetupSnapshot(scope: chosen.scope, offerSeen: chosen.offerSeen,
+                              loadProblem: setupLoadProblem, saveError: setupSaveError)
+            }
+            return (facts, snapshot)
+        }
         return StatusSnapshot(
             state: state,
             readiness: facts.readiness,
@@ -1706,7 +1833,9 @@ public final class Daemon: @unchecked Sendable {
             // recording during the ~95 ms before the device was live.
             speakingSeconds: speaking.map { clock.now.timeIntervalSince($0) },
             capSeconds: configuration.durationCap,
-            faculties: facts
+            setup: setupSnapshot,
+            faculties: facts,
+            hold: hold
         )
     }
 

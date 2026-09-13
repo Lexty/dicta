@@ -97,13 +97,15 @@ let feedback = SystemFeedback()
 let frontmost = SystemFrontmost()
 
 // The focused-field path behind its gate (invariant 14): closed, it constructs no adapter, so the
-// process makes no accessibility call and posts no event. Opened only with the option on. The
-// daemon does not exist yet when the opening checks the grant, so that result is read back from the
-// switch and published below, once it does.
-let fieldSwitch = FocusedFieldSwitch(frontmost: frontmost, feedback: feedback,
-                                     onAccessibility: { _ in })
-if options.focusedFields { fieldSwitch.setOpen(true) }
-let focusedFields = fieldSwitch.built
+// process makes no accessibility call and posts no event. Handed to the daemon closed; the daemon
+// opens it for `other-apps`, after telling it where the grant goes.
+let fieldSwitch = FocusedFieldSwitch(frontmost: frontmost, feedback: feedback)
+
+// The person's choice (D31). Until start-up bootstraps `setup.json`, the state in force is still
+// the flag's, and the store is only where `configure` writes.
+let setupStore = SetupStore(url: Paths.current.setup)
+let initialSetup = SetupState(scope: options.focusedFields ? .otherApps : .agtermOnly,
+                              offerSeen: options.focusedFields)
 
 // The microphone. It belongs to this bundle's TCC grant and to nothing else (D11, invariant 8):
 // `dictactl` links none of this, and a second binary opening the device would fracture the grant.
@@ -138,10 +140,10 @@ let daemon = Daemon(
     // the whole loop -- no restart, and no chance of testing a rule against the previous file.
     dictionary: { dictionaryFile.load() },
     feedback: feedback,
-    fields: focusedFields?.daemon,
+    setup: Daemon.Setup(fieldSwitch: fieldSwitch, store: setupStore, state: initialSetup),
     // One `Agterm` per attempt, addressed at the agterm the chord fired in ($AGT_SOCKET, F3). The
     // command line's `--agterm-socket` is the fallback for a keymap that does not pass it. `nil`
-    // without `agtermctl`, which only `--focused-fields` lets this far.
+    // without `agtermctl`.
     terminal: { requested in
         guard let agtermctl else { return nil }
         let agterm = Agterm(executable: agtermctl, agtermSocket: requested ?? defaultAgtermSocket)
@@ -171,14 +173,11 @@ log("listening on \(controlSocket)")
 // defaulted, because `Faculties` distinguishes "known good" from "nobody has looked", and a daemon
 // that left this `nil` would sit at `starting` for ever. Without agterm it is `false`, which blocks
 // dictation only with `--focused-fields` off -- and that combination has already exited above.
-// With the option on, the grant the opening checked is recorded beside it for the same reason: the
-// scope is `other-apps`, where an unknown grant is `starting`. With it off the grant stays `nil`.
+// The grant the opening checked already reached readiness through the switch.
 let foundAgterm = agtermctl != nil
+daemon.observe { $0.terminal = foundAgterm }
+let focusedFields = fieldSwitch.built
 let openingGrant = fieldSwitch.grant
-daemon.observe {
-    $0.terminal = foundAgterm
-    $0.accessibility = openingGrant
-}
 log(fieldSwitch.startupLine)
 // Asked for at startup, with the option on and only then (invariant 14), for the microphone's
 // reason below: the dialog is read at the user's pace, not in the middle of a hold. It is also what

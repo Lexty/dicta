@@ -111,6 +111,15 @@ struct DaemonTests {
         let feedback = FakeNotifier()
         let access = FakeFocusedFieldAccess()
         let fieldInjector = FakeFieldInjector()
+        /// The frontmost source the switch hands the injector it builds (F8a).
+        let frontmost = FakeFrontmost(bundleIdentifier: DaemonTests.field.bundleID)
+        let poster = FakeEventPoster()
+        /// Every adapter the switch made, by name: an empty list is "the gate never opened".
+        let constructions: Locked<[String]>
+        /// Runs inside the switch's first build, where "the gate is opening now" is observable.
+        let onBuild = Locked<(@Sendable () -> Void)?>(nil)
+        let store: FakeSetupStore
+        let fieldSwitch: FocusedFieldSwitch
         let daemon: Daemon
 
         /// `injecting` and `processing` each last exactly as long as one synchronous seam call, so
@@ -125,7 +134,10 @@ struct DaemonTests {
              injector: (any Injector)? = nil,
              history: (any History)? = nil,
              focusedFields: Bool = false,
-             fieldInjector: (any FieldInjector)? = nil) {
+             setup: SetupState? = nil,
+             store: FakeSetupStore = FakeSetupStore(),
+             persisting: (any SetupPersisting)? = nil,
+             fieldInjector: FocusedFieldWiring.Adapters.InjectorFactory? = nil) {
             // `/tmp` rather than the per-user temp directory, for the reason `ControlSocketTests`
             // gives: `sun_path` is 104 bytes and $TMPDIR plus a UUID is most of that budget.
             directory = URL(fileURLWithPath: "/tmp")
@@ -140,6 +152,25 @@ struct DaemonTests {
             dictionary = book
             let terminal = Daemon.Terminal(resolver: resolver, injector: injector ?? self.injector,
                                            notifier: notifier)
+            // The switch builds its wiring out of the harness's own fakes, so `access` is the one
+            // every field check lands in and `fieldInjector` the one every delivery reaches.
+            let made = Locked<[String]>([])
+            constructions = made
+            let building = onBuild
+            let access = access
+            let poster = poster
+            let recording = self.fieldInjector
+            let adapters = FocusedFieldWiring.Adapters(
+                access: {
+                    made.set(made.value + ["access"])
+                    building.value?()
+                    return access
+                },
+                poster: { made.set(made.value + ["poster"]); return poster },
+                injector: fieldInjector ?? { _, _, _ in recording })
+            fieldSwitch = FocusedFieldSwitch(frontmost: frontmost, feedback: feedback,
+                                             adapters: adapters)
+            self.store = store
             daemon = Daemon(
                 configuration: Daemon.Configuration(
                     socketPath: directory.appendingPathComponent("c.sock").path,
@@ -155,11 +186,14 @@ struct DaemonTests {
                 clock: clock,
                 dictionary: { book.read() },
                 feedback: feedback,
-                fields: focusedFields
-                    ? Daemon.FocusedFields(access: access,
-                                           injector: fieldInjector ?? self.fieldInjector) : nil,
+                setup: Daemon.Setup(
+                    fieldSwitch: fieldSwitch, store: persisting ?? store,
+                    state: setup ?? SetupState(scope: focusedFields ? .otherApps : .agtermOnly,
+                                               offerSeen: focusedFields)),
                 terminal: { _ in terminal }
             )
+            // A gate opened for `other-apps` checked the grant once; each test's log starts after.
+            access.forgetCalls()
         }
 
         deinit {
@@ -343,20 +377,6 @@ struct DaemonTests {
 
         harness.capture.reportReady(1)
         #expect(harness.notifier.signals == [.announce(.listening, Self.target)])
-    }
-
-    @Test("configure and accessibility are refused as not available in this build",
-          arguments: [Request(cmd: .configure, scope: .otherApps, offerSeen: true),
-                      Request(cmd: .accessibility, prompt: true)])
-    func setupVerbsAreRefusedUntilWired(request: Request) {
-        let harness = Harness()
-        let response = harness.send(request)
-
-        #expect(response.kind == .rejected)
-        #expect(response.message == "\(request.cmd.rawValue) is not available in this build")
-        #expect(response.state == .idle)
-        #expect(harness.capture.callLog.isEmpty)
-        #expect(harness.daemon.state == .idle)
     }
 
     @Test("a warming attempt that is never confirmed announces nothing, ever")
@@ -2090,7 +2110,7 @@ struct DaemonTests {
 
     /// Every reason a field start is refused before capture (D31, §7).
     enum FieldRefusal: String, CaseIterable, CustomTestStringConvertible, Sendable {
-        case optionOff
+        case gateClosed
         case fieldWithFocus
         case fieldWithSession
         case noGrant
@@ -2113,13 +2133,13 @@ struct DaemonTests {
         }
 
         /// The accessibility calls made before the refusal, and none after it: each check stops the
-        /// path, and the option off or a malformed request reaches no accessibility at all.
+        /// path, and a closed gate or a malformed request reaches no accessibility at all.
         var calls: [FakeFocusedFieldAccess.Call] {
             let read: [FakeFocusedFieldAccess.Call] = [
                 .isTrusted, .isSecureInputOn, .focusedElement(expectedPID: DaemonTests.field.pid),
             ]
             return switch self {
-            case .optionOff, .fieldWithFocus, .fieldWithSession: []
+            case .gateClosed, .fieldWithFocus, .fieldWithSession: []
             case .noGrant: [.isTrusted]
             case .secureInput: [.isTrusted, .isSecureInputOn]
             case .noElement, .unreadable, .pidMismatch, .ineligible, .unknown, .subroleUnread: read
@@ -2128,7 +2148,7 @@ struct DaemonTests {
 
         var reasonMentions: String {
             switch self {
-            case .optionOff: "--focused-fields"
+            case .gateClosed: "not set up to type into other apps"
             case .fieldWithFocus, .fieldWithSession: "focused field"
             case .noGrant: "Accessibility"
             case .secureInput: "Secure Input"
@@ -2142,7 +2162,7 @@ struct DaemonTests {
         func arrange(_ harness: Harness) {
             let facts: FieldFacts
             switch self {
-            case .optionOff, .fieldWithFocus, .fieldWithSession:
+            case .gateClosed, .fieldWithFocus, .fieldWithSession:
                 return
             case .noGrant:
                 harness.access.setTrusted(false)
@@ -2180,7 +2200,7 @@ struct DaemonTests {
     @Test("a field start is refused before capture opens, for every reason it can be refused",
           arguments: FieldRefusal.allCases)
     func aFieldStartIsRefusedBeforeCapture(_ refusal: FieldRefusal) throws {
-        let harness = Harness(focusedFields: refusal != .optionOff)
+        let harness = Harness(focusedFields: refusal != .gateClosed)
         refusal.arrange(harness)
 
         let response = harness.send(refusal.request)
@@ -2265,13 +2285,13 @@ struct DaemonTests {
     /// captured.
     static func typingHarness(chunks: KeystrokeChunks = .standard,
                               poster: any EventPoster) -> Harness {
-        let frontmost = FakeFrontmost()
-        frontmost.activate(FrontmostFacts(bundleID: Self.field.bundleID, pid: Self.field.pid,
-                                          name: Self.field.appName))
-        let access = FakeFocusedFieldAccess()
-        let injector = FocusedFieldInjector(access: access, poster: poster, frontmost: frontmost,
-                                            pacer: FakePacer(), chunks: chunks)
-        return Harness(focusedFields: true, fieldInjector: injector)
+        let harness = Harness(focusedFields: true, fieldInjector: { access, _, frontmost in
+            FocusedFieldInjector(access: access, poster: poster, frontmost: frontmost,
+                                 pacer: FakePacer(), chunks: chunks)
+        })
+        harness.frontmost.activate(FrontmostFacts(bundleID: Self.field.bundleID,
+                                                  pid: Self.field.pid, name: Self.field.appName))
+        return harness
     }
 
     @Test("a focused-field delivery posts only the sanitised single line")
@@ -2513,12 +2533,347 @@ struct DaemonTests {
         #expect(harness.daemon.fieldHandleAttempts == Daemon.FieldOwnership(live: nil, held: []))
     }
 
+    // MARK: - the person's choice, applied live (D31)
+
+    static let status = Request(cmd: .status)
+
+    /// Registration happens on the connection's own thread.
+    static func waitForWatchers(_ daemon: Daemon, count: Int = 1) -> Bool {
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            if daemon.watcherCount == count { return true }
+            usleep(5_000)
+        }
+        return daemon.watcherCount == count
+    }
+
+    /// A watcher attached to the harness's daemon, past its first event.
+    static func watching(_ harness: Harness) throws -> WatchStreamTests.Watcher {
+        try harness.daemon.start()
+        let watcher = WatchStreamTests.Watcher()
+        watcher.start(path: harness.daemon.configuration.socketPath)
+        #expect(Self.waitForWatchers(harness.daemon))
+        #expect(watcher.waitForEvents(1))
+        return watcher
+    }
+
+    @Test("configure other-apps persists, then opens the gate, then publishes, with no restart")
+    func configureOpensTheGateLive() throws {
+        let harness = Harness()
+        let watcher = try Self.watching(harness)
+        let daemon = harness.daemon
+        let fieldSwitch = harness.fieldSwitch
+        let store = harness.store
+        // Inside the write: the gate still closed, and nothing yet claiming the new scope.
+        let atWrite = Locked<(gateOpen: Bool, scope: SetupScope?)?>(nil)
+        store.duringWrite { _ in
+            atWrite.set((fieldSwitch.current != nil,
+                         daemon.handle(.request(Self.status)).snapshot?.setup?.scope))
+        }
+        // Inside the gate's opening: already persisted, and still not published.
+        let atOpening = Locked<(writes: Int, scope: SetupScope?)?>(nil)
+        harness.onBuild.set {
+            atOpening.set((store.writes.count,
+                           daemon.handle(.request(Self.status)).snapshot?.setup?.scope))
+        }
+        #expect(harness.fieldStart().kind == .rejected)
+
+        let response = harness.send(Request(cmd: .configure, scope: .otherApps, offerSeen: true))
+
+        #expect(response.kind == .accepted)
+        #expect(store.writes == [.save(SetupState(scope: .otherApps, offerSeen: true))])
+        #expect(atWrite.value?.gateOpen == false)
+        #expect(atWrite.value?.scope == .agtermOnly)
+        #expect(atOpening.value?.writes == 1)
+        #expect(atOpening.value?.scope == .agtermOnly)
+        #expect(fieldSwitch.current != nil)
+        #expect(response.snapshot?.setup == SetupSnapshot(scope: .otherApps, offerSeen: true))
+        // The opening's one check reached readiness beside the scope, on the stream.
+        #expect(SnapshotPublishingTests.waitFor(watcher) {
+            $0.setup?.scope == .otherApps && $0.faculties?.accessibility == true
+        })
+
+        // The next field start is admitted: no restart between the choice and the dictation.
+        let started = harness.fieldStart()
+        #expect(started.kind == .accepted)
+        #expect(harness.capture.callLog == [.begin(try #require(started.attempt))])
+    }
+
+    @Test("a configure whose write fails changes nothing, is refused, and publishes the reason")
+    func aFailedConfigureChangesNothing() throws {
+        let harness = Harness()
+        let watcher = try Self.watching(harness)
+        harness.store.setFailure("setup.json could not be saved: renaming over it failed")
+
+        let refused = harness.send(Request(cmd: .configure, scope: .otherApps, offerSeen: true))
+
+        #expect(refused.kind == .rejected)
+        #expect(refused.message == "setup.json could not be saved: renaming over it failed")
+        // The scope and the gate are where they were, and no adapter was even made.
+        #expect(harness.fieldSwitch.current == nil)
+        #expect(harness.constructions.value.isEmpty)
+        #expect(harness.access.callLog.isEmpty)
+        #expect(SnapshotPublishingTests.waitFor(watcher) {
+            $0.setup == SetupSnapshot(
+                scope: .agtermOnly, offerSeen: false,
+                saveError: "setup.json could not be saved: renaming over it failed")
+        })
+        #expect(harness.fieldStart().kind == .rejected)
+
+        harness.store.setFailure(nil)
+        let accepted = harness.send(Request(cmd: .configure, scope: .otherApps, offerSeen: true))
+
+        #expect(accepted.kind == .accepted)
+        #expect(SnapshotPublishingTests.waitFor(watcher) {
+            $0.setup == SetupSnapshot(scope: .otherApps, offerSeen: true)
+        })
+        #expect(harness.fieldSwitch.current != nil)
+    }
+
+    /// `setup.json`'s bytes that start-up could not use.
+    enum UnusableSetup: String, CaseIterable, CustomTestStringConvertible, Sendable {
+        case unreadable
+        case newerSchema
+
+        var testDescription: String { rawValue }
+
+        var bytes: Data {
+            switch self {
+            case .unreadable: Data("{not json".utf8)
+            case .newerSchema:
+                Data(#"{"schema": 99, "scope": "other-apps", "offerSeen": true}"#.utf8)
+            }
+        }
+    }
+
+    @Test("a configure over an unusable setup.json replaces it, and a failed one keeps the problem",
+          arguments: UnusableSetup.allCases)
+    func configureOverAnUnusableFile(_ unusable: UnusableSetup) throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("dicta-setup-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("setup.json")
+        try unusable.bytes.write(to: url)
+        // Only a replacement links the original aside, so a fault at that step fails a replacement
+        // and would never be reached by a plain save.
+        let fault = Locked<SetupStore.Step?>(nil)
+        let store = SetupStore(url: url) { step in step == fault.value ? EACCES : nil }
+        let bootstrap = store.bootstrap(flag: true, record: .lines(0))
+        let problem = try #require(store.loadProblem)
+        let harness = Harness(setup: bootstrap.state, persisting: store)
+        let watcher = try Self.watching(harness)
+        #expect(harness.send(Self.status).snapshot?.setup
+            == SetupSnapshot(scope: .agtermOnly, offerSeen: false, loadProblem: problem))
+
+        fault.set(.link)
+        let refused = harness.send(Request(cmd: .configure, scope: .otherApps, offerSeen: true))
+
+        #expect(refused.kind == .rejected)
+        let reason = try #require(refused.message)
+        #expect(reason.contains("keeping the original as"), "\(reason)")
+        #expect(try Data(contentsOf: url) == unusable.bytes)
+        #expect(harness.fieldSwitch.current == nil)
+        #expect(SnapshotPublishingTests.waitFor(watcher) {
+            $0.setup == SetupSnapshot(scope: .agtermOnly, offerSeen: false, loadProblem: problem,
+                                      saveError: reason)
+        })
+
+        fault.set(nil)
+        let accepted = harness.send(Request(cmd: .configure, scope: .otherApps, offerSeen: true))
+
+        #expect(accepted.kind == .accepted)
+        #expect(SnapshotPublishingTests.waitFor(watcher) {
+            $0.setup == SetupSnapshot(scope: .otherApps, offerSeen: true)
+        })
+        // The retry replaced too: the original is kept beside the new file.
+        #expect(try Data(contentsOf: store.backupURL) == unusable.bytes)
+        if case let .loaded(state) = store.load() {
+            #expect(state == SetupState(scope: .otherApps, offerSeen: true))
+        } else {
+            Issue.record("setup.json was not left readable: \(store.load())")
+        }
+    }
+
+    @Test("configure agterm-only during a field dictation affects only the next start")
+    func configureDuringAFieldDictation() throws {
+        let poster = FakeEventPoster()
+        let harness = Self.typingHarness(poster: poster)
+        let id = try #require(harness.fieldStart().attempt)
+        harness.capture.reportReady(id)
+
+        let closed = harness.send(Request(cmd: .configure, scope: .agtermOnly))
+        #expect(closed.kind == .accepted)
+        #expect(harness.fieldSwitch.current == nil)
+        harness.access.forgetCalls()
+
+        harness.send(Request(cmd: .stop, mode: .clean, attempt: id))
+        harness.capture.reportDrained(id)
+
+        // Delivered in full, through the handle it captured and the injector that was built...
+        #expect(poster.posts.map(\.unicode).joined() == FakeTranscriber.sanitizedHostileText)
+        #expect(poster.posts.allSatisfy { $0.pid == Self.field.pid })
+        #expect(harness.history.appended.last?.outcome == .injected)
+        // ...and its final validation still asked for the grant, though the gate had closed.
+        #expect(harness.access.callLog.contains(.isTrusted))
+        #expect(harness.daemon.fieldHandleAttempts == Daemon.FieldOwnership(live: nil, held: []))
+
+        harness.access.forgetCalls()
+        let next = harness.fieldStart()
+
+        #expect(next.kind == .rejected)
+        #expect(next.message?.contains("not set up to type into other apps") == true)
+        #expect(harness.access.callLog.isEmpty)
+        #expect(harness.capture.callLog == [.begin(id), .drain(id)])
+    }
+
+    @Test("configure with only offerSeen persists and publishes, and leaves the gate alone",
+          arguments: [SetupScope.agtermOnly, .otherApps])
+    func offerSeenAloneLeavesTheGate(_ scope: SetupScope) throws {
+        let harness = Harness(setup: SetupState(scope: scope, offerSeen: false))
+        let generation = harness.fieldSwitch.current?.generation
+
+        let response = harness.send(Request(cmd: .configure, offerSeen: true))
+
+        #expect(response.kind == .accepted)
+        #expect(harness.store.writes == [.save(SetupState(scope: scope, offerSeen: true))])
+        #expect(response.snapshot?.setup == SetupSnapshot(scope: scope, offerSeen: true))
+        #expect(harness.fieldSwitch.current?.generation == generation)
+        #expect(harness.access.callLog.isEmpty)
+        #expect(harness.constructions.value.isEmpty == (scope != .otherApps))
+    }
+
+    @Test("configure refuses undecided and an empty choice, and writes nothing",
+          arguments: [Request(cmd: .configure, scope: .undecided),
+                      Request(cmd: .configure, scope: .undecided, offerSeen: true),
+                      Request(cmd: .configure),
+                      Request(cmd: .configure, offerSeen: false)])
+    func configureRefusesWhatNobodyChooses(_ request: Request) throws {
+        let harness = Harness(focusedFields: true)
+
+        let response = harness.send(request)
+
+        #expect(response.kind == .rejected)
+        #expect(harness.store.writes.isEmpty)
+        #expect(response.snapshot?.setup == SetupSnapshot(scope: .otherApps, offerSeen: true))
+        #expect(harness.fieldSwitch.current != nil)
+        #expect(harness.access.callLog.isEmpty)
+    }
+
+    /// The scopes under which nothing may look at the grant, reached two ways: never opened, and
+    /// opened then closed again by a choice.
+    enum ClosedGate: String, CaseIterable, CustomTestStringConvertible, Sendable {
+        case undecided
+        case agtermOnly
+        case closedAgain
+
+        var testDescription: String { rawValue }
+    }
+
+    @Test("accessibility is refused with zero calls unless the scope is other-apps",
+          arguments: ClosedGate.allCases)
+    func accessibilityOutsideOtherApps(_ gate: ClosedGate) throws {
+        let harness = switch gate {
+        case .undecided: Harness(setup: SetupState(scope: .undecided, offerSeen: false))
+        case .agtermOnly: Harness()
+        case .closedAgain: Harness(focusedFields: true)
+        }
+        if gate == .closedAgain {
+            #expect(harness.send(Request(cmd: .configure, scope: .agtermOnly)).kind == .accepted)
+            harness.access.forgetCalls()
+        }
+
+        for prompt in [true, false] {
+            let response = harness.send(Request(cmd: .accessibility, prompt: prompt))
+            #expect(response.kind == .rejected)
+            #expect(response.message?.contains("not set up to type into other apps") == true)
+        }
+
+        #expect(harness.access.callLog.isEmpty)
+        #expect(harness.constructions.value.isEmpty == (gate != .closedAgain))
+        #expect(harness.send(Self.status).snapshot?.faculties?.accessibility == nil)
+    }
+
+    @Test("accessibility under other-apps checks the grant, and with prompt asks first",
+          arguments: [false, true])
+    func accessibilityUnderOtherApps(_ prompt: Bool) throws {
+        let harness = Harness(focusedFields: true)
+        harness.daemon.observe {
+            $0.microphone = true
+            $0.models = true
+            $0.terminal = true
+        }
+        // The opening found the grant; it has gone since, and asking does not bring it back.
+        harness.access.setTrusted(false)
+
+        let response = harness.send(Request(cmd: .accessibility, prompt: prompt))
+
+        #expect(response.kind == .accepted)
+        #expect(harness.access.callLog == (prompt ? [.requestTrust, .isTrusted] : [.isTrusted]))
+        #expect(harness.fieldSwitch.grant == false)
+        let snapshot = try #require(harness.send(Self.status).snapshot)
+        #expect(snapshot.faculties?.accessibility == false)
+        #expect(snapshot.readiness == .accessibilityForFields)
+        #expect(snapshot.setup?.scope == .otherApps)
+    }
+
+    @Test("a field start's own grant check reaches the switch and readiness, either way")
+    func aFieldStartReportsTheGrant() throws {
+        let harness = Harness(focusedFields: true)
+        harness.daemon.observe {
+            $0.microphone = true
+            $0.models = true
+            $0.terminal = true
+        }
+
+        harness.access.setTrusted(false)
+        #expect(harness.fieldStart().kind == .rejected)
+        #expect(harness.fieldSwitch.grant == false)
+        #expect(harness.send(Self.status).snapshot?.readiness == .accessibilityForFields)
+
+        harness.access.setTrusted(true)
+        let started = harness.fieldStart()
+        #expect(started.kind == .accepted)
+        #expect(harness.fieldSwitch.grant == true)
+        let snapshot = try #require(harness.send(Self.status).snapshot)
+        #expect(snapshot.faculties?.accessibility == true)
+    }
+
+    @Test("a daemon given no setup refuses both verbs and reports no choice, and carries its hold")
+    func aDaemonWithoutSetup() throws {
+        let daemon = Self.daemonWithoutAgterm(feedback: FakeNotifier(),
+                                              hold: .armed(keys: ["right Control"]))
+
+        for request in [Request(cmd: .configure, scope: .otherApps),
+                        Request(cmd: .accessibility, prompt: true)] {
+            #expect(daemon.handle(.request(request)).kind == .rejected)
+        }
+        let snapshot = try #require(daemon.handle(.request(Self.status)).snapshot)
+        #expect(snapshot.setup == nil)
+        #expect(snapshot.hold == .armed(keys: ["right Control"]))
+        #expect(snapshot.faculties?.scope == .agtermOnly)
+    }
+
     // MARK: - no agterm (D31)
+
+    /// A choice of `scope`, behind a switch whose wiring is made of the fakes given.
+    static func fieldSetup(scope: SetupScope = .otherApps,
+                           access: FakeFocusedFieldAccess = FakeFocusedFieldAccess(),
+                           injector: any FieldInjector = FakeFieldInjector()) -> Daemon.Setup {
+        let adapters = FocusedFieldWiring.Adapters(access: { access },
+                                                   poster: { FakeEventPoster() },
+                                                   injector: { _, _, _ in injector })
+        let fieldSwitch = FocusedFieldSwitch(frontmost: FakeFrontmost(), feedback: FakeNotifier(),
+                                             adapters: adapters)
+        return Daemon.Setup(fieldSwitch: fieldSwitch, store: FakeSetupStore(),
+                            state: SetupState(scope: scope, offerSeen: scope == .otherApps))
+    }
 
     /// A daemon whose provider finds no agterm, as one started without `agtermctl` does.
     static func daemonWithoutAgterm(feedback: any Notifier,
                                     capture: FakeCapture = FakeCapture(),
-                                    fields: Daemon.FocusedFields? = nil) -> Daemon {
+                                    setup: Daemon.Setup? = nil,
+                                    hold: HoldSnapshot? = nil) -> Daemon {
         Daemon(
             configuration: Daemon.Configuration(
                 socketPath: "/tmp/unused-\(UUID().uuidString).sock",
@@ -2528,7 +2883,8 @@ struct DaemonTests {
             history: FakeHistory(),
             clock: FakeClock(),
             feedback: feedback,
-            fields: fields,
+            setup: setup,
+            hold: hold,
             terminal: { _ in nil }
         )
     }
@@ -2536,10 +2892,7 @@ struct DaemonTests {
     @Test("with no agterm, readiness blocks dictation only for a daemon without focused fields")
     func noAgtermReadinessFollowsTheOption() {
         let off = Self.daemonWithoutAgterm(feedback: FakeNotifier())
-        let on = Self.daemonWithoutAgterm(
-            feedback: FakeNotifier(),
-            fields: Daemon.FocusedFields(access: FakeFocusedFieldAccess(),
-                                         injector: FakeFieldInjector()))
+        let on = Self.daemonWithoutAgterm(feedback: FakeNotifier(), setup: Self.fieldSetup())
 
         for daemon in [off, on] {
             daemon.observe {
@@ -2558,15 +2911,14 @@ struct DaemonTests {
 
     @Test("with no agterm and no grant, a daemon with focused fields waits on Accessibility")
     func noAgtermNoGrantReadinessIsAPendingStep() throws {
-        let on = Self.daemonWithoutAgterm(
-            feedback: FakeNotifier(),
-            fields: Daemon.FocusedFields(access: FakeFocusedFieldAccess(),
-                                         injector: FakeFieldInjector()))
+        let on = Self.daemonWithoutAgterm(feedback: FakeNotifier(), setup: Self.fieldSetup())
         let status = Request(cmd: .status)
         on.observe {
             $0.microphone = true
             $0.models = true
             $0.terminal = false
+            // The opening's own check found the grant; this states that nobody has, yet.
+            $0.accessibility = nil
         }
         // Nobody has checked the grant yet, so nothing past `starting` is claimed.
         #expect(on.handle(.request(status)).snapshot?.readiness == .starting)
@@ -2620,7 +2972,7 @@ struct DaemonTests {
             history: history,
             clock: FakeClock(),
             feedback: feedback,
-            fields: Daemon.FocusedFields(access: FakeFocusedFieldAccess(), injector: injector),
+            setup: Self.fieldSetup(injector: injector),
             terminal: { _ in nil }
         )
 

@@ -14,13 +14,24 @@ import Foundation
 public enum FocusedFieldWiring {
     /// How each adapter the path needs is made.
     public struct Adapters: Sendable {
+        public typealias InjectorFactory = @Sendable (any FocusedFieldAccess, any EventPoster,
+                                                      any FrontmostApplication) -> any FieldInjector
+
         public var access: @Sendable () -> any FocusedFieldAccess
         public var poster: @Sendable () -> any EventPoster
+        /// Composes the injector out of the adapters just made. Constructs, and calls none of them.
+        /// The production value is `FocusedFieldInjector`'s own; a daemon test hands in one that
+        /// records deliveries, or a real injector with a fake pacer.
+        public var injector: InjectorFactory
 
         public init(access: @escaping @Sendable () -> any FocusedFieldAccess,
-                    poster: @escaping @Sendable () -> any EventPoster) {
+                    poster: @escaping @Sendable () -> any EventPoster,
+                    injector: @escaping InjectorFactory = { access, poster, frontmost in
+                        FocusedFieldInjector(access: access, poster: poster, frontmost: frontmost)
+                    }) {
             self.access = access
             self.poster = poster
+            self.injector = injector
         }
 
         public static let system = Adapters(access: { SystemFocusedFieldAccess() },
@@ -64,7 +75,8 @@ public final class FocusedFieldSwitch: @unchecked Sendable {
     private let frontmost: any FrontmostApplication
     private let feedback: any Notifier
     private let adapters: FocusedFieldWiring.Adapters
-    private let onAccessibility: @Sendable (Bool) -> Void
+    /// **Guarded by `reportLock`.** Who is told every accepted grant.
+    private var onAccessibility: @Sendable (Bool) -> Void
 
     /// Guards the gate, the generation, the wiring and the grant. Held while the wiring is built,
     /// which makes no check, and never across a trust check or the callback.
@@ -82,10 +94,11 @@ public final class FocusedFieldSwitch: @unchecked Sendable {
     /// `frontmost` is the process's one frontmost source, which the injector re-validates against
     /// (F8a). `feedback` is the daemon's own, since a field has no indicator and its refusals are
     /// sounds and notifications (D13). `onAccessibility` is told every accepted grant result, so
-    /// readiness follows the same facts as `grant`.
+    /// readiness follows the same facts as `grant`; the daemon replaces it with its own through
+    /// `tellAccessibility(to:)`, since it is built after the switch.
     public init(frontmost: any FrontmostApplication, feedback: any Notifier,
                 adapters: FocusedFieldWiring.Adapters = .system,
-                onAccessibility: @escaping @Sendable (Bool) -> Void) {
+                onAccessibility: @escaping @Sendable (Bool) -> Void = { _ in }) {
         self.frontmost = frontmost
         self.feedback = feedback
         self.adapters = adapters
@@ -107,6 +120,12 @@ public final class FocusedFieldSwitch: @unchecked Sendable {
         }
         guard let admitted else { return }
         report(trusted: admitted.wiring.access.isTrusted, generation: admitted.generation)
+    }
+
+    /// Replaces who is told every accepted grant. Serialised with the reports themselves, so a
+    /// report is delivered whole to the previous recipient or whole to this one.
+    public func tellAccessibility(to body: @escaping @Sendable (Bool) -> Void) {
+        reportLock.withLock { onAccessibility = body }
     }
 
     /// The wiring and the generation to report under, or `nil` while the gate is closed.
@@ -157,8 +176,7 @@ public final class FocusedFieldSwitch: @unchecked Sendable {
     /// Under `lock`, once. The factories construct; none of them checks the grant or reads a field.
     private func build() -> FocusedFieldWiring.Wired {
         let access = adapters.access()
-        let injector = FocusedFieldInjector(access: access, poster: adapters.poster(),
-                                            frontmost: frontmost)
+        let injector = adapters.injector(access, adapters.poster(), frontmost)
         return FocusedFieldWiring.Wired(
             frontmost: frontmost,
             access: access,

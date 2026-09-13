@@ -618,37 +618,46 @@ way.
 - Modify: `Sources/Dicta/main.swift` (the new initialiser)
 - Modify: `Sources/DictaTestRunner/DaemonTests.swift`, `Fakes.swift`, `docs/manual-checklist.md`
 
-- [ ] write failing tests: `configure(otherApps)` persists through a fake store, opens the switch,
+- [x] write failing tests: `configure(otherApps)` persists through a fake store, opens the switch,
   publishes the scope, and the next field start is accepted — no restart; the order persist → gate →
   publish is observed by the fake store and switch
-- [ ] write failing tests: a failed write is `rejected` with the reason, scope and gate unchanged, and
+- [x] write failing tests: a failed write is `rejected` with the reason, scope and gate unchanged, and
   the published snapshot carries `saveError`; a following successful `configure` clears it
-- [ ] write failing tests: `configure` over an unreadable file goes through `replace`; the full
+- [x] write failing tests: `configure` over an unreadable file goes through `replace`; the full
   sequence unreadable (and newer schema) → a `configure` whose replace fails → the published
   snapshot carries `loadProblem` alongside `saveError` → a retry that goes through `replace` and
   succeeds → a published snapshot with neither field set (the screens for these snapshots are
   Task 11's, where `SetupModel` exists)
-- [ ] write failing tests: `configure(agtermOnly)` while a field attempt records — the attempt still
+- [x] write failing tests: `configure(agtermOnly)` while a field attempt records — the attempt still
   delivers through its handle and the built injector, and its final validation still checks the
   grant; the NEXT field start is refused with zero accessibility calls and the new wording
-- [ ] write failing tests: `configure(offerSeen: true)` alone persists and publishes without touching
+- [x] write failing tests: `configure(offerSeen: true)` alone persists and publishes without touching
   the gate; `scope: undecided` is refused
-- [ ] write failing tests: `accessibility` under `undecided`/`agtermOnly` is refused with zero calls
+- [x] write failing tests: `accessibility` under `undecided`/`agtermOnly` is refused with zero calls
   on the counting access; under `otherApps` without `prompt` it makes one `isTrusted` and no
   `requestTrust`; with `prompt` it makes one `requestTrust` followed by one `isTrusted`, and the
   published grant is that `isTrusted`, not the fact that it asked
-- [ ] write failing tests: `beginField`'s `isTrusted` result, `true` and `false`, reaches both the
+- [x] write failing tests: `beginField`'s `isTrusted` result, `true` and `false`, reaches both the
   switch's last known grant and published readiness
-- [ ] rewrite the `optionOff` case of "a field start is refused before capture opens, for every
+- [x] rewrite the `optionOff` case of "a field start is refused before capture opens, for every
   reason it can be refused" as the gate-closed case; its `reasonMentions` (`DaemonTests.swift:2117`)
   names the new wording, not `--focused-fields`; re-cite row 14 if the case is renamed
-- [ ] implement: `Daemon` takes the switch, a store seam and the bootstrap state; `beginField` reads
+- [x] implement: `Daemon` takes the switch, a store seam and the bootstrap state; `beginField` reads
   `switch.current` once; `deliver` uses `switch.built`; `snapshot()` fills `setup`, `faculties`
   and the `hold` it was constructed with (`main.swift` passes `nil` until Task 9); remove the Task 4
   refusal; keep `fieldHandle(for:)`
-- [ ] re-cite the `configure`-cannot-write, `accessibility`-outside-`otherApps` and
+- [x] re-cite the `configure`-cannot-write, `accessibility`-outside-`otherApps` and
   `configure`-during-a-dictation §7 rows to these tests
-- [ ] run tests — must pass before Task 8
+- [x] ➕ the switch's `Adapters` gained an `injector` factory (default: `FocusedFieldInjector`), so a
+  daemon test's wiring is built by the switch out of fakes; `tellAccessibility(to:)` replaces the
+  switch's grant recipient, and the daemon installs itself there and then opens the switch for
+  `other-apps`, so the opening's check reaches readiness like any other. `Daemon.Setup` is
+  `fieldSwitch`, `store` (`SetupPersisting`, which `SetupStore` adopts) and `state`; `setup` defaults
+  to `nil`, a daemon that is agterm only and refuses both verbs. A snapshot masks the grant outside
+  `other-apps`, so a report landing around a close cannot claim a grant nobody may look at. Until
+  Task 9, `main.swift` hands the daemon `SetupStore(url: Paths.current.setup)` with a state still
+  derived from the flag, not bootstrapped
+- [x] run tests — must pass before Task 8
 
 ### Task 8: the hold trigger reads the gate at the press and at the threshold, and stays silent
 
