@@ -245,29 +245,22 @@ public final class StatusViewModel: ObservableObject {
         let world = world
         let url = recordURL
         world.offMain("record") {
-            let result: Result<[DictationRow], ReadFailure>
+            // What the read does to the drawer, decided here and applied on the main actor: the
+            // error is reduced to the sentence the drawer shows, so only that crosses.
+            let next: @Sendable (RecentState) -> RecentState
             do {
-                let entries = try world.readRecent(url, Self.recentCount)
-                result = .success(DictationRow.rows(from: entries))
+                let rows = DictationRow.rows(from: try world.readRecent(url, Self.recentCount))
+                next = { $0.afterRead(rows) }
             } catch {
-                result = .failure(ReadFailure(reason: Self.readFailureReason(error)))
+                let reason = Self.readFailureReason(error)
+                next = { $0.afterFailure(reason: reason) }
             }
             world.toMain { [weak self] in
                 guard let self, read > self.readApplied else { return }
                 self.readApplied = read
-                switch result {
-                case let .success(rows):
-                    self.recentState = self.recentState.afterRead(rows)
-                case let .failure(failure):
-                    self.recentState = self.recentState.afterFailure(reason: failure.reason)
-                }
+                self.recentState = next(self.recentState)
             }
         }
-    }
-
-    /// A read's error, reduced to the sentence the drawer shows, so it can cross to the main actor.
-    private struct ReadFailure: Error {
-        var reason: String
     }
 
     /// What a failed read says. `cannotRead` gives its reason without the path: the path is always

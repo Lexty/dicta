@@ -120,6 +120,41 @@ struct StatusViewModelTests {
         #expect(fake.with { $0.watchedPaths } == [Self.socket, Self.socket])
     }
 
+    @Test("an event resets the backoff, and a leftover after while connected opens nothing")
+    func eventResetsTheBackoff() {
+        let fake = FakeMenuWorld()
+        let model = Self.model(fake)
+        let crashed = ControlClient.ClientError.daemonCrashed(path: Self.socket)
+        fake.script([], then: .throwing(crashed))
+        model.start()
+        fake.settle()
+        fake.script([], then: .throwing(crashed))
+        fake.fireAfter()
+        fake.settle()
+        #expect(fake.pendingAfterDelays == [Backoff.delay(afterFailures: 1)])
+
+        // Connected once, then lost: the wait starts over from the first delay, not the longest.
+        fake.script([.update(Self.idle)], then: .throwing(crashed))
+        fake.fireAfter()
+        fake.settle()
+        #expect(model.model.link == .failed(crashed.description))
+        #expect(fake.pendingAfterDelays == [Backoff.delay(afterFailures: 0)])
+
+        // A failure landing before the update it followed leaves a reconnect pending over a live
+        // link. Its delay elapsing must not open a second stream.
+        fake.script([.update(Self.idle)], then: .throwing(crashed))
+        fake.fireAfter()
+        fake.runOffMain("watch")
+        #expect(fake.heldMainHops == 2)
+        fake.releaseMain(at: 1)
+        fake.releaseMain(at: 0)
+        #expect(model.model.link == .connected)
+        #expect(fake.pendingAfterDelays.count == 1)
+        fake.fireAfter()
+        #expect(!fake.pendingOffMain.contains("watch"))
+        #expect(fake.with { $0.watchedPaths }.count == 4)
+    }
+
     // MARK: - the ticker
 
     @Test("with the panel closed, a recording schedules the ticker and an end cancels it")
@@ -158,6 +193,29 @@ struct StatusViewModelTests {
         #expect(fake.runningTickers == 0)
         // The reconnect is still scheduled: stopping the second hand stops nothing else.
         #expect(fake.pendingAfterDelays == [Backoff.delay(afterFailures: 0)])
+    }
+
+    @Test("with the panel closed, processing stops the ticker and warming never starts it")
+    func onlyRecordingRunsTheTicker() {
+        let fake = FakeMenuWorld()
+        let model = Self.model(fake)
+        fake.script([.update(StatusSnapshot(state: .warming)), .update(Self.recording),
+                     .update(StatusSnapshot(state: .processing)), .update(Self.idle)],
+                    then: .open)
+        model.start()
+        fake.runOffMain("watch")
+        fake.releaseMain(at: 0)
+        #expect(fake.with { $0.tickers }.isEmpty)
+        fake.releaseMain(at: 0)
+        #expect(fake.runningTickers == 1)
+        // The ordinary way a clock stops: the microphone closes, and the link stays up.
+        fake.releaseMain(at: 0)
+        #expect(model.model.snapshot?.state == .processing)
+        #expect(fake.runningTickers == 0)
+        fake.settle()
+        #expect(model.model.link == .connected)
+        #expect(fake.runningTickers == 0)
+        #expect(fake.with { $0.tickers.count } == 1)
     }
 
     @Test("with the panel open, the ticker survives an end, a disconnect and a restart")
@@ -363,6 +421,30 @@ struct StatusViewModelTests {
         #expect(fake.with { $0.reads }.isEmpty)
     }
 
+    @Test("an attempt ending re-reads the record, and an idle update that ends nothing does not")
+    func attemptEndingRereads() {
+        let fake = FakeMenuWorld()
+        let model = Self.model(fake)
+        fake.script([.update(Self.idle), .update(Self.idle), .update(Self.recording),
+                     .update(Self.idle)], then: .open)
+        model.start()
+        fake.runOffMain()
+        #expect(fake.with { $0.readsAsked } == [Self.record])
+        #expect(fake.heldMainHops == 5)
+        // The first snapshot has no state before it, and the second follows an idle one.
+        fake.releaseMain(at: 0)
+        fake.releaseMain(at: 0)
+        #expect(fake.pendingOffMain.isEmpty)
+        fake.releaseMain(at: 0)
+        #expect(fake.pendingOffMain.isEmpty)
+        // Idle after a recording: the entry is already on disk, so the drawer reads it.
+        fake.releaseMain(at: 0)
+        #expect(fake.pendingOffMain == ["record"])
+        fake.settle()
+        #expect(fake.with { $0.readsAsked } == [Self.record, Self.record])
+        #expect(model.model.snapshot == Self.idle)
+    }
+
     // MARK: - commands
 
     @Test("stopAndType and abort send requests naming the live attempt")
@@ -383,6 +465,20 @@ struct StatusViewModelTests {
         #expect(fake.with { $0.sentPaths } == [Self.socket, Self.socket])
         // Each command's completion re-reads the record.
         #expect(fake.with { $0.readsAsked } == [Self.record, Self.record])
+    }
+
+    @Test("a command that fails to reach the daemon still re-reads the record")
+    func failedCommandStillRereads() {
+        let fake = FakeMenuWorld()
+        let model = Self.connected(fake, to: Self.recording)
+        fake.with {
+            $0.readsAsked = []
+            $0.sendErrors = [ControlClient.ClientError.daemonNotRunning(path: Self.socket)]
+        }
+        model.stopAndType()
+        fake.settle()
+        #expect(fake.with { $0.sent } == [Request(cmd: .stop, mode: .clean, attempt: 7)])
+        #expect(fake.with { $0.readsAsked } == [Self.record])
     }
 
     // MARK: - the effects
@@ -573,6 +669,19 @@ struct StatusViewModelTests {
             == [SetupModelTests.configureOtherApps, SetupModelTests.configureAgtermOnly])
     }
 
+    @Test("a click after one that failed to send still arrives")
+    func clickAfterAFailedSendArrives() {
+        let fake = FakeMenuWorld()
+        let model = Self.connected(fake, to: Self.pending)
+        fake.with {
+            $0.sendErrors = [ControlClient.ClientError.daemonNotRunning(path: Self.socket)]
+        }
+        model.setupClicked(.setUpDictation)
+        model.setupClicked(.useOnlyWithAgterm)
+        #expect(Self.sent(fake, count: 2)
+            == [SetupModelTests.configureOtherApps, SetupModelTests.configureAgtermOnly])
+    }
+
     @Test("Allow Access flips accessibilityRequested, and the row then opens the pane")
     func allowAccessFlipsTheRequest() {
         let fake = FakeMenuWorld()
@@ -654,6 +763,20 @@ struct StatusViewModelTests {
         #expect(!fake.pendingOffMain.contains("tree"))
         #expect(fake.with { $0.treesAsked }.isEmpty)
         #expect(model.targetCaption == Self.recording.target?.caption(name: nil))
+    }
+
+    @Test("a focused-field target starts no name lookup and is captioned by its application")
+    func focusedFieldNeedsNoLookup() {
+        let fake = FakeMenuWorld()
+        fake.with { $0.agterm = "/opt/agtermctl" }
+        let field = Target.focusedField(
+            FieldTarget(bundleID: "com.microsoft.VSCode", appName: "Code", pid: 4242))
+        let model = Self.connected(
+            fake, to: StatusSnapshot(state: .recording, attempt: 8, target: field))
+        model.panelAppeared()
+        #expect(!fake.pendingOffMain.contains("tree"))
+        #expect(fake.with { $0.treesAsked }.isEmpty)
+        #expect(model.targetCaption == "Code")
     }
 
     @Test("a located agterm is asked once per session, and names the caption")

@@ -172,15 +172,11 @@ struct MenuBundleTests {
     /// library holding its logic, read together, because a rule about what source may exist in the
     /// menu is not kept by moving the source one module over.
     static func menuSources() throws -> String {
-        var paths: [String] = []
-        for directory in ["Sources/DictaMenu", "Sources/DictaMenuKit"] {
-            let url = BundleTests.repositoryRoot.appendingPathComponent(directory)
-            paths += try FileManager.default.contentsOfDirectory(atPath: url.path)
-                .filter { $0.hasSuffix(".swift") }.sorted().map { "\(directory)/\($0)" }
-        }
-        #expect(paths.contains("Sources/DictaMenu/SetupWindow.swift"))
-        #expect(paths.contains("Sources/DictaMenuKit/MenuWorld.swift"))
-        return try paths.map { try BundleTests.text(at: $0) }.joined(separator: "\n")
+        let executable = try sourceFiles(in: "Sources/DictaMenu")
+        let library = try sourceFiles(in: "Sources/DictaMenuKit")
+        #expect(executable.map(\.name).contains("SetupWindow.swift"))
+        #expect(library.map(\.name).contains("MenuWorld.swift"))
+        return (executable + library).map(\.text).joined(separator: "\n")
     }
 
     @Test("the menu sends configure and accessibility only as SetupModel decides")

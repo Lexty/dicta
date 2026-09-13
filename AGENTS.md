@@ -124,6 +124,18 @@ and revoke seen from the window, the choice reversed from the window alone, the 
 never taken mid-session, an unreadable `setup.json`, and one measurement (a second prompt while the
 first dialog is open).
 
+**The menu's logic is testable, and the drawer marks only the exceptions — `docs/plans/completed/20260913-dicta-menu-adapter-and-quiet-markers.md`,
+all eleven tasks.** `StatusViewModel` moved into `DictaMenuKit`, a library over `DictaCore`,
+`DictaIPC` and `DictaRecord` with no SwiftUI, AppKit or `DictaRuntime` in it (held by
+`MenuKitBoundaryTests`); every effect it has goes through `MenuWorld`, which the test runner fakes.
+Three defects were fixed, each by a test watched failing first: the second hand outliving the
+connection, Recent Dictations rolling back to an older read, and a failed record read drawn as
+"Nothing yet." (now `RecentState`). The ordinary outcomes lost their dot, and the exceptions carry
+`AttemptOutcome.marker`. `docs/ui-vocabulary.md` carries acta's amendments and dicta's decisions of
+2026-09-13. What only a person can score is **H44–H47**: the markers and their two symbol names on
+the built panel, an unreadable record, the menu-bar clock stopping with the connection, and the
+setup window's doors through its presenter.
+
 A plan is written in `docs/plans/` and moved to `docs/plans/completed/` when it finishes, where it
 stays as the record of the run that built it (decided by the user on 2026-09-13).
 
@@ -239,7 +251,7 @@ testing.linker` to the `DictaTests` target — otherwise the failing test cannot
   linked** — SwiftPM finds the module on its own — and then died in dyld on
   `@rpath/Testing.framework` before reaching a single assertion. Silent at build time, fatal at run
   time: D18's shape exactly, a gate that looks like it ran and did not. `bash Scripts/test.sh` is
-  scored under both by setting `DEVELOPER_DIR`, and both give the same run — 934 tests in 52
+  scored under both by setting `DEVELOPER_DIR`, and both give the same run — 940 tests in 52
   suites, re-scored 2026-09-13.
 - **`xctest` now exists** at `/Applications/Xcode.app/Contents/Developer/usr/bin/xctest`, so D18's
   cause is absent while Xcode is selected. This changes nothing: `Tests/DictaTests` is still denied
@@ -491,8 +503,9 @@ testing.linker` to the `DictaTests` target — otherwise the failing test cannot
   replacement engine, the record schema, the wire types, `Paths`. Anything worth asserting is here,
   **including everything the menu-bar UI decides** — `Presentation` (which glyph, which tint, which
   sentence), `MenuModel` (which banner, whether the daemon is gone rather than idle, what the
-  menu-bar item draws), `DictationRow` (what a row shows and what may be copied), `SessionNames`,
-  `AgtermTool`, `SetupModel` and `FirstSnapshotLatch` (every decision the setup window makes), and
+  menu-bar item draws), `DictationRow` (what a row shows and what may be copied) and `RecentState`
+  (whether the drawer is unread, read, or failed with its last good rows), `OutcomeMarker` (which
+  outcomes a row marks, and with which symbol), `SessionNames`, `AgtermTool`, `SetupModel` and `FirstSnapshotLatch` (every decision the setup window makes), and
   `SetupState`/`SetupMigration`/`StartupLines` (what `setup.json` means and what start-up logs).
   That is not UI in the wrong module: `DictaMenu` is an executable target and SwiftPM **cannot
   import one**, so a decision written there would be unreachable from the test runner. The SwiftUI
@@ -1230,6 +1243,13 @@ and from a `--focused-fields` install, with the log's seed and ignored lines (H3
 followed from the window (H38); the choice reversed from the window alone (H39); the armed keys named
 (H40); focus never taken mid-session (H41); an unreadable `setup.json` (H42); and whether a second
 prompt while the first dialog is open shows a second dialog (H43).
+
+The menu adapter and quiet markers add **H44–H47**, also unscored: the second line marking the
+exceptions and leaving the ordinary quiet, with the two symbol names judged on the built panel
+(H44); an unreadable record said to be unreadable, with the last good rows kept (H45); the menu-bar
+clock and the idle wake-ups stopping when the connection drops with the panel closed, and the label
+observing the model on its own (H46); and the setup window opening through its presenter at exactly
+the doors it had (H47).
 
 **`docs/manual-checklist.md` is the list, and it is complete** — every item states the observation
 that counts as a pass, so two people scoring it agree. In short: that the chords fire and

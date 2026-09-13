@@ -18,14 +18,18 @@ struct MenuKitBoundaryTests {
         "Foundation", "Combine", "DictaCore", "DictaIPC", "DictaRecord",
     ]
 
-    /// Every module a Swift source imports, attributes and `import struct M.T` forms included.
+    /// Every module a Swift source imports, attributes, access levels and `import struct M.T` forms
+    /// included. Swift 6 accepts `internal import AppKit`, and a reader that skipped it would pass
+    /// exactly the import this suite exists to refuse.
     static func imports(in source: String) -> [String] {
         let kinds: Set<Substring> = ["struct", "class", "enum", "protocol", "func", "var", "let",
                                      "typealias"]
+        let accessLevels: Set<Substring> = ["public", "package", "internal", "fileprivate",
+                                            "private"]
         return source.split(separator: "\n").compactMap { line in
             let words = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
             guard let index = words.firstIndex(of: "import"),
-                  words[..<index].allSatisfy({ $0.hasPrefix("@") }),
+                  words[..<index].allSatisfy({ $0.hasPrefix("@") || accessLevels.contains($0) }),
                   index + 1 < words.count else { return nil }
             var module = words[index + 1]
             if kinds.contains(module), index + 2 < words.count { module = words[index + 2] }
@@ -33,28 +37,27 @@ struct MenuKitBoundaryTests {
         }
     }
 
-    @Test("the import reader sees plain, attributed and scoped imports, and nothing else")
+    @Test("the import reader sees plain, attributed, access-level and scoped imports only")
     func importReader() {
         let source = """
             import Foundation
             @preconcurrency import Combine
             import struct SwiftUI.Color
-            // import AppKit
+            internal import AppKit
+            @preconcurrency public import AVKit
+            // import CoreML
             let text = "import AVFoundation"
             """
-        #expect(Self.imports(in: source) == ["Foundation", "Combine", "SwiftUI"])
+        #expect(Self.imports(in: source) == ["Foundation", "Combine", "SwiftUI", "AppKit", "AVKit"])
     }
 
     @Test("DictaMenuKit imports only Foundation, Combine, DictaCore, DictaIPC and DictaRecord")
     func libraryImportsStayInsideTheBudget() throws {
-        let directory = BundleTests.repositoryRoot.appendingPathComponent("Sources/DictaMenuKit")
-        let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
-            .filter { $0.hasSuffix(".swift") }.sorted()
-        #expect(names.contains("MenuWorld.swift"))
-        for name in names {
-            let source = try BundleTests.text(at: "Sources/DictaMenuKit/\(name)")
-            let outside = Self.imports(in: source).filter { !Self.allowedImports.contains($0) }
-            #expect(outside.isEmpty, "\(name) imports \(outside)")
+        let files = try MenuBundleTests.sourceFiles(in: "Sources/DictaMenuKit")
+        #expect(files.map(\.name).contains("MenuWorld.swift"))
+        for file in files {
+            let outside = Self.imports(in: file.text).filter { !Self.allowedImports.contains($0) }
+            #expect(outside.isEmpty, "\(file.name) imports \(outside)")
         }
     }
 

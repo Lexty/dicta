@@ -1,6 +1,6 @@
 ---
 worth: later
-where: Sources/DictaMenu/DictaMenuApp.swift:92
+where: Sources/DictaMenu/DictaMenuApp.swift:108
 added: 2026-09-12
 ---
 # the panel's layout has not been judged against acta's quiet redesign

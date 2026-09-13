@@ -56,6 +56,9 @@ final class FakeMenuWorld: @unchecked Sendable {
         var dropNextHop = false
         var sent: [Request] = []
         var sentPaths: [String] = []
+        /// Errors for `send` to throw, in order, after recording the request; with none left, it
+        /// succeeds.
+        var sendErrors: [any Error] = []
         /// Answers for `readRecent`, in order; with none left, the record is empty.
         var reads: [Result<[RecordEntry], any Error>] = []
         var readsAsked: [URL] = []
@@ -119,10 +122,12 @@ final class FakeMenuWorld: @unchecked Sendable {
                 }
             },
             send: { [self] request, path in
-                with {
-                    $0.sent.append(request)
-                    $0.sentPaths.append(path)
+                let error = with { state -> (any Error)? in
+                    state.sent.append(request)
+                    state.sentPaths.append(path)
+                    return state.sendErrors.isEmpty ? nil : state.sendErrors.removeFirst()
                 }
+                if let error { throw error }
             },
             readRecent: { [self] url, _ in
                 let answer = with { state -> Result<[RecordEntry], any Error> in
