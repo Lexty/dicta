@@ -193,7 +193,7 @@ struct BundleTests {
         // A bare .build/release/Dicta would have its microphone grant attributed to whatever
         // launched it (D11) — the bundle would then exist and be bypassed, which is worse than not
         // having built one.
-        #expect(arguments == ["__DICTA_APP__/Contents/MacOS/Dicta"])
+        #expect(arguments == ["__DICTA_APP__/Contents/MacOS/Dicta", "__DICTA_FOCUSED_FIELDS__"])
     }
 
     @Test("every placeholder in the template is one install.sh substitutes")
@@ -202,7 +202,7 @@ struct BundleTests {
         // placeholder nobody replaces would be a literal path in the user's home directory, and
         // the daemon's stderr would vanish into it.
         let template = try Self.text(at: "Scripts/launchagent.plist")
-        let installer = try Self.text(at: "Scripts/install.sh")
+        let renderer = try Self.text(at: "Scripts/render-agent.sh")
         var found: Set<String> = []
         var scanner = template[...]
         while let start = scanner.range(of: "__") {
@@ -211,11 +211,88 @@ struct BundleTests {
             found.insert("__" + rest[..<end.lowerBound] + "__")
             scanner = rest[end.upperBound...]
         }
-        #expect(found == ["__DICTA_APP__", "__DICTA_LOG__"])
-        for placeholder in found {
-            #expect(installer.contains("s|\(placeholder)|"),
-                    "install.sh never replaces \(placeholder)")
+        #expect(found == ["__DICTA_APP__", "__DICTA_LOG__", "__DICTA_FOCUSED_FIELDS__"])
+        for placeholder in ["__DICTA_APP__", "__DICTA_LOG__"] {
+            #expect(renderer.contains("s|\(placeholder)|"),
+                    "render-agent.sh never replaces \(placeholder)")
         }
+        // The option's line is replaced WHOLE or deleted, never substituted inside: a value spliced
+        // into the string would leave `<string></string>` behind when the option is off.
+        #expect(renderer.contains(
+            "s|<string>__DICTA_FOCUSED_FIELDS__</string>|<string>--focused-fields</string>|"))
+        #expect(renderer.contains("/<string>__DICTA_FOCUSED_FIELDS__<\\/string>/d"))
+    }
+
+    /// Runs `executable` with `arguments` from the repository root, and answers its exit status and
+    /// standard output.
+    static func run(_ executable: String, _ arguments: [String]) throws -> (Int32, Data) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.currentDirectoryURL = repositoryRoot
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return (process.terminationStatus, data)
+    }
+
+    @Test("the agent rendered for both focused-field settings lints, with no empty argument",
+          arguments: [false, true])
+    func renderedAgentLints(focusedFields: Bool) throws {
+        // A home directory with a space, a `|` and a backslash: the characters sed's replacement
+        // side and a shell would each mangle differently.
+        let app = #"/Users/some one|x\y/Applications/Dicta.app"#
+        let log = "/Users/some one/Library/Logs/dicta.log"
+        let script = Self.repositoryRoot.appendingPathComponent("Scripts/render-agent.sh").path
+        let (status, rendered) = try Self.run(
+            "/bin/bash", [script, app, log] + (focusedFields ? ["--focused-fields"] : []))
+        #expect(status == 0)
+
+        let file = URL(fileURLWithPath: "/tmp")
+            .appendingPathComponent("dicta-agent-\(UUID().uuidString.prefix(8)).plist")
+        try rendered.write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let (lint, _) = try Self.run("/usr/bin/plutil", ["-lint", file.path])
+        #expect(lint == 0, "plutil -lint rejected the agent with focusedFields=\(focusedFields)")
+
+        let text = try #require(String(data: rendered, encoding: .utf8))
+        #expect(!text.contains("<string></string>"))
+        #expect(!text.contains("__DICTA_"))
+        let parsed = try PropertyListSerialization.propertyList(from: rendered, format: nil)
+        let agent = try #require(parsed as? [String: Any])
+        let arguments = try #require(agent["ProgramArguments"] as? [String])
+        #expect(arguments == ["\(app)/Contents/MacOS/Dicta"]
+            + (focusedFields ? ["--focused-fields"] : []))
+        #expect(agent["StandardErrorPath"] as? String == log)
+    }
+
+    @Test("install.sh takes --focused-fields and prints agterm's keymap step only with agtermctl")
+    func installerFocusedFields() throws {
+        let installer = try Self.text(at: "Scripts/install.sh")
+        #expect(installer.contains("--focused-fields) FOCUSED_FIELDS=1 ;;"))
+        let render = #"bash "$ROOT/Scripts/render-agent.sh" "$APP_DEST" "$LOG""#
+        #expect(installer.contains(render + #" --focused-fields > "$AGENT""#))
+        #expect(installer.contains(render + #" > "$AGENT""#))
+        #expect(installer.contains("focused fields: turned OFF"))
+        // Unrecognised arguments are refused rather than ignored: a typo of the flag must not
+        // install an agent with the option silently off.
+        #expect(installer.contains("install: unknown option $argument"))
+
+        // The keymap instruction sits inside the one branch that found agtermctl.
+        let guardLine = try #require(installer.range(of: "if [ -n \"$AGTERMCTL\" ]; then"))
+        let step = #"echo "  $STEP. add docs/keymap.snippet.conf"#
+        let keymap = try #require(installer.range(of: step))
+        let closing = try #require(installer.range(
+            of: "\nfi\n", range: guardLine.upperBound..<installer.endIndex))
+        #expect(guardLine.upperBound <= keymap.lowerBound)
+        #expect(keymap.upperBound <= closing.lowerBound)
+        let printed = installer.split(separator: "\n").filter {
+            $0.contains("echo") && $0.contains("keymap.snippet.conf")
+        }
+        #expect(printed.count == 1)
     }
 
     @Test("install.sh installs the bundle and the client, and no bare daemon executable")

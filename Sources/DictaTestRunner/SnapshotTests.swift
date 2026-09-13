@@ -39,6 +39,37 @@ struct SnapshotTests {
             == .terminalMissing)
     }
 
+    @Test("a missing agterm blocks dictation only with focused fields off")
+    func missingAgtermBlocksOnlyWithTheOptionOff() {
+        // D31: with the option on, every other application's focused field still takes the words,
+        // so the same fact that is a fault without it is a notice with it.
+        let off = Faculties(microphone: true, models: true, terminal: false)
+        let on = Faculties(microphone: true, models: true, terminal: false, focusedFields: true)
+        #expect(off.readiness == .terminalMissing)
+        #expect(off.readiness.blocksDictation)
+        #expect(on.readiness == .fieldsOnly)
+        #expect(!on.readiness.blocksDictation)
+        // agterm found is ready either way, and the option changes nothing about the faults ahead
+        // of it in the pipeline or about start-up.
+        #expect(Faculties(microphone: true, models: true, terminal: true, focusedFields: true)
+            .readiness == .ready)
+        #expect(Faculties(microphone: false, models: true, terminal: false, focusedFields: true)
+            .readiness == .microphoneDenied)
+        #expect(Faculties(microphone: nil, models: true, terminal: false, focusedFields: true)
+            .readiness == .starting)
+    }
+
+    @Test("a missing agterm with focused fields on is drawn as a working daemon, not a fault")
+    func fieldsOnlyIsNotAFault() {
+        let presentation = Presentation.of(StatusSnapshot(state: .idle, readiness: .fieldsOnly))
+        #expect(presentation.glyph == "mic")
+        #expect(presentation.tint == .quiet)
+        #expect(presentation.status == "Ready, without agterm")
+        // The red triangle stays the option-off verdict's.
+        #expect(Presentation.of(StatusSnapshot(state: .idle, readiness: .terminalMissing)).tint
+            == .red)
+    }
+
     @Test("a fault is reported even while something else is still unknown")
     func faultsOutrankStarting() {
         // The user can act on a denied microphone NOW; by the time they come back from System
@@ -55,6 +86,10 @@ struct SnapshotTests {
             case .ready, .starting:
                 #expect(!readiness.blocksDictation)
                 #expect(readiness.message == nil)
+            case .fieldsOnly:
+                // A notice: it does not block, and it still says where the words cannot go.
+                #expect(!readiness.blocksDictation)
+                #expect(readiness.message?.contains("agtermctl") == true)
             case .microphoneDenied, .modelsMissing, .terminalMissing:
                 #expect(readiness.blocksDictation)
                 // Every banner names the thing to do. One that only reports gets dismissed.

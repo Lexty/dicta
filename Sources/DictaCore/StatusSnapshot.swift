@@ -30,12 +30,18 @@ public enum Readiness: String, Codable, Sendable, CaseIterable {
     case modelsMissing = "models-missing"
     /// `agtermctl` could not be found, so nothing could be delivered even if it were recognised.
     /// Last in precedence: it is the only one that still lets the user's words reach the record.
+    /// Only ever the verdict with `--focused-fields` off; with it on, the fact is `fieldsOnly`.
     case terminalMissing = "terminal-missing"
+    /// `agtermctl` could not be found, and `--focused-fields` is on (D31): agterm chords are
+    /// refused, and every other application's focused field still takes a dictation. A notice
+    /// rather than a fault -- a machine without agterm is the configuration this option exists
+    /// for, and a red banner on it every morning would be a banner that stops being read.
+    case fieldsOnly = "fields-only"
 
     /// Whether a chord pressed now would be refused for this reason.
     public var blocksDictation: Bool {
         switch self {
-        case .ready, .starting: false
+        case .ready, .starting, .fieldsOnly: false
         case .microphoneDenied, .modelsMissing, .terminalMissing: true
         }
     }
@@ -51,6 +57,9 @@ public enum Readiness: String, Codable, Sendable, CaseIterable {
             "the recognition models are not downloaded — run Dicta --fetch-models once"
         case .terminalMissing:
             "agtermctl could not be found, so dictated text has nowhere to go"
+        case .fieldsOnly:
+            "agtermctl could not be found — dicta types into focused fields, and agterm chords "
+                + "are refused"
         }
     }
 }
@@ -72,11 +81,17 @@ public struct Faculties: Codable, Sendable, Equatable {
     public var models: Bool?
     /// Whether `agtermctl` was found. `nil` before the first look.
     public var terminal: Bool?
+    /// Whether the daemon runs with `--focused-fields` (D31), which is what decides whether a
+    /// missing `agtermctl` leaves anywhere for text to go. Not a faculty that can be unknown: it is
+    /// the command line, fixed before anything else is looked at.
+    public var focusedFields: Bool
 
-    public init(microphone: Bool? = nil, models: Bool? = nil, terminal: Bool? = nil) {
+    public init(microphone: Bool? = nil, models: Bool? = nil, terminal: Bool? = nil,
+                focusedFields: Bool = false) {
         self.microphone = microphone
         self.models = models
         self.terminal = terminal
+        self.focusedFields = focusedFields
     }
 
     /// The first reason a dictation would fail, in pipeline order: heard, then recognised, then
@@ -84,11 +99,14 @@ public struct Faculties: Codable, Sendable, Equatable {
     public var readiness: Readiness {
         if microphone == false { return .microphoneDenied }
         if models == false { return .modelsMissing }
-        if terminal == false { return .terminalMissing }
+        if terminal == false, !focusedFields { return .terminalMissing }
         // Anything still unknown means start-up, not health. Checked AFTER the failures so that a
         // denied microphone is reported even while the models are still loading — the user can act
         // on it now, and by the time they come back the rest will have settled.
         if microphone == nil || models == nil || terminal == nil { return .starting }
+        // After `starting`, unlike the faults: it is a notice about a working daemon, and a notice
+        // that pre-empted "Starting…" would claim a readiness nobody has established yet.
+        if terminal == false { return .fieldsOnly }
         return .ready
     }
 }

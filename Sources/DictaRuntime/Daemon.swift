@@ -342,6 +342,9 @@ public final class Daemon: @unchecked Sendable {
         self.provider = provider
         self.feedback = feedback
         self.fields = fields
+        // Known at construction, unlike the three faculties: whether a missing `agtermctl` blocks
+        // dictation or is only a notice is decided by the option, and the option is this argument.
+        faculties = Faculties(focusedFields: fields != nil)
         terminal = provider(nil)
         machine = StateMachine(nextID: Self.firstUnusedID(in: history))
     }
@@ -435,8 +438,12 @@ public final class Daemon: @unchecked Sendable {
         // instance answers the default socket. Clearing there after a crash in a second agterm
         // instance reports success and leaves the red "listening" light burning on a session that
         // is not recording, which is the very row this exists to close.
-        // With no agterm there is no light to put out, and nothing to ask.
-        provider(parked.agtermSocket)?.notifier.clearIndicator(for: parked.target)
+        // With no agterm there is no light to put out, and nothing to ask. Nor for a focused field,
+        // which never had one: it is not handed to agterm, whose own notifier would ignore it, and
+        // no agterm is built to ignore it (D31).
+        if case .agterm = parked.target {
+            provider(parked.agtermSocket)?.notifier.clearIndicator(for: parked.target)
+        }
         try? FileManager.default.removeItem(at: configuration.activeTargetFile)
     }
 

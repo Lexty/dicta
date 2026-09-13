@@ -17,82 +17,19 @@ import Foundation
 // and when they cannot be, that is said here, loudly, rather than discovered by a chord that has
 // already thrown away an utterance.
 
-let usage = """
-usage: Dicta [options]
-
-options:
-  --control <path>         dicta's own control socket (defaults to the one under
-                           ~/Library/Application Support/dev.personal.dicta)
-  --agterm-socket <path>   agterm's control socket, when it is not the default one
-  --fetch-models           download the recognition models, then exit
-  --no-hold                do not arm push-to-talk; the keymap chords still work
-  --hold-key <name>        arm push-to-talk on this key instead of the default pair
-                           (\(HoldKey.everyName)); repeat the flag to arm several
-  --help                   print this
-"""
-
-var controlSocket = Paths.current.socket.path
-var agtermSocket: String?
-var fetchModels = false
-var armHoldTrigger = true
-/// Empty means "whatever `HoldTrigger.Configuration` defaults to". Not seeded with that default
-/// here: the first `--hold-key` has to REPLACE the pair rather than join it, and a list that starts
-/// out full cannot tell the two apart.
-var holdKeys: [HoldKey] = []
-
-var arguments = Array(CommandLine.arguments.dropFirst())
-while let argument = arguments.first {
-    arguments.removeFirst()
-    /// An empty value is refused rather than taken, and that is the client's rule arriving through
-    /// the other door (`ClientCommand.parse`): an unset environment variable expands to an empty
-    /// string, not to an absent argument, so a wrapper passing `--agterm-socket "$AGT_SOCKET"` with
-    /// nothing in it would otherwise splice `--socket ""` into every `agtermctl` call the daemon
-    /// makes — every chord refused, for a reason no message names.
-    func value(_ flag: String) -> String {
-        guard let next = arguments.first else {
-            FileHandle.standardError.write(Data("dicta: \(flag) needs a value\n".utf8))
-            exit(2)
-        }
-        arguments.removeFirst()
-        guard !next.isEmpty else {
-            FileHandle.standardError.write(Data("dicta: \(flag) was given an empty value\n".utf8))
-            exit(2)
-        }
-        return next
-    }
-    switch argument {
-    case "--help", "-h":
-        print(usage)
-        exit(0)
-    case "--control":
-        controlSocket = value("--control")
-    case "--agterm-socket":
-        agtermSocket = value("--agterm-socket")
-    case "--no-hold":
-        armHoldTrigger = false
-    case "--hold-key":
-        let name = value("--hold-key")
-        guard let key = HoldKey.named(name) else {
-            let accepted = HoldKey.everyName
-            let complaint = "dicta: --hold-key does not know \"\(name)\"; it accepts \(accepted)\n"
-            FileHandle.standardError.write(Data(complaint.utf8))
-            exit(2)
-        }
-        // A repeat is refused rather than deduplicated. Two watches on one key would each report
-        // its edges and `HoldWatch` would swallow the second -- correct, and silently different
-        // from what the user wrote.
-        guard !holdKeys.contains(key) else {
-            FileHandle.standardError.write(Data("dicta: --hold-key \(name) was given twice\n".utf8))
-            exit(2)
-        }
-        holdKeys.append(key)
-    case "--fetch-models":
-        fetchModels = true
-    default:
-        FileHandle.standardError.write(Data("dicta: unknown option \(argument)\n".utf8))
-        exit(2)
-    }
+// The command line is a value from DictaCore, so every refusal below has a test (D19).
+let options: DaemonOptions
+switch DaemonOptions.parse(Array(CommandLine.arguments.dropFirst())) {
+case let .run(parsed):
+    options = parsed
+case .help:
+    print(DaemonOptions.usage)
+    exit(0)
+case let .refused(line):
+    FileHandle.standardError.write(Data("\(line)\n".utf8))
+    exit(2)
 }
+let controlSocket = options.controlSocket
 
 func log(_ message: String) {
     FileHandle.standardError.write(Data("dicta: \(message)\n".utf8))
@@ -105,7 +42,7 @@ func log(_ message: String) {
 // that is a deliberate refusal: the LaunchAgent starts at login, on whatever network the laptop
 // woke up on, and pulling six hundred megabytes there without being asked is not a thing to do
 // quietly.
-if fetchModels {
+if options.fetchModels {
     log("fetching the recognition models into \(ParakeetModels.directory.path) "
         + "-- this is large and slow, and it is done once")
     do {
@@ -132,16 +69,31 @@ if fetchModels {
     exit(0)
 }
 
-// Diagnosed here rather than on the first chord (§7): every chord is dead until it is fixed, and
-// discovering that by pressing one and getting nothing is the failure this check exists to avoid.
-guard let agtermctl = Agterm.locate() else {
-    log("agtermctl is not installed -- dicta cannot reach agterm, so nothing would be delivered")
+// Diagnosed here rather than on the first chord (§7): with `--focused-fields` off every chord is
+// dead until it is fixed, and discovering that by pressing one and getting nothing is the failure
+// this check exists to avoid. With the option on it is said and survived (D31).
+let agtermctl = Agterm.locate()
+switch options.agtermAtStartup(found: agtermctl != nil) {
+case .present:
+    break
+case let .fatal(line):
+    log(line)
     exit(EXIT_FAILURE)
+case let .optional(line):
+    log(line)
 }
 
 // An immutable copy: the provider closure outlives the argument parsing, and a top-level `var` in a
 // main.swift is main-actor state.
-let defaultAgtermSocket = agtermSocket
+let defaultAgtermSocket = options.agtermSocket
+
+// Where feedback goes when no agterm can show it (D13): a focused field's attempts, and every
+// refusal on a machine without agterm.
+let feedback = SystemFeedback()
+
+// The focused-field path, or nothing at all (invariant 14): with the option off this constructs no
+// adapter, so the process makes no accessibility call and posts no event.
+let focusedFields = FocusedFieldWiring.make(options: options, feedback: feedback)
 
 // The microphone. It belongs to this bundle's TCC grant and to nothing else (D11, invariant 8):
 // `dictactl` links none of this, and a second binary opening the device would fracture the grant.
@@ -175,12 +127,13 @@ let daemon = Daemon(
     // The Tier 0 dictionary (D9a), re-read per attempt so that editing a rule and dictating once is
     // the whole loop -- no restart, and no chance of testing a rule against the previous file.
     dictionary: { dictionaryFile.load() },
-    // Where feedback goes when no agterm can show it (D13). Unreachable while `agtermctl` is
-    // required above, and wired anyway so that making agterm optional changes only the provider.
-    feedback: SystemFeedback(),
+    feedback: feedback,
+    fields: focusedFields?.daemon,
     // One `Agterm` per attempt, addressed at the agterm the chord fired in ($AGT_SOCKET, F3). The
-    // command line's `--agterm-socket` is the fallback for a keymap that does not pass it.
+    // command line's `--agterm-socket` is the fallback for a keymap that does not pass it. `nil`
+    // without `agtermctl`, which only `--focused-fields` lets this far.
     terminal: { requested in
+        guard let agtermctl else { return nil }
         let agterm = Agterm(executable: agtermctl, agtermSocket: requested ?? defaultAgtermSocket)
         return Daemon.Terminal(resolver: agterm, injector: agterm, notifier: agterm)
     }
@@ -204,12 +157,13 @@ do {
 
 log("listening on \(controlSocket)")
 
-// The third of the three facts the UI's readiness is derived from (D27). It is unconditionally true
-// here: `Agterm.locate()` above is a `guard` that exits when it fails, so reaching this line IS the
-// observation. Recorded anyway rather than defaulted, because `Faculties` distinguishes "known
-// good" from "nobody has looked", and a daemon that left this `nil` would sit at `starting` for
-// ever — a UI showing "Starting…" for the rest of the session is worse than one showing a fault.
-daemon.observe { $0.terminal = true }
+// The third of the three facts the UI's readiness is derived from (D27). Recorded rather than
+// defaulted, because `Faculties` distinguishes "known good" from "nobody has looked", and a daemon
+// that left this `nil` would sit at `starting` for ever. Without agterm it is `false`, which blocks
+// dictation only with `--focused-fields` off -- and that combination has already exited above.
+let foundAgterm = agtermctl != nil
+daemon.observe { $0.terminal = foundAgterm }
+log(FocusedFieldWiring.startupLine(focusedFields))
 
 // Push-to-talk (D5), armed after the socket is bound because the trigger reaches the daemon through
 // that socket exactly as `dictactl` does -- it is a keypress source, not a second door into the
@@ -218,16 +172,24 @@ daemon.observe { $0.terminal = true }
 // Nothing here asks for a permission and nothing here can observe a keystroke: the loop reads the
 // state of the modifier keys and no key code ever reaches this process (F6, invariant 11).
 var holdTrigger: HoldTrigger?
-if armHoldTrigger {
-    let configuration = holdKeys.isEmpty
-        ? HoldTrigger.Configuration(socketPath: controlSocket)
-        : HoldTrigger.Configuration(keys: holdKeys, socketPath: controlSocket)
+if options.armHoldTrigger {
+    let configuration = options.holdKeys.isEmpty
+        ? HoldTrigger.Configuration(socketPath: controlSocket,
+                                    focusedFields: options.focusedFields)
+        : HoldTrigger.Configuration(keys: options.holdKeys, socketPath: controlSocket,
+                                    focusedFields: options.focusedFields)
     // Only as a notifier. The target is resolved inside the daemon, from one tree read, because the
-    // trigger asks for it with `focus: true` rather than looking it up itself (§5).
-    let agterm = Agterm(executable: agtermctl, agtermSocket: defaultAgtermSocket)
+    // trigger asks for it with `focus: true` rather than looking it up itself (§5). Without agterm,
+    // the refusal of a hold in front of it is said through `feedback` instead.
+    let notifier: any Notifier = agtermctl.map {
+        Agterm(executable: $0, agtermSocket: defaultAgtermSocket)
+    } ?? feedback
     let trigger = HoldTrigger(
         configuration: configuration,
-        notifier: agterm,
+        // The one frontmost source the injector shares when the option is on (F8a).
+        frontmost: focusedFields?.frontmost ?? SystemFrontmost(),
+        notifier: notifier,
+        fields: focusedFields?.trigger,
         send: { try ControlClient.send($0, to: configuration.socketPath) }
     )
     trigger.start()

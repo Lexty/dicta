@@ -85,6 +85,19 @@ struct MenuModelTests {
         #expect(terminal.banner?.action == nil)
     }
 
+    @Test("a missing agterm with focused fields on is an amber notice, and without them a fault")
+    func fieldsOnlyBannerIsANotice() throws {
+        let notice = MenuModel(link: .connected,
+                               snapshot: StatusSnapshot(state: .idle, readiness: .fieldsOnly))
+        let banner = try #require(notice.banner)
+        #expect(banner.tint == .amber)
+        #expect(banner.action == nil)
+        #expect(banner.text.contains("agtermctl"))
+        let fault = MenuModel(link: .connected,
+                              snapshot: StatusSnapshot(state: .idle, readiness: .terminalMissing))
+        #expect(fault.banner?.tint == .red)
+    }
+
     @Test("a healthy daemon shows no banner at all")
     func healthyHasNoBanner() {
         let ready = MenuModel(link: .connected,

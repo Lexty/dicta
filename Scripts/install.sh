@@ -27,9 +27,32 @@
 #
 # Does NOT touch ~/.config/agterm/keymap.conf: add docs/keymap.snippet.conf by hand, then
 # `agtermctl keymap reload`. Rewriting a user's keymap is not something an installer should do.
+#
+#   bash Scripts/install.sh [--focused-fields]
+#
+# `--focused-fields` (D31) writes the daemon's agent with that flag, so it also dictates into the
+# focused text field of any other application, and a machine without agterm runs it. The option is
+# whatever THIS run says: re-running without the flag writes the agent without it, which turns the
+# option off, and the script says so rather than leaving the user to find out in VS Code.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+
+FOCUSED_FIELDS=0
+for argument in "$@"; do
+    case "$argument" in
+        --focused-fields) FOCUSED_FIELDS=1 ;;
+        -h|--help)
+            echo "usage: bash Scripts/install.sh [--focused-fields]"
+            exit 0
+            ;;
+        *)
+            echo "install: unknown option $argument" >&2
+            echo "usage: bash Scripts/install.sh [--focused-fields]" >&2
+            exit 2
+            ;;
+    esac
+done
 
 LABEL="dev.personal.dicta"
 APP_DEST="$HOME/Applications/Dicta.app"
@@ -85,15 +108,32 @@ install_bundle "$ROOT/DictaMenu.app" "$MENU_APP_DEST"
 # --- the LaunchAgent ----------------------------------------------------------------------------
 echo "==> writing $AGENT"
 mkdir -p "$HOME/Library/LaunchAgents" "$(dirname "$LOG")"
+# Whether the agent being replaced had the option, read before it is overwritten: turning it off by
+# re-running without the flag is legitimate, and silent is the one way it must not happen.
+WAS_FOCUSED_FIELDS=0
+if [ -f "$AGENT" ] && grep -q '<string>--focused-fields</string>' "$AGENT"; then
+    WAS_FOCUSED_FIELDS=1
+fi
+# Rendered by its own script, which `BundleTests` runs for both settings through `plutil -lint`.
+if [ "$FOCUSED_FIELDS" -eq 1 ]; then
+    bash "$ROOT/Scripts/render-agent.sh" "$APP_DEST" "$LOG" --focused-fields > "$AGENT"
+    echo "    focused fields: ON -- the daemon also types into other applications' focused fields"
+else
+    bash "$ROOT/Scripts/render-agent.sh" "$APP_DEST" "$LOG" > "$AGENT"
+    if [ "$WAS_FOCUSED_FIELDS" -eq 1 ]; then
+        echo "    focused fields: turned OFF -- the previous agent had --focused-fields and this run"
+        echo "    did not pass it; rerun with --focused-fields to keep dictating into other apps"
+    else
+        echo "    focused fields: off (pass --focused-fields to dictate into other applications)"
+    fi
+fi
+plutil -lint "$AGENT" >/dev/null
+
 # Escaped, because these land on sed's REPLACEMENT side, where `&` means "the whole match" and `\`
 # and the `|` delimiter mean what they always do. A home directory containing one of them would
 # produce a mangled path in a plist that `plutil -lint` then passes, since it is valid XML naming a
 # binary that does not exist -- and the symptom would be a LaunchAgent that silently never starts.
 escape_replacement() { printf '%s' "$1" | sed -e 's/[&|\\]/\\&/g'; }
-sed -e "s|__DICTA_APP__|$(escape_replacement "$APP_DEST")|g" \
-    -e "s|__DICTA_LOG__|$(escape_replacement "$LOG")|g" \
-  "$ROOT/Scripts/launchagent.plist" > "$AGENT"
-plutil -lint "$AGENT" >/dev/null
 
 echo "==> writing $MENU_AGENT"
 sed -e "s|__DICTA_MENU_APP__|$(escape_replacement "$MENU_APP_DEST")|g" \
@@ -185,4 +225,24 @@ echo "next, in this order:"
 echo "  1. $APP_DEST/Contents/MacOS/Dicta --fetch-models   (once, ~600 MB; skip if already staged)"
 echo "  2. launchctl kickstart -k gui/$UID/$LABEL          (the running daemon loads models only"
 echo "                                                      at start, so it must be restarted)"
-echo "  3. add docs/keymap.snippet.conf to ~/.config/agterm/keymap.conf && agtermctl keymap reload"
+# The keymap step only where there is an agterm to put it in: on a machine without `agtermctl` it is
+# an instruction that cannot be followed, and the daemon is running without agterm on purpose (D31).
+# The same places the daemon looks (`AgtermTool.candidatePaths`), then PATH.
+AGTERMCTL=""
+for candidate in /opt/homebrew/bin/agtermctl /usr/local/bin/agtermctl; do
+    if [ -x "$candidate" ]; then AGTERMCTL="$candidate"; break; fi
+done
+[ -n "$AGTERMCTL" ] || AGTERMCTL="$(command -v agtermctl || true)"
+STEP=3
+if [ -n "$AGTERMCTL" ]; then
+    echo "  $STEP. add docs/keymap.snippet.conf to ~/.config/agterm/keymap.conf,"
+    echo "     then run: agtermctl keymap reload"
+    STEP=$((STEP + 1))
+fi
+if [ "$FOCUSED_FIELDS" -eq 1 ]; then
+    # Posting keystrokes into another process needs the grant, and without it every hold outside
+    # agterm is refused with a notification naming it. Nothing here asks: TCC adds the entry the
+    # first time the daemon checks, and the switch is the user's to turn on.
+    echo "  $STEP. grant Accessibility to $APP_DEST in System Settings > Privacy & Security >"
+    echo "     Accessibility, then relaunch any Electron app (VS Code, Slack) you dictate into"
+fi

@@ -73,10 +73,12 @@ public struct Presentation: Sendable, Equatable {
         }
         switch snapshot.state {
         case .idle:
+            // `fieldsOnly` is drawn as a healthy idle daemon, because it is one: a hold in any
+            // other application dictates. The notice is the banner's to give, not the glyph's.
             return Presentation(
                 glyph: "mic",
                 tint: .quiet,
-                status: snapshot.readiness == .starting ? "Starting…" : "Ready"
+                status: snapshot.readiness.shortStatus
             )
         case .warming:
             // NOT "Listening". D13 and invariant 4: nothing announces that the microphone is open
@@ -103,6 +105,7 @@ public extension Readiness {
         case .microphoneDenied: "Microphone denied"
         case .modelsMissing: "Models not downloaded"
         case .terminalMissing: "agterm not found"
+        case .fieldsOnly: "Ready, without agterm"
         }
     }
 }

@@ -1215,7 +1215,7 @@ about `returned`.
 - Modify: `Scripts/install.sh`, `Scripts/launchagent.plist`, `Sources/DictaTestRunner/BundleTests.swift`
 - Modify: `docs/manual-checklist.md` (citations)
 
-- [ ] write the red tests first:
+- [x] write the red tests first:
   - `DaemonOptions` parses every existing flag exactly as `main.swift` does today, including
     unknown-option and empty-argument errors, plus `--focused-fields`, which is off by default;
   - `FocusedFieldWiring.make` returns `nil` and constructs no system adapter when the option is off
@@ -1224,20 +1224,59 @@ about `returned`.
   - `terminalMissing` blocks dictation only when the option is off, and `Presentation`/`MenuModel`
     render the on case as a notice, not a fault;
   - the stale-indicator cleanup is skipped for a `.focusedField` in `activeTargetFile`.
-- [ ] move flag parsing into `DaemonOptions` and wiring into `FocusedFieldWiring`, keeping `main.swift`
+- [x] move flag parsing into `DaemonOptions` and wiring into `FocusedFieldWiring`, keeping `main.swift`
   thin:
   - option off: a missing `agtermctl` stays fatal;
   - option on: it is logged and optional;
   - add the start-up line `focused fields: on|off, accessibility: granted|not granted`.
-- [ ] installer:
+- [x] installer:
   - `install.sh --focused-fields` substitutes a **whole** `<string>--focused-fields</string>` line,
     or removes the placeholder line;
   - the keymap step prints only when `agtermctl` is found;
   - re-running without the flag turns the option off, and the script says so;
   - the plist comment that calls a missing `agtermctl` fatal is updated.
-- [ ] write a `BundleTests` test: the plist generated for both settings passes `plutil -lint`, with
+- [x] write a `BundleTests` test: the plist generated for both settings passes `plutil -lint`, with
   no empty `<string></string>` in `ProgramArguments`.
-- [ ] add citations, then run tests — must pass before next task
+- [x] add citations, then run tests — must pass before next task
+
+- ➕ **Outcome (2026-09-13).** `main.swift` now parses through `DaemonOptions` (DictaCore) and composes
+  the field path through `FocusedFieldWiring` (DictaRuntime); with `--focused-fields` a missing
+  `agtermctl` is logged and survived, and without it it stays fatal.
+  - **Deviation: readiness gained a case rather than a conditional verdict.** `Readiness` is one verdict
+    with a context-free `blocksDictation`, so the option-on fact is a new non-blocking
+    `.fieldsOnly` (`"fields-only"` on the wire), derived by `Faculties.readiness` only once start-up
+    has settled; `.terminalMissing` is now produced only with the option off. `Faculties` gained
+    `focusedFields`, which `Daemon.init` sets from `fields != nil`, so the verdict cannot disagree with
+    what the daemon was built with. The menu draws it as an idle, quiet `mic` saying "Ready, without
+    agterm", with an amber banner and no action; red stays the option-off fault's.
+  - **Deviation: the start-up line with the option off is `focused fields: off, accessibility: not
+    checked`.** The trust check is an accessibility call, and the option off makes none (invariant
+    14). With it on it reads `granted` or `not granted` through the wired access.
+  - **Deviation: `make(options:feedback:adapters:)`, not `make(options:frontmost:)`.** `Adapters`
+    holds three factories (frontmost, access, poster), `.system` in production and counting fakes in
+    the tests; `Wired` carries the one frontmost source plus the daemon's and the trigger's
+    `FocusedFields`. The trigger's notifier falls back to `SystemFeedback` when there is no agterm.
+    `DaemonOptions.agtermAtStartup(found:)` is the fatal/optional decision.
+  - **Deviation: a new `Scripts/render-agent.sh`.** The agent's rendering moved out of `install.sh` so
+    `BundleTests` runs the exact rendering for both settings through `plutil -lint` without a test
+    ever being one broken argument away from a real install. The template's `ProgramArguments` has a
+    whole `<string>__DICTA_FOCUSED_FIELDS__</string>` line, replaced whole or deleted.
+  - **Installer.** Unknown arguments are refused (a typo must not install the option silently off);
+    the agent being replaced is read first, so re-running without the flag prints `focused fields:
+    turned OFF`; the keymap step prints only when `agtermctl` is found at the daemon's candidate paths
+    or on `PATH`; with the option on, a step names the Accessibility grant. ⚠️ `install.sh` itself was
+    not run: it would rebuild and replace the live agent on this machine. H33 scores it.
+  - **Stale indicator.** `clearStaleIndicator` asks the provider only for a parked `.agterm`; a parked
+    field's file is removed and nothing is notified.
+  - **Citations:** invariant 14 ("only when on", the wiring), the stale-indicator row, and the
+    agtermctl-absent-with-the-option-on row (start-up, readiness, menu, rendered agent).
+  - Mutation check: the readiness ignoring the option, the cleanup ignoring the target case, the
+    frontmost factory called before the option guard, the renderer substituting the placeholder
+    with nothing, and the notice banner drawn red together failed 11 issues in 7 tests, each
+    mutation caught. Tests: 712 in 43 suites green under Xcode 26.6 (Swift 6.3.3), 17 new (29
+    cases); lint clean (swiftlint not installed, built-in checks only); linkage clean. Smoke-checked
+    on the debug binary: `--help` lists `--focused-fields`, `--bogus` and `--control ""` exit 2 with
+    the old lines.
 
 ### Task 11: Linkage gate — only the daemon may post events or touch AX
 

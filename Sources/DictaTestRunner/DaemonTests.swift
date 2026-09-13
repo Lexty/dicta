@@ -2505,7 +2505,8 @@ struct DaemonTests {
 
     /// A daemon whose provider finds no agterm, as one started without `agtermctl` does.
     static func daemonWithoutAgterm(feedback: any Notifier,
-                                    capture: FakeCapture = FakeCapture()) -> Daemon {
+                                    capture: FakeCapture = FakeCapture(),
+                                    fields: Daemon.FocusedFields? = nil) -> Daemon {
         Daemon(
             configuration: Daemon.Configuration(
                 socketPath: "/tmp/unused-\(UUID().uuidString).sock",
@@ -2515,8 +2516,30 @@ struct DaemonTests {
             history: FakeHistory(),
             clock: FakeClock(),
             feedback: feedback,
+            fields: fields,
             terminal: { _ in nil }
         )
+    }
+
+    @Test("with no agterm, readiness blocks dictation only for a daemon without focused fields")
+    func noAgtermReadinessFollowsTheOption() {
+        let off = Self.daemonWithoutAgterm(feedback: FakeNotifier())
+        let on = Self.daemonWithoutAgterm(
+            feedback: FakeNotifier(),
+            fields: Daemon.FocusedFields(access: FakeFocusedFieldAccess(),
+                                         injector: FakeFieldInjector()))
+
+        for daemon in [off, on] {
+            daemon.observe {
+                $0.microphone = true
+                $0.models = true
+                $0.terminal = false
+            }
+        }
+
+        let status = Request(cmd: .status)
+        #expect(off.handle(.request(status)).snapshot?.readiness == .terminalMissing)
+        #expect(on.handle(.request(status)).snapshot?.readiness == .fieldsOnly)
     }
 
     @Test("with no agterm, a chord and a focus start are refused with a reason naming agtermctl")
@@ -2608,6 +2631,23 @@ struct DaemonTests {
 
         #expect(harness.notifier.signals == [.clear(.agterm(AgtermTarget(sessionID: "S1",
                                                                          pane: .left)))])
+        #expect(!FileManager.default.fileExists(atPath: harness.activeTargetFile.path))
+    }
+
+    @Test("a parked focused field is removed at start-up without asking agterm to clear anything")
+    func startupSkipsTheIndicatorCleanupForAField() throws {
+        // A field never had an indicator (D31), so there is no light to put out -- and handing the
+        // target to agterm's notifier would be asking agterm about an application it never saw.
+        let harness = Harness(focusedFields: true)
+        let json = #"{"target":{"field":{"appName":"Code","bundleID":"com.microsoft.VSCode","#
+            + #""pid":4242}}}"#
+        try Data(json.utf8).write(to: harness.activeTargetFile)
+
+        try harness.daemon.start()
+        defer { harness.daemon.stop() }
+
+        #expect(harness.notifier.signals.isEmpty)
+        #expect(harness.feedback.signals.isEmpty)
         #expect(!FileManager.default.fileExists(atPath: harness.activeTargetFile.path))
     }
 

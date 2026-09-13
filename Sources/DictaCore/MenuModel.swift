@@ -127,7 +127,10 @@ public struct MenuModel: Sendable, Equatable {
             return nil
         case .connected:
             guard let message = snapshot?.readiness.message else { return nil }
-            return Banner(text: message, tint: .red,
+            // A notice is amber, a fault is red: `fieldsOnly` is a working daemon telling the user
+            // where its words can and cannot go, and red would say something is broken.
+            let tint: Tint = snapshot?.readiness.blocksDictation == true ? .red : .amber
+            return Banner(text: message, tint: tint,
                           action: Self.action(for: snapshot?.readiness),
                           actionTitle: Self.actionTitle(for: snapshot?.readiness))
         }
