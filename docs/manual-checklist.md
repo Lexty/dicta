@@ -106,7 +106,8 @@ external filter, which this plan deliberately does not build (D9c): the `Filter`
 | a watcher goes away mid-stream | `test: a watcher that goes away is dropped, and the daemon keeps serving` is the daemon surviving it; `test: a watcher on the far end does not change what an attempt does` is the half the row actually claims — that no OUTCOME moves. The two are separate on purpose: a daemon that kept serving while quietly changing what a dictation did would pass the first and fail the invariant the row exists for |
 | the watcher cap is reached | `test: past the cap a watcher is REFUSED with a response, never by a dropped connection`, and `test: the watcher cap exists and is small`. The wording of the first is the finding: `ControlClient` reads a closed connection as `daemonCrashed`, so refusing by hanging up would make a healthy daemon that is answering correctly report itself as dead in the one window the user would look at |
 | the daemon stops or restarts under a live watcher | `test: a daemon shutting down ENDS the stream rather than dropping it` is why an orderly `launchctl bootout` reads amber and says stopped instead of red and crashed; `test: the backoff grows and is bounded` is the reconnect that follows. End to end, on the installed pair, is **H18** — and that the strip comes back **without the panel being opened** is **H22**, which is a separate item because that path was broken and passing until it was measured (F9a) |
-| the daemon dies while a watcher is showing a recording | `test: a lost connection does not keep drawing a live microphone` is the whole of it, and it is the only assertion in this audit about a mistake the UI could make by itself rather than one it could inherit. Its two halves are asserted separately because they fail separately: the glyph stops claiming a live microphone, and `speakingSeconds` goes nil so the clock stops counting a dictation that ended when the daemon did. That the same rule governs the strip and not only the panel: `test: the menu bar shows a clock only while the microphone is open`, whose last case is exactly this one |
+| the daemon dies while a watcher is showing a recording | `test: a lost connection does not keep drawing a live microphone` is the whole of it, and it is the only assertion in this audit about a mistake the UI could make by itself rather than one it could inherit. Its two halves are asserted separately because they fail separately: the glyph stops claiming a live microphone, and `speakingSeconds` goes nil so the clock stops counting a dictation that ended when the daemon did. That the same rule governs the strip and not only the panel: `test: the menu bar shows a clock only while the microphone is open`, whose last case is exactly this one. The same mistake one layer down, where the clock is redrawn rather than decided: a ticker left running after the stream ends redraws a clock that is no longer there once a second, for as long as the menu lives. `test: with the panel closed, a recording schedules the ticker and an end cancels it` and `test: with the panel closed, a watch that throws mid-recording cancels the ticker` are both endings, the clean one and this row's broken one; `test: with the panel open, the ticker survives an end, a disconnect and a restart` is the other side, that an open panel keeps its relative times moving through all three. Scored on the installed pair, with the idle wake-ups a test cannot see, as **H46** |
+| the menu cannot read the record | `test: a record that cannot be read is a failure with its reason, not an empty record` is the row itself, and `test: any other read error is shown by its description` the reason for an error that is not the reader's own. That the drawer's three claims stay apart as values: `test: only a read that found nothing says Nothing yet`, `test: an unread drawer draws no rows and no failure`, `test: a failure keeps the last good rows and carries its reason`, `test: a read after a failure clears it and replaces the rows`. That a later read clears it, and that the last good rows survive more than one failure: `test: a record readable again clears the failure`, `test: success, failure, failure, recovery: the last good rows hold until the record reads`. That an older read landing late overrides nothing, whichever of the two failed: `test: an older failing read landing after a newer success leaves the newer rows`, `test: an older success landing after a newer failure keeps the failure`. What the label looks like on the panel is **H45** |
 
 Two rows are the honest gaps, and both are named above rather than papered over: the OS wiring of the
 capture faults (**H3**) and the client's own desktop notification (**H1**).
@@ -359,20 +360,23 @@ counts as a pass, so two people scoring it agree.
 - **H20 — a dictation that went nowhere is recoverable from the panel, with no terminal.** This is
   the whole of job 2 and the only reason the drawer exists. Make one fail on purpose: start a
   dictation in a session, speak a sentence, close that session's pane while still speaking, then
-  press stop. Pass: a notification says the target is gone, and the panel's top row is red, labelled
-  `target gone`, showing the sentence you said, with a copy button beside it that puts exactly that
-  text on the clipboard — paste it somewhere and compare it word for word. Then run
-  `dictactl last` and check the two agree. Fail, and it is the failure worth looking for: the row
-  is there but the copy button is missing, which means `final` was empty and the text you can see
-  is `recognised` — recoverable by eye and not by clipboard, which is not recovery.
+  press stop. Pass: a notification says the target is gone, and the panel's top row shows the
+  sentence you said, its second line starting with the red crossed-circle symbol and the word
+  `target gone`, both red, with a copy button beside it that puts exactly that text on the
+  clipboard — paste it somewhere and compare it word for word. Then run `dictactl last` and check
+  the two agree. Fail, and it is the failure worth looking for: the row is there but the copy
+  button is missing, which means `final` was empty and the text you can see is `recognised` —
+  recoverable by eye and not by clipboard, which is not recovery.
   **Score the pair below in the same run, because they are the confusion this row is built around.**
   (a) Abort a dictation mid-sentence (`dictactl abort`, or the panel's `Abort`). Pass: the row shows
-  what you said, in italic, labelled `cancelled · recognised only`, and has **no copy button** —
-  D26 wrote the speech down and D28 refuses to hand back words that were deliberately not
-  delivered. (b) Let a `dictate` call complete (`dictactl dictate` from a shell, speak, let it
-  print). Pass: that row is **green**, labelled `returned to caller`, and **does** have a copy
-  button. Fail: the two drawn alike. They look alike from the outcome's name and are opposites in
-  the one field that decides — `final` — which is exactly the mistake this item is here to catch.
+  what you said, in italic, its second line reading `cancelled` in the faint colour with no symbol,
+  then the time and `recognised only`, and it has **no copy button** — D26 wrote the speech down
+  and D28 refuses to hand back words that were deliberately not delivered. (b) Let a `dictate` call
+  complete (`dictactl dictate` from a shell, speak, let it print). Pass: that row has **no marker**
+  — no symbol and no colour, the word `returned to caller` in the same grey as `typed` — and it
+  **does** have a copy button. Fail: the two drawn alike. They look alike from the outcome's name
+  and are opposites in the one field that decides — `final` — which is exactly the mistake this
+  item is here to catch.
 - **H21 — `Stop and type` from the panel lands where the chord was pressed, not where focus is
   now.** D4, through the one door a click could open. Start a dictation with the chord in session A,
   speak, then click into a **different** session B, and only then open the panel and press
@@ -590,7 +594,10 @@ counts as a pass, so two people scoring it agree.
   field, wait for the sound, speak, let go." (b) With `--hold-key rightOption` in the agent, pass:
   it names that key, and only that key. (c) With `--no-hold`, pass: it says no hold key is armed.
   Put the agent back afterwards.
-- **H41 — the window never takes focus in the middle of a session.** (a) With a choice pending,
+- **H41 — the window never takes focus in the middle of a session.** The rule being scored: the
+  window opens by itself only on the first snapshot of a menu launch, and only if that snapshot is
+  idle with a choice pending (**H47** scores the same rule through the presenter). (a) With a
+  choice pending,
   start a dictation into an agterm pane and, while it is recording, relaunch the menu from another
   shell (`launchctl kickstart -k gui/$UID/dev.personal.dicta.menu`). Pass: no window appears, then or
   at any later moment of that launch, and agterm keeps focus; the "Set Up…" row and the amber banner
@@ -611,3 +618,48 @@ counts as a pass, so two people scoring it agree.
   grant reset, click "Allow Access…", and while the system dialog is still up run `dictactl
   accessibility --prompt`. Record whether a second dialog appears; F11 measured a single call only.
   Either answer is a result, and it belongs in F11.
+- **H44 — the second line marks the exceptions and leaves the ordinary quiet.** Get a mix of
+  outcomes into the drawer: a dictation typed into an agterm pane (`typed`), a `dictactl dictate`
+  from a shell (`returned to caller`), an abort (`cancelled`), a chord pressed and released without
+  speaking (`nothing heard`), a pane closed before stop (`target gone`), and, with a malformed rule
+  in the replacement dictionary, a dictation typed anyway (`typed, dictionary degraded`). Pass:
+  (a) no row has a dot or any leading column, and every row's text starts at the same left edge;
+  (b) `typed` and `returned to caller` carry no symbol, their word in the same grey as each other;
+  (c) `cancelled` and `nothing heard` carry no symbol, their word faint; (d) the amber row starts
+  with a triangle and its word in amber, the red row with a crossed circle and its word in red, and
+  each symbol sits on the text's line rather than above or below it; (e) every row still says its
+  outcome in words, the same words as before this change, and the reason line under a failed row
+  keeps its colour. Then judge the two symbol names on the built panel, not in a screenshot scaled
+  up: `exclamationmark.triangle` and `xmark.circle`. If either reads wrong at 9 pt, write down which
+  and why; the names are one line in `Presentation.swift`.
+- **H45 — an unreadable record is said to be unreadable, and nothing is lost from the panel.** With
+  a few dictations in the record, open the panel once, close it, then `chmod 000
+  ~/Library/Application\ Support/dev.personal.dicta/record.jsonl` and open the panel again. Pass:
+  the rows that were there are still there, under an amber label with a triangle reading "The
+  record could not be read:" and a reason, wrapped rather than cut off and naming no path; the panel
+  never says "Nothing yet.". Fail: "Nothing yet.", an empty drawer, or the label in red. Then
+  `chmod 600` the file and reopen the panel. Pass: the label is gone and the rows are the record's
+  current ones. What the daemon does with a record it cannot append to is not this item; score only
+  the panel.
+- **H46 — the menu-bar clock stops when the connection does, with the panel closed.** The panel
+  stays closed for all three halves; note the menu's idle wake-ups in Activity Monitor (Energy
+  tab, `DictaMenu`) before starting. An ordinary recording that ends cleanly is not the test,
+  because the code before this change already passed it. (a) Start a dictation, and while it is
+  recording `launchctl bootout gui/$UID/dev.personal.dicta`. Pass: the clock goes from the menu
+  bar, and after a minute the idle wake-ups are back to the number noted before, which says nothing
+  redraws once a second. Bootstrap the daemon again afterwards. (b) The same with `kill -9` of the
+  daemon's process while recording. Pass: the same. (c) Relaunch the menu (`launchctl kickstart -k
+  gui/$UID/dev.personal.dicta.menu`), and without ever opening the panel start a dictation. Pass:
+  the glyph lights and the clock counts in the menu bar, and both go when it ends. This is the
+  label observing the model by itself; a model owned by something the label does not observe
+  would leave the strip frozen on whatever it drew first.
+- **H47 — the setup window opens through its presenter at exactly the doors it had.** With a
+  choice pending (`setup.json` removed, or `offerSeen` reset as in **H36** (c)): (a) relaunch the
+  menu while idle. Pass: the window opens by itself, once, on that launch's first snapshot. (b)
+  Close it, start a dictation, and relaunch the menu while recording; after the dictation ends,
+  stay idle for a minute. Pass: the window never opens by itself on that launch, not even once the
+  snapshots are idle. (c) From that same launch, click "Set Up…" in the panel's footer. Pass: the
+  window opens. Close it, then make the panel show a banner offering "Set Up…" (a pending choice
+  shows one) and click that. Pass: the window opens. (d) With the window open, stop the daemon.
+  Pass: it stays open and shows that the daemon is unavailable rather than closing or freezing,
+  and "Set Up…" still brings it forward.

@@ -780,14 +780,20 @@ case symbol(String) }`.
 **Files:**
 - Modify: `SPEC.md`, `docs/manual-checklist.md`
 
-- [ ] add a SPEC §7 row, "the menu cannot read the record": the last good rows stay under an amber
+- [x] add a SPEC §7 row, "the menu cannot read the record": the last good rows stay under an amber
   label saying so, never "Nothing yet.", and a later successful read clears it. Add the matching
   checklist row citing Task 5's test names verbatim and the new H item
-- [ ] cite Task 3's ticker tests in the checklist row "the daemon dies while a watcher is showing a
+  - the row also states that no dictation outcome changes and that an older read landing late
+    overrides nothing. The checklist row cites all ten `RecentState` and adapter tests, and H45
+- [x] cite Task 3's ticker tests in the checklist row "the daemon dies while a watcher is showing a
   recording" (:109)
-- [ ] rewrite H20(b) (:370-374): the `returned to caller` row has no marker and keeps its copy
+  - all three, the panel-open one as the other side, and H46 for the idle wake-ups
+- [x] rewrite H20(b) (:370-374): the `returned to caller` row has no marker and keeps its copy
   button. Check H20's red-row wording against the symbol
-- [ ] add contiguous human items after H43:
+  - the red row was "red, labelled `target gone`" and is now the crossed circle and the word, both
+    red; (a)'s `cancelled · recognised only` no longer matched the new order, so it now reads the
+    faint word, then the time and `recognised only`
+- [x] add contiguous human items after H43:
   - **H44**, the markers on a mix of outcomes: symbol names judged, text aligned, words unchanged;
   - **H45**, an unreadable record (`chmod 000` then `600`);
   - **H46**, the ticker, with the panel closed. (a) `launchctl bootout` the daemon while recording.
@@ -804,8 +810,14 @@ case symbol(String) }`.
     - "Set Up…" and a banner open it at any time.
 
     Check that H41 states the same first-snapshot rule, and align it if not
-- [ ] run `bash Scripts/test.sh` (ChecklistTests audits citations and numbering); must pass before
+  - H44-H47 added. H41's steps already held the rule, but it did not say it, so it now opens with
+    the rule and points to H47. H45 leaves out what the daemon does with a record it cannot append
+    to, which nothing here measured. H47 (d) adds the window staying open on the unavailable screen
+- [x] run `bash Scripts/test.sh` (ChecklistTests audits citations and numbering); must pass before
   Task 10
+  - 934 tests in 52 suites passed under Xcode 26.6 and under the Command Line Tools, linkage
+    clean, lint and `git diff --check` clean. No test was added: this task is documents only, and
+    ChecklistTests checked every new citation and the numbering to H47
 
 ### Task 10: Verify acceptance criteria
 
