@@ -206,8 +206,14 @@ struct StatusViewModelTests {
     /// publications are still held. `older` was read first, `newer` second.
     static func twoHeldReads(_ fake: FakeMenuWorld, older: [RecordEntry],
                              newer: [RecordEntry]) -> StatusViewModel {
+        twoHeldReads(fake, older: .success(older), newer: .success(newer))
+    }
+
+    /// Two held reads, as above, whose answers may be failures.
+    static func twoHeldReads(_ fake: FakeMenuWorld, older: Result<[RecordEntry], any Error>,
+                             newer: Result<[RecordEntry], any Error>) -> StatusViewModel {
         let model = model(fake)
-        fake.with { $0.reads = [.success(older), .success(newer)] }
+        fake.with { $0.reads = [older, newer] }
         model.start()
         model.panelAppeared()
         #expect(fake.pendingOffMain == ["watch", "record", "record"])
@@ -225,9 +231,9 @@ struct StatusViewModelTests {
         // The race is slow publication, not a slow read: both reads finished in order, and the
         // newer one's hop lands first.
         fake.releaseMain(at: 1)
-        #expect(model.recent == DictationRow.rows(from: newer))
+        #expect(model.recentState == .read(DictationRow.rows(from: newer)))
         fake.releaseMain(at: 0)
-        #expect(model.recent == DictationRow.rows(from: newer))
+        #expect(model.recentState == .read(DictationRow.rows(from: newer)))
     }
 
     @Test("reads published in order leave the latest")
@@ -237,9 +243,9 @@ struct StatusViewModelTests {
         let newer = [DictationRowTests.entry(id: 1), DictationRowTests.entry(id: 2)]
         let model = Self.twoHeldReads(fake, older: older, newer: newer)
         fake.releaseMain(at: 0)
-        #expect(model.recent == DictationRow.rows(from: older))
+        #expect(model.recentState == .read(DictationRow.rows(from: older)))
         fake.releaseMain(at: 0)
-        #expect(model.recent == DictationRow.rows(from: newer))
+        #expect(model.recentState == .read(DictationRow.rows(from: newer)))
     }
 
     @Test("a single read publishes its rows")
@@ -248,13 +254,113 @@ struct StatusViewModelTests {
         let entries = [DictationRowTests.entry(id: 3), DictationRowTests.entry(id: 4)]
         fake.with { $0.reads = [.success(entries)] }
         let model = Self.model(fake)
-        #expect(model.recent.isEmpty)
+        #expect(model.recentState == .unread)
         model.start()
         fake.runOffMain("record")
-        #expect(model.recent.isEmpty)
+        #expect(model.recentState == .unread)
         fake.releaseMain()
-        #expect(model.recent == DictationRow.rows(from: entries))
-        #expect(model.recent.map(\.id) == [4, 3])
+        #expect(model.recentState == .read(DictationRow.rows(from: entries)))
+        #expect(model.recentState.rows.map(\.id) == [4, 3])
+    }
+
+    static let unreadable = RecordReader.ReaderError.cannotRead(
+        path: record.path, reason: "it could not be opened")
+
+    @Test("a record that cannot be read is a failure with its reason, not an empty record")
+    func unreadableRecordIsAFailure() {
+        let fake = FakeMenuWorld()
+        fake.with { $0.reads = [.failure(Self.unreadable)] }
+        let model = Self.model(fake)
+        model.start()
+        fake.runOffMain("record")
+        fake.releaseMain()
+        #expect(model.recentState == .failed(reason: "it could not be opened", lastGood: []))
+        #expect(!model.recentState.saysNothingYet)
+        // The path is always the same known file, and would eat the panel's line.
+        #expect(model.recentState.failure?.contains(Self.record.path) == false)
+    }
+
+    @Test("an older failing read landing after a newer success leaves the newer rows")
+    func olderFailureLandingLateIsDropped() {
+        let fake = FakeMenuWorld()
+        let newer = [DictationRowTests.entry(id: 5)]
+        let model = Self.twoHeldReads(fake, older: .failure(Self.unreadable),
+                                      newer: .success(newer))
+        fake.releaseMain(at: 1)
+        fake.releaseMain(at: 0)
+        #expect(model.recentState == .read(DictationRow.rows(from: newer)))
+    }
+
+    @Test("an older success landing after a newer failure keeps the failure")
+    func olderSuccessLandingLateIsDropped() {
+        let fake = FakeMenuWorld()
+        let older = [DictationRowTests.entry(id: 5)]
+        let model = Self.twoHeldReads(fake, older: .success(older),
+                                      newer: .failure(Self.unreadable))
+        fake.releaseMain(at: 1)
+        fake.releaseMain(at: 0)
+        #expect(model.recentState == .failed(reason: "it could not be opened", lastGood: []))
+    }
+
+    @Test("any other read error is shown by its description")
+    func otherErrorsUseTheirDescription() {
+        let fake = FakeMenuWorld()
+        let other = ControlClient.ClientError.daemonNotRunning(path: "elsewhere")
+        fake.with { $0.reads = [.failure(other)] }
+        let model = Self.model(fake)
+        model.start()
+        fake.runOffMain("record")
+        fake.releaseMain()
+        #expect(model.recentState == .failed(reason: other.description, lastGood: []))
+    }
+
+    @Test("a record readable again clears the failure")
+    func readableAgainClearsTheFailure() {
+        let fake = FakeMenuWorld()
+        let entries = [DictationRowTests.entry(id: 8)]
+        fake.with { $0.reads = [.failure(Self.unreadable), .success(entries)] }
+        let model = Self.model(fake)
+        model.start()
+        fake.settle()
+        #expect(model.recentState.failure != nil)
+        model.panelAppeared()
+        fake.settle()
+        #expect(model.recentState == .read(DictationRow.rows(from: entries)))
+        #expect(model.recentState.failure == nil)
+    }
+
+    @Test("success, failure, failure, recovery: the last good rows hold until the record reads")
+    func failuresKeepTheLastGoodRows() {
+        let fake = FakeMenuWorld()
+        let first = [DictationRowTests.entry(id: 1), DictationRowTests.entry(id: 2)]
+        let recovered = [DictationRowTests.entry(id: 2), DictationRowTests.entry(id: 3)]
+        let denied = RecordReader.ReaderError.cannotRead(
+            path: Self.record.path, reason: "Operation not permitted")
+        fake.with {
+            $0.reads = [.success(first), .failure(Self.unreadable), .failure(denied),
+                        .success(recovered)]
+        }
+        let model = Self.model(fake)
+        let firstRows = DictationRow.rows(from: first)
+
+        model.start()
+        fake.settle()
+        #expect(model.recentState == .read(firstRows))
+
+        model.panelAppeared()
+        fake.settle()
+        #expect(model.recentState == .failed(reason: "it could not be opened", lastGood: firstRows))
+
+        // The second failure says its own reason, and still holds the first success's rows.
+        model.panelAppeared()
+        fake.settle()
+        #expect(model.recentState
+            == .failed(reason: "Operation not permitted", lastGood: firstRows))
+
+        model.panelAppeared()
+        fake.settle()
+        #expect(model.recentState == .read(DictationRow.rows(from: recovered)))
+        #expect(fake.with { $0.reads }.isEmpty)
     }
 
     // MARK: - commands

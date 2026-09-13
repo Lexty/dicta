@@ -259,6 +259,51 @@ struct DictationRowTests {
         #expect(rows[2].copyable == "hello")
     }
 
+    // MARK: - the drawer's state
+
+    @Test("only a read that found nothing says Nothing yet")
+    func onlyAnEmptyReadSaysNothingYet() {
+        let rows = DictationRow.rows(from: [Self.entry(id: 1)])
+        #expect(RecentState.read([]).saysNothingYet)
+        #expect(!RecentState.read(rows).saysNothingYet)
+        #expect(!RecentState.unread.saysNothingYet)
+        // A failure with nothing to keep is still not an empty record.
+        #expect(!RecentState.failed(reason: "it could not be opened", lastGood: []).saysNothingYet)
+    }
+
+    @Test("an unread drawer draws no rows and no failure")
+    func unreadDrawsNothing() {
+        #expect(RecentState.unread.rows.isEmpty)
+        #expect(RecentState.unread.failure == nil)
+    }
+
+    @Test("a failure keeps the last good rows and carries its reason")
+    func failureKeepsTheLastGoodRows() {
+        let rows = DictationRow.rows(from: [Self.entry(id: 1), Self.entry(id: 2)])
+        let failed = RecentState.read(rows).afterFailure(reason: "it could not be opened")
+        #expect(failed == .failed(reason: "it could not be opened", lastGood: rows))
+        #expect(failed.rows == rows)
+        #expect(failed.failure == "The record could not be read: it could not be opened")
+
+        // A second failure keeps the same rows and says the newer reason.
+        let again = failed.afterFailure(reason: "Operation not permitted")
+        #expect(again == .failed(reason: "Operation not permitted", lastGood: rows))
+
+        // Failing before anything was read keeps nothing, and claims nothing either.
+        #expect(RecentState.unread.afterFailure(reason: "x") == .failed(reason: "x", lastGood: []))
+    }
+
+    @Test("a read after a failure clears it and replaces the rows")
+    func readClearsTheFailure() {
+        let old = DictationRow.rows(from: [Self.entry(id: 1)])
+        let new = DictationRow.rows(from: [Self.entry(id: 1), Self.entry(id: 2)])
+        let recovered = RecentState.failed(reason: "x", lastGood: old).afterRead(new)
+        #expect(recovered == .read(new))
+        #expect(recovered.failure == nil)
+        #expect(recovered.rows == new)
+        #expect(RecentState.unread.afterRead([]) == .read([]))
+    }
+
     // MARK: - the target line
 
     @Test("the target line names the session and ALWAYS names the pane")

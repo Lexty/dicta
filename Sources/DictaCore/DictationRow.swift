@@ -115,6 +115,51 @@ public struct DictationRow: Sendable, Equatable, Identifiable {
     }
 }
 
+/// What `Recent Dictations` knows about the record, as a value.
+///
+/// **A failed read is not an empty record.** Reading through `try?` turned a record that exists
+/// and cannot be read into `[]`, and `[]` is drawn as "Nothing yet." — an authoritative sentence
+/// about a file nobody managed to open. The three cases keep the three claims apart: nothing has
+/// been read, this is what the record holds, and the record could not be read this time. acta
+/// draws a failed inventory read the same way: the failure above the list, the list kept.
+public enum RecentState: Sendable, Equatable {
+    /// No read has completed yet. Nothing is claimed, so nothing is drawn under the title.
+    case unread
+    /// What the record holds, newest first. Authoritative, including when empty.
+    case read([DictationRow])
+    /// The last read failed. `lastGood` is what an earlier read showed, kept on screen: those
+    /// attempts happened, and a read failing now does not unmake them.
+    case failed(reason: String, lastGood: [DictationRow])
+
+    /// The rows to draw.
+    public var rows: [DictationRow] {
+        switch self {
+        case .unread: []
+        case let .read(rows): rows
+        case let .failed(_, lastGood): lastGood
+        }
+    }
+
+    /// Whether the drawer may say "Nothing yet." — only after a read that found nothing.
+    public var saysNothingYet: Bool { self == .read([]) }
+
+    /// The sentence drawn above the rows, or `nil` when the last read succeeded or none has ended.
+    public var failure: String? {
+        guard case let .failed(reason, _) = self else { return nil }
+        return "The record could not be read: \(reason)"
+    }
+
+    /// The state after a read that succeeded: the record's rows, and no failure.
+    public func afterRead(_ rows: [DictationRow]) -> RecentState {
+        .read(rows)
+    }
+
+    /// The state after a read that failed, keeping the rows already on screen.
+    public func afterFailure(reason: String) -> RecentState {
+        .failed(reason: reason, lastGood: rows)
+    }
+}
+
 /// How long ago, in English.
 ///
 /// Hand-written on purpose. `RelativeDateTimeFormatter` is LOCALE-DEPENDENT, and this machine's

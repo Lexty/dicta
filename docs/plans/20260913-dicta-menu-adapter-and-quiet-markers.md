@@ -622,18 +622,25 @@ case symbol(String) }`.
   `Sources/DictaMenu/DictaMenuApp.swift` (the `RecentDictations(rows: model.recent, …)` call at :112)
 - Modify: `Sources/DictaTestRunner/DictationRowTests.swift`, `Sources/DictaTestRunner/StatusViewModelTests.swift`
 
-- [ ] write `RecentState` tests, then add it:
+- [x] write `RecentState` tests, then add it:
   - only `.read([])` says "Nothing yet.";
   - `.unread` draws no rows and no failure;
   - `afterFailure` keeps the last good rows with the reason;
   - `afterRead` clears a failure
-- [ ] publish `recentState` from the view model as `.read(rows)`, still through `try?`, so the next
+  - four tests in "dictation rows". `failure` is the whole sentence drawn, "The record could not be
+    read: <reason>", so the copy is decided in `DictaCore`; the reason extraction stays in the view
+    model, because `ReaderError` lives in `DictaRecord`, which `DictaCore` does not import
+- [x] publish `recentState` from the view model as `.read(rows)`, still through `try?`, so the next
   test can compile and fail on behaviour. In the same step, change `RecentDictations` to take the
   state and update its caller at `DictaMenuApp.swift:112`, so `DictaMenu` still builds for
   `Scripts/linkage.sh`
-- [ ] write a failing test: a `readRecent` that throws `ReaderError.cannotRead` leaves `.failed` with
+  - `recent` became `recentState`; the Task 4 tests compare against `.read(rows)` and `.unread`
+- [x] write a failing test: a `readRecent` that throws `ReaderError.cannotRead` leaves `.failed` with
   that reason and no path, not `.read([])`. Record the failure
-- [ ] write tests:
+  - "a record that cannot be read is a failure with its reason, not an empty record" failed before
+    the fix with `Expectation failed: (model.recentState → .read([])) == .failed(reason: "it could
+    not be opened", lastGood: [])`, and with `saysNothingYet → true`
+- [x] write tests:
   - an older failing read completing after a newer success leaves `.read(newer)`;
   - an older success completing after a newer failure keeps `.failed`;
   - a record readable again clears the failure;
@@ -641,12 +648,19 @@ case symbol(String) }`.
     `lastGood` holds the first success's rows across both failures, the failure is the highest
     applied generation after each failing read, and the recovery replaces the rows and clears the
     failure
-- [ ] catch the error and apply it through the generation check. Update `RecentDictations`:
+  - all four, plus "any other read error is shown by its description"; the sequence test uses a
+    different reason for each failure, so the shown reason is shown to be the latest applied read's
+- [x] catch the error and apply it through the generation check. Update `RecentDictations`:
   - the amber `Label` above the rows when `failure != nil`;
   - the rows from `state.rows`;
   - "Nothing yet." only when `saysNothingYet`;
   - nothing under the title when unread
-- [ ] run `bash Scripts/test.sh`; must pass before Task 6
+  - the read result crosses to the main actor as rows or a reason string and goes through the same
+    `readApplied` check. The `Label` uses `Tint.amber.color`, the one place amber becomes a colour
+- [x] run `bash Scripts/test.sh`; must pass before Task 6
+  - 918 tests in 52 suites passed under Xcode 26.6 and under the Command Line Tools, linkage
+    clean, lint and `git diff --check` clean. What the label looks like is not checked here; a
+    person scores it in Task 9's H items
 
 ### Task 6: Test the setup-window wiring through the fake world
 

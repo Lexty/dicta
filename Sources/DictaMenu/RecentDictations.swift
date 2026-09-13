@@ -59,7 +59,7 @@ struct AttemptControls: View {
 
 /// The last few attempts, newest first.
 struct RecentDictations: View {
-    let rows: [DictationRow]
+    let state: RecentState
     let now: Date
     let copy: (String) -> Void
 
@@ -72,12 +72,21 @@ struct RecentDictations: View {
             Text("Recent Dictations")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            if rows.isEmpty {
+            // acta's idiom for a list it failed to read: the failure above, the list kept below it.
+            // The rows are the last good read's, and those attempts happened whatever the file
+            // says now. Unread draws nothing here at all: no read has claimed anything yet.
+            if let failure = state.failure {
+                Label(failure, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(Tint.amber.color)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if state.saysNothingYet {
                 Text("Nothing yet.")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             } else {
-                ForEach(rows) { row in
+                ForEach(state.rows) { row in
                     RecentRow(row: row, now: now, copied: copied == row.id) { text in
                         copy(text)
                         copied = row.id

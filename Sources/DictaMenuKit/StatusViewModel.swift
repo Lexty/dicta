@@ -25,7 +25,7 @@ public final class StatusViewModel: ObservableObject {
 
     /// The last few attempts, newest first (Tier 1). Re-read when an attempt ends and when the
     /// panel is opened, never on a timer: the record only changes when a dictation does.
-    @Published public private(set) var recent: [DictationRow] = []
+    @Published public private(set) var recentState: RecentState = .unread
     /// What the live attempt's session is CALLED, once a tree has been asked. `nil` means the
     /// caption falls back to the session id, which is always true and merely less friendly.
     @Published private(set) var targetName: String?
@@ -232,24 +232,49 @@ public final class StatusViewModel: ObservableObject {
     /// ever, and this runs every time the panel opens — the two facts together are why Task 5
     /// existed at all.
     ///
-    /// Each read is numbered here, on the main actor, and its rows are published only if no later
+    /// Each read is numbered here, on the main actor, and its result is published only if no later
     /// read has been published first. Two reads can finish in order and still land out of order,
     /// because landing is a hop of its own; without the number, the older one landing second would
     /// put back rows the newer one had already replaced.
+    ///
+    /// **Whatever the result.** A failure goes through the same check as rows do, so an older
+    /// failure cannot cover a newer success, and an older success cannot wipe a newer failure.
     func refreshRecent() {
         readsStarted += 1
         let read = readsStarted
         let world = world
         let url = recordURL
         world.offMain("record") {
-            let entries = try? world.readRecent(url, Self.recentCount)
-            let rows = DictationRow.rows(from: entries ?? [])
+            let result: Result<[DictationRow], ReadFailure>
+            do {
+                let entries = try world.readRecent(url, Self.recentCount)
+                result = .success(DictationRow.rows(from: entries))
+            } catch {
+                result = .failure(ReadFailure(reason: Self.readFailureReason(error)))
+            }
             world.toMain { [weak self] in
                 guard let self, read > self.readApplied else { return }
                 self.readApplied = read
-                self.recent = rows
+                switch result {
+                case let .success(rows):
+                    self.recentState = self.recentState.afterRead(rows)
+                case let .failure(failure):
+                    self.recentState = self.recentState.afterFailure(reason: failure.reason)
+                }
             }
         }
+    }
+
+    /// A read's error, reduced to the sentence the drawer shows, so it can cross to the main actor.
+    private struct ReadFailure: Error {
+        var reason: String
+    }
+
+    /// What a failed read says. `cannotRead` gives its reason without the path: the path is always
+    /// the record this model was given, and on a 300 pt line it would push the reason out of sight.
+    nonisolated private static func readFailureReason(_ error: any Error) -> String {
+        if case let .cannotRead(_, reason)? = error as? RecordReader.ReaderError { return reason }
+        return "\(error)"
     }
 
     /// How many rows the drawer holds. Five, per the proposal: enough to find the dictation you

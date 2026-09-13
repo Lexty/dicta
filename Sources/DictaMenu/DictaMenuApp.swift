@@ -125,7 +125,7 @@ struct Panel: View {
                 AttemptControls(stop: model.stopAndType, abort: model.abort)
             }
             Divider()
-            RecentDictations(rows: model.recent, now: model.now, copy: model.copy)
+            RecentDictations(state: model.recentState, now: model.now, copy: model.copy)
             Divider()
             footer
         }
