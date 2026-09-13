@@ -1135,7 +1135,7 @@ about `returned`.
   `TranscriberTests.swift`
 - Modify: `docs/manual-checklist.md` (citations)
 
-- [ ] write the red tests first:
+- [x] write the red tests first:
   - **happy path:** the chunks posted to the captured pid concatenate to `final`, every event
     carries empty flags, and pacing goes through the `Pacer` fake;
   - **order:** planning runs before the final validation, and nothing but posting follows it (the
@@ -1158,15 +1158,51 @@ about `returned`.
   - **invariant 1:** `test: a focused-field delivery posts only the sanitised single line`, driven
     through `Daemon.deliver` with a newline before sanitising;
   - **invariant 10:** recognised text reaches the record before the first event.
-- [ ] implement the injector in the order plan → final validation (deadline, pid, element,
+- [x] implement the injector in the order plan → final validation (deadline, pid, element,
   eligibility, Secure Input, grant, then deadline and pid again once AX has returned) → post. Use the `Pacer`, `KeystrokeChunks`' two rejections and
   the monotonic deadline.
-- [ ] add the delivery ceiling to `daemonCeilingsFitTheClientTimeout`, counting the AX and feedback
+- [x] add the delivery ceiling to `daemonCeilingsFitTheClientTimeout`, counting the AX and feedback
   calls actually made. Set the deadline below the ceiling, and grow the client timeout only if the
   assertion shows it must.
-- [ ] assert D20 on this path: an abort during `injecting` is refused.
-- [ ] add citations for invariants 1, 3, 10 and 14 and the delivery §7 rows, then run tests — must
+- [x] assert D20 on this path: an abort during `injecting` is refused.
+- [x] add citations for invariants 1, 3, 10 and 14 and the delivery §7 rows, then run tests — must
   pass before next task
+
+- ➕ **Outcome (2026-09-13).** `FocusedFieldInjector` is in `Sources/DictaRuntime/FocusedField.swift`
+  and conforms to Task 8's `FieldInjector`; nothing constructs it in `main.swift` yet (Task 10).
+  - **Order.** The deadline is read once when `inject` is handed the text, then the plan, then the
+    final validation in D32's order, then posts. `test: planning comes before the final validation,
+    and nothing but posting follows it` logs every seam call, the clock included, into one sequence.
+  - **Classification.** `noElement` and `definitelyDifferent` at re-validation are `targetGone` (the
+    application answered definitely), `cannotTell` is `notStarted`. **Nothing frontmost** is
+    `notStarted` before the first event, since it names no other application, and `mayBePartial`
+    after one. An event that cannot be built is `notStarted` for the first chunk and `mayBePartial`
+    after.
+  - **Monotonic deadline.** `now` is a closure, `ProcessInfo.systemUptime` in production, the
+    `FakeClock` in tests. `deliveryDeadline` = 10 s (F11: 108 events in 22 ms, so the largest standard
+    plan is about a second); `chunkPause` = 0 (F11).
+  - **Deviation: the delivery ceiling is built on the deadline, not on `maxChunks`.** The plan's
+    formula (`maxChunks × (pause + check) + AX calls × timeout`) is near zero with no pause and would
+    undercount posting. `FocusedFieldInjector.worstCaseSeconds` is the deadline, plus one validation
+    read that began just before it (`SystemFocusedFieldAccess.worstCaseMessagesPerRead` = 9 messages,
+    counted off the code, at the 0.25 s timeout, plus the settle), plus one pause and a per-chunk
+    allowance (0.01 s, fifty times F11's per-event cost; not measured per event). Feedback is
+    `SystemFeedback.worstCaseCallsPerStop` = 4 `osascript` calls. The field stop is 60 + 30 + 12.51 + 32
+    s against `pipelineRead` 240, so the client timeout did not grow.
+  - **Through the daemon:** invariant 1 (the hostile transcript posted as the sanitised line in
+    several chunks), invariant 10 (the record read from inside the first post), the bound with
+    **final** in the record (a dictionary rule and a long grapheme, against a small planner), and
+    D20 (an abort from inside a post refused while the rest is posted). `Harness` gained
+    `fieldInjector:`; `EventPostFailure` gained a public `init`.
+  - **Citations:** invariants 1, 3, 10 and 14; the abort-during-injection, bound, deadline,
+    gone-before-delivery, AX-cannot-answer and other-application-mid-delivery §7 rows. Invariant 14's
+    "never reads a value" and "never by the client or the menu bar" are still uncited (Task 11 closes
+    the second).
+  - Mutation check: dropping the re-check after AX, `cannotTell` → `targetGone`, dropping the per-chunk
+    frontmost check and skipping eligibility together failed 19 issues; validating before planning,
+    5; ignoring the deadline mid-delivery, 9. Tests: 695 in 42 suites green under Xcode 26.6 (Swift
+    6.3.3), 19 new (29 cases); lint clean (swiftlint not installed, built-in checks only); linkage
+    clean.
 
 ### Task 10: `DaemonOptions`, composition, readiness, installer
 

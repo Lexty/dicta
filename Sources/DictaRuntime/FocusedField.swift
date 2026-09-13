@@ -172,6 +172,17 @@ public final class SystemFocusedFieldAccess: FocusedFieldAccess, @unchecked Send
     /// time it. Too short costs one refused first dictation per application launch, because the
     /// next attempt finds the attribute already set and its tree built.
     public static let manualAccessibilitySettle: TimeInterval = 0.25
+    /// The accessibility messages ONE `focusedElement` read can send, counted off the code below:
+    /// the focused element, `AXManualAccessibility` read and set, the focused element again, the
+    /// owner's pid, then settability, attribute names, role and subrole. Each is bounded by
+    /// `messagingTimeout`, the settle is added once, and `FocusedFieldInjector.worstCaseSeconds`
+    /// is built on the sum. `CFEqual`, the trust check and Secure Input send no message.
+    public static let worstCaseMessagesPerRead = 9
+
+    /// The longest one focused-element read can take.
+    public static var worstCaseReadSeconds: TimeInterval {
+        Double(worstCaseMessagesPerRead) * Double(messagingTimeout) + manualAccessibilitySettle
+    }
 
     /// The attribute Chromium watches to switch its accessibility tree on for a client that is not
     /// a screen reader.
@@ -342,6 +353,10 @@ public struct SystemEventPoster: EventPoster {
 public struct EventPostFailure: Error, Equatable, CustomStringConvertible {
     public var pid: Int32
 
+    public init(pid: Int32) {
+        self.pid = pid
+    }
+
     public var description: String { "the keystrokes for pid \(pid) could not be built" }
 }
 
@@ -352,5 +367,203 @@ public struct ThreadPacer: Pacer {
     public func pause(_ seconds: TimeInterval) {
         guard seconds > 0 else { return }
         Thread.sleep(forTimeInterval: seconds)
+    }
+}
+
+// MARK: - delivery
+
+/// Delivery into a focused field (D32): plan and bound, re-validate, then post, stopping part-way
+/// rather than ever re-aiming.
+///
+/// The order is the design, and each step's position is there for a reason:
+///   1. **Plan first.** `KeystrokeChunks` is bounded but not free, and nothing slow may sit between
+///      the last validation and the first event. A plan over either hard limit is refused here,
+///      before a single accessibility call, as `notStarted`: **final** stays in the record.
+///   2. **Validate, in SPEC's order**: the deadline, the frontmost pid, the focused element read
+///      fresh and compared with the captured one, its eligibility re-classified from that fresh
+///      read, Secure Input, the grant. Then the deadline and the pid AGAIN, because an
+///      accessibility read can return after either has moved.
+///   3. **Post**, checking the frontmost pid and the deadline before every chunk after the first.
+///      Either failing is `mayBePartial`, and nothing is ever retried (§7).
+///
+/// Only a definite answer is called gone: a different element, no element at all, or a different
+/// frontmost pid. A timeout, an error, a lost grant, Secure Input and ineligible or unknown
+/// metadata say nothing about the field and are `notStarted`.
+///
+/// What it cannot see is stated in D4 and §7 rather than hidden: the pid pins the process, not the
+/// element, so focus moving inside the same application during delivery is not detected.
+public struct FocusedFieldInjector: FieldInjector {
+    /// How long one delivery may run before it stops itself, measured from the moment it is handed
+    /// the text. F11 posted 108 events in 22 ms, so the largest plan `KeystrokeChunks.standard`
+    /// allows is about a second of posting; this is ten times that, and far under
+    /// `ControlTimeouts.pipelineRead`, which `daemonCeilingsFitTheClientTimeout` asserts through
+    /// `worstCaseSeconds`. D20 refuses an abort once delivery has begun, so this is the only thing
+    /// that can end a delivery that runs long.
+    public static let deliveryDeadline: TimeInterval = 10
+    /// The pause between chunks. F11: no application measured needed a gap for correctness.
+    public static let chunkPause: TimeInterval = 0
+    /// The allowance for posting one chunk -- two events to the window server -- and reading the
+    /// frontmost pid before it. NOT a measurement of one event: F11's 22 ms for 108 events is
+    /// 0.2 ms each, and this is fifty times that.
+    public static let perChunkAllowance: TimeInterval = 0.01
+
+    /// The longest `inject` can take, from the enforced bounds rather than from the text.
+    ///
+    /// The deadline bounds everything up to the final checks. Past it, at most one validation read
+    /// can still be running (it began just before the deadline, and is bounded by the messaging
+    /// timeout on every call it makes), and at most one pause and one chunk follow the last check
+    /// that passed.
+    public static var worstCaseSeconds: TimeInterval {
+        deliveryDeadline + SystemFocusedFieldAccess.worstCaseReadSeconds + chunkPause
+            + perChunkAllowance
+    }
+
+    private let access: any FocusedFieldAccess
+    private let poster: any EventPoster
+    private let frontmost: any FrontmostApplication
+    private let pacer: any Pacer
+    private let chunks: KeystrokeChunks
+    private let pause: TimeInterval
+    private let deadline: TimeInterval
+    private let now: @Sendable () -> TimeInterval
+
+    /// `frontmost` must be the one observer-backed source the trigger shares (F8a). `now` is
+    /// monotonic in production -- the system uptime -- so a wall-clock change cannot move the
+    /// deadline; a test hands in its fake clock.
+    public init(access: any FocusedFieldAccess,
+                poster: any EventPoster = SystemEventPoster(),
+                frontmost: any FrontmostApplication,
+                pacer: any Pacer = ThreadPacer(),
+                chunks: KeystrokeChunks = .standard,
+                pause: TimeInterval = FocusedFieldInjector.chunkPause,
+                deadline: TimeInterval = FocusedFieldInjector.deliveryDeadline,
+                now: @escaping @Sendable () -> TimeInterval
+                    = { ProcessInfo.processInfo.systemUptime }) {
+        self.access = access
+        self.poster = poster
+        self.frontmost = frontmost
+        self.pacer = pacer
+        self.chunks = chunks
+        self.pause = pause
+        self.deadline = deadline
+        self.now = now
+    }
+
+    public func inject(_ text: String, into field: FieldTarget, handle: FieldHandle) throws {
+        let target = Target.focusedField(field)
+        let expires = now() + deadline
+
+        let plan: [String]
+        switch chunks.plan(text) {
+        case let .chunks(planned):
+            plan = planned
+        case .tooManyChunks:
+            throw DeliveryFailure.notStarted(
+                target, reason: "the text is longer than one delivery may type "
+                    + "(\(chunks.maxChunks) keystroke chunks)")
+        case .graphemeTooLong:
+            throw DeliveryFailure.notStarted(
+                target, reason: "one character of the text is longer than a keystroke may carry "
+                    + "(\(chunks.maxEventUTF16) UTF-16 units)")
+        }
+
+        try validate(field, handle: handle, before: expires)
+
+        for (index, chunk) in plan.enumerated() {
+            if index > 0 {
+                pacer.pause(pause)
+                guard now() <= expires else {
+                    throw DeliveryFailure.mayBePartial(
+                        target, reason: "the delivery ran past its \(Self.seconds(deadline)) "
+                            + "deadline after \(index) of \(plan.count) chunks")
+                }
+                guard frontmost.current?.pid == field.pid else {
+                    throw DeliveryFailure.mayBePartial(
+                        target, reason: "\(field.appName) stopped being the frontmost application "
+                            + "after \(index) of \(plan.count) chunks")
+                }
+            }
+            do {
+                try poster.post(unicode: chunk, toPID: field.pid)
+            } catch {
+                let reason = Daemon.reason(error)
+                throw index == 0
+                    ? DeliveryFailure.notStarted(target, reason: reason)
+                    : DeliveryFailure.mayBePartial(target, reason: reason)
+            }
+        }
+    }
+
+    /// The final validation, in D32's order. Nothing but posting follows it.
+    private func validate(_ field: FieldTarget, handle: FieldHandle,
+                          before expires: TimeInterval) throws {
+        let target = Target.focusedField(field)
+        try checkDeadline(target, expires)
+        try checkFrontmost(field)
+
+        let fresh: FocusedElement
+        do {
+            fresh = try access.focusedElement(expectedPID: field.pid)
+        } catch let error as FocusedFieldError {
+            switch error {
+            case .noElement, .definitelyDifferent:
+                throw DeliveryFailure.targetGone(target, reason: error.description)
+            case .cannotTell:
+                throw DeliveryFailure.notStarted(target, reason: error.description)
+            }
+        } catch {
+            throw DeliveryFailure.notStarted(target, reason: Daemon.reason(error))
+        }
+        guard access.isSame(fresh.handle, as: handle) else {
+            throw DeliveryFailure.targetGone(
+                target, reason: "a different element is focused in \(field.appName)")
+        }
+        switch FieldEligibility.classify(fresh.facts) {
+        case .eligible:
+            break
+        case .ineligible:
+            throw DeliveryFailure.notStarted(
+                target, reason: "the focused element in \(field.appName) is no longer a text field")
+        case .unknown:
+            throw DeliveryFailure.notStarted(
+                target, reason: "accessibility could not tell whether the focused element in "
+                    + "\(field.appName) is still a text field")
+        }
+        guard !access.isSecureInputOn else {
+            throw DeliveryFailure.notStarted(target, reason: "Secure Input is on")
+        }
+        guard access.isTrusted else {
+            throw DeliveryFailure.notStarted(target, reason: "the Accessibility grant is gone")
+        }
+
+        // Again, now that every call that could block has returned.
+        try checkDeadline(target, expires)
+        try checkFrontmost(field)
+    }
+
+    /// Nothing has been posted yet, so a deadline passed here is `notStarted`.
+    private func checkDeadline(_ target: Target, _ expires: TimeInterval) throws {
+        guard now() <= expires else {
+            throw DeliveryFailure.notStarted(
+                target, reason: "the delivery's \(Self.seconds(deadline)) deadline passed before "
+                    + "the first keystroke")
+        }
+    }
+
+    /// A different frontmost application is a definite answer; nothing frontmost at all is not.
+    private func checkFrontmost(_ field: FieldTarget) throws {
+        let target = Target.focusedField(field)
+        guard let current = frontmost.current else {
+            throw DeliveryFailure.notStarted(target, reason: "no application is frontmost")
+        }
+        guard current.pid == field.pid else {
+            throw DeliveryFailure.targetGone(
+                target, reason: "\(current.name ?? current.bundleID ?? "pid \(current.pid)") is "
+                    + "frontmost, not \(field.appName)")
+        }
+    }
+
+    private static func seconds(_ value: TimeInterval) -> String {
+        value == value.rounded() ? "\(Int(value)) s" : "\(value) s"
     }
 }

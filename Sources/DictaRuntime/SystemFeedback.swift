@@ -54,6 +54,16 @@ public enum ScriptNotification {
 /// daemon's routing, not a decision made here. `working` is silent, as it is in agterm, where it is
 /// a colour and nothing else.
 public struct SystemFeedback: Notifier {
+    /// How many `osascript` calls ONE `stop` of a focused-field attempt can make through this
+    /// notifier, worst case: the field path's counterpart of
+    /// `ProcessRunner.worstCaseCallsPerStop`. A sound is not a subprocess and is not counted.
+    ///
+    ///  1. the dictionary's degradation notice
+    ///  2. the filter's fallback notice
+    ///  3. the delivery failure's notice
+    ///  4. the record's "recovery is unavailable" notice
+    public static let worstCaseCallsPerStop = 4
+
     private let sounds: any SoundPlayer
     private let runner: any CommandRunner
 

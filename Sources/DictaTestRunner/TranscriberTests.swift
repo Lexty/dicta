@@ -375,6 +375,23 @@ struct TranscriberTests {
         let givesUpAt = ControlTimeouts.pipelineRead
         #expect(worstCase <= givesUpAt,
                 "the daemon would spend \(worstCase) s; the client gives up at \(givesUpAt) s")
+
+        // A focused-field stop runs the same recognition and then delivers inline under the same
+        // lock (D32), with its feedback through `osascript` rather than `agtermctl`. The delivery
+        // ceiling is built from the injector's enforced bounds -- its deadline, one validation read
+        // at the messaging timeout per accessibility message, one pause and one chunk past the
+        // last check -- never from the text, which is what the deadline exists to stop mattering.
+        let delivery = FocusedFieldInjector.worstCaseSeconds
+        #expect(FocusedFieldInjector.deliveryDeadline < delivery,
+                "the deadline must sit below the ceiling it stops the delivery under")
+        let feedbackCalls = Double(SystemFeedback.worstCaseCallsPerStop)
+            * ProcessRunner.worstCaseCallSeconds
+        let fieldWorstCase = Double(ParakeetTranscriber.patience)
+            + Double(ParakeetEngine.inferenceCeiling)
+            + delivery
+            + feedbackCalls
+        #expect(fieldWorstCase <= givesUpAt,
+                "a field stop spends \(fieldWorstCase) s; the client gives up at \(givesUpAt) s")
     }
 }
 

@@ -124,7 +124,8 @@ struct DaemonTests {
              filter: (any Filter)? = nil,
              injector: (any Injector)? = nil,
              history: (any History)? = nil,
-             focusedFields: Bool = false) {
+             focusedFields: Bool = false,
+             fieldInjector: (any FieldInjector)? = nil) {
             // `/tmp` rather than the per-user temp directory, for the reason `ControlSocketTests`
             // gives: `sun_path` is 104 bytes and $TMPDIR plus a UUID is most of that budget.
             directory = URL(fileURLWithPath: "/tmp")
@@ -155,7 +156,8 @@ struct DaemonTests {
                 dictionary: { book.read() },
                 feedback: feedback,
                 fields: focusedFields
-                    ? Daemon.FocusedFields(access: access, injector: fieldInjector) : nil,
+                    ? Daemon.FocusedFields(access: access,
+                                           injector: fieldInjector ?? self.fieldInjector) : nil,
                 terminal: { _ in terminal }
             )
         }
@@ -2233,6 +2235,120 @@ struct DaemonTests {
         #expect(entry.outcome == .returned)
     }
 
+    // MARK: - delivery into a focused field, through the daemon (D32)
+
+    /// A daemon whose field attempts are typed by the real `FocusedFieldInjector`, over fakes, into
+    /// `DaemonTests.field` -- which is frontmost, and whose focused element is the one the start
+    /// captured.
+    static func typingHarness(chunks: KeystrokeChunks = .standard,
+                              poster: any EventPoster) -> Harness {
+        let frontmost = FakeFrontmost()
+        frontmost.activate(FrontmostFacts(bundleID: Self.field.bundleID, pid: Self.field.pid,
+                                          name: Self.field.appName))
+        let access = FakeFocusedFieldAccess()
+        let injector = FocusedFieldInjector(access: access, poster: poster, frontmost: frontmost,
+                                            pacer: FakePacer(), chunks: chunks)
+        return Harness(focusedFields: true, fieldInjector: injector)
+    }
+
+    @Test("a focused-field delivery posts only the sanitised single line")
+    func aFieldDeliveryPostsOnlyTheSanitisedLine() throws {
+        // Invariant 1 on the field path. The canned transcript carries a newline, a double space
+        // and a trailing space; a newline posted into the VS Code terminal is a Return that
+        // submits Claude Code's prompt exactly as it would in agterm.
+        let poster = FakeEventPoster()
+        let harness = Self.typingHarness(poster: poster)
+
+        let id = harness.dictateIntoField()
+
+        let posted = poster.posts.map(\.unicode)
+        #expect(posted.count > 1, "the text was not split into chunks")
+        #expect(posted.joined() == FakeTranscriber.sanitizedHostileText)
+        #expect(posted.allSatisfy { !$0.contains(where: \.isNewline) })
+        #expect(Sanitizer.isInjectable(posted.joined()))
+        #expect(poster.posts.allSatisfy { $0.pid == Self.field.pid })
+        let entry = try #require(harness.history.appended.last)
+        #expect(entry.id == id)
+        #expect(entry.outcome == .injected)
+    }
+
+    @Test("a focused-field delivery has the text in the record before the first event")
+    func aFieldDeliveryRecordsBeforeTheFirstEvent() throws {
+        // Invariant 10, read from INSIDE the first post: the one moment "before" and "after"
+        // differ.
+        let seen = Locked<[RecordEntry]?>(nil)
+        let history = Locked<FakeHistory?>(nil)
+        let poster = HookedPoster {
+            if seen.value == nil { seen.set((try? history.value?.entries()) ?? []) }
+        }
+        let harness = Self.typingHarness(poster: poster)
+        history.set(harness.history)
+        defer { history.set(nil) }
+
+        harness.dictateIntoField()
+
+        let entries = try #require(seen.value)
+        #expect(entries.count == 1)
+        #expect(entries.first?.recognised == FakeTranscriber.hostileText)
+        #expect(entries.first?.final == FakeTranscriber.sanitizedHostileText)
+        #expect(poster.count > 0)
+    }
+
+    @Test("final over the delivery bound types nothing and stays in the record",
+          arguments: ["dictionary", "grapheme"])
+    func aFinalOverTheBoundIsNotStarted(_ cause: String) throws {
+        // The bound is on **final**, which nothing upstream bounds: a dictionary rule can grow the
+        // text, and one grapheme can be longer than an event may carry. A small planner stands in
+        // for the standard one, so the texts stay readable.
+        let chunks = try #require(KeystrokeChunks(targetUTF16: 1, maxEventUTF16: 2, maxChunks: 45))
+        #expect(chunks.plan(FakeTranscriber.sanitizedHostileText) != .tooManyChunks,
+                "the transcript alone must fit, or the dictionary proves nothing")
+        let poster = FakeEventPoster()
+        let harness = Self.typingHarness(chunks: chunks, poster: poster)
+        let expected: String
+        if cause == "dictionary" {
+            harness.dictionary.set("honesty | fake | counterfeit")
+            expected = "dicta hears you from the counterfeit transcriber"
+        } else {
+            expected = "dicta e" + String(repeating: "\u{0301}", count: 3)
+            harness.transcriber.setText(expected)
+        }
+
+        let id = harness.dictateIntoField()
+
+        #expect(poster.posts.isEmpty)
+        let entry = try #require(try harness.history.entries().last)
+        #expect(entry.id == id)
+        #expect(entry.final == expected)
+        #expect(entry.outcome == .injectionFailed)
+        let message = try #require(harness.feedback.messages.last)
+        #expect(message.contains("nothing was inserted"))
+        #expect(message.contains(cause == "dictionary" ? "keystroke chunks" : "one character"))
+        #expect(harness.feedback.announcements.last == .blocked)
+    }
+
+    @Test("an abort while typing into a focused field is refused")
+    func anAbortWhileTypingIntoAFieldIsRefused() throws {
+        // D20 on the field path: `injecting` lasts as long as the posting, so the abort arrives
+        // from inside the first post, and the rest of the text still goes in.
+        let seen = Locked<Response?>(nil)
+        let harness = Locked<Harness?>(nil)
+        let poster = HookedPoster {
+            if seen.value == nil { seen.set(harness.value?.send(Request(cmd: .abort))) }
+        }
+        let fixture = Self.typingHarness(poster: poster)
+        harness.set(fixture)
+        defer { harness.set(nil) }
+
+        fixture.dictateIntoField()
+
+        let response = try #require(seen.value)
+        #expect(response.kind == .rejected)
+        #expect(response.state == .injecting)
+        #expect(response.message?.contains("keystrokes cannot be recalled") == true)
+        #expect(poster.text == FakeTranscriber.sanitizedHostileText)
+    }
+
     // MARK: - who owns a field handle
 
     enum BusyWith: String, CaseIterable, CustomTestStringConvertible, Sendable {
@@ -2587,6 +2703,23 @@ struct DaemonTests {
         func inject(_ text: String, into target: Target) throws {
             lock.withLock { texts.append(text) }
             body()
+        }
+    }
+
+    /// A poster that runs the test's code BEFORE each chunk is posted, and keeps what was posted.
+    final class HookedPoster: EventPoster, @unchecked Sendable {
+        private let lock = NSLock()
+        private var chunks: [String] = []
+        private let body: @Sendable () -> Void
+
+        init(_ body: @escaping @Sendable () -> Void) { self.body = body }
+
+        var count: Int { lock.withLock { chunks.count } }
+        var text: String { lock.withLock { chunks.joined() } }
+
+        func post(unicode: String, toPID pid: Int32) throws {
+            body()
+            lock.withLock { chunks.append(unicode) }
         }
     }
 }
