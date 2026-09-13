@@ -295,9 +295,9 @@ negative was told apart):
 - **Electron's accessibility tree.** F11: VS Code and Slack expose no focused element (`noValue`)
   until `AXManualAccessibility` is set on the application, and a real one after. Safari and Telegram
   need nothing.
-  - **Proposed** (⚠️ confirm with the user before Task 2 writes D31): when the application element
-    answers `noValue` at start, dicta sets `AXManualAccessibility` on that application once, re-reads
-    once, and refuses as `.unknown` if the element is still absent.
+  - **Decided by the user on 2026-09-13:** when the application element answers `noValue` at start,
+    dicta sets `AXManualAccessibility` on that application once, re-reads once, and refuses as
+    `.unknown` if the element is still absent.
   - The attribute stays set for the life of that application process. That is a side effect on
     another application, which D31 states.
   - F11 saw no visible change in VS Code in a short check. Its performance cost, and how long
@@ -691,8 +691,8 @@ about `returned`.
   - the threshold-edge start and its reason, as confirmed by the user;
   - `FieldEligibility` and its refusal of `.unknown`;
   - chords agterm-only and `raw` unreachable outside agterm;
-  - the `AXManualAccessibility` decision, as confirmed by the user, and its side effect on other
-    applications;
+  - dicta setting `AXManualAccessibility` on an application that answers `noValue` (decided by the
+    user on 2026-09-13), and its side effect on other applications;
   - F11's feedback limit: under a Focus mode the notification is suppressed and the sound is the only
     signal outside agterm (D13 and the §7 refusal rows say so).
 - [ ] add D32 (Unicode keystrokes to the pid), covering:
