@@ -249,11 +249,14 @@ check_keystrokes() {
 # The other direction, invariant 14. With `--focused-fields` the daemon POSTS keystrokes into another
 # application and reads accessibility to find the field; that is the capability the user grants
 # Accessibility for, and it belongs to the daemon's bundle alone, exactly as the microphone does
-# (invariant 8). `dictactl` and `DictaMenu` must name none of the five C functions that capability is
-# spelled with. `Dicta` legitimately names four of them, which is the positive control: when this was
-# written (2026-09-13) `nm Dicta` showed `U _AXUIElementCopyAttributeValue`,
-# `U _AXUIElementCreateSystemWide`, `U _CGEventKeyboardSetUnicodeString` and `U _CGEventPostToPid`,
-# and the current `dictactl` and `DictaMenu` matched nothing.
+# (invariant 8). `dictactl` and `DictaMenu` must name none of the C functions in `POSTING` below.
+# `Dicta` legitimately names them, and check 4b holds the list to what it names: every
+# accessibility, Secure Input or posting function the daemon imports must be on the list, so a new
+# call in the adapter cannot stay out of reach of this gate. The first version of the list missed
+# four the adapter already called -- `AXUIElementCopyAttributeNames`, `AXUIElementGetPid`,
+# `AXUIElementIsAttributeSettable`, `AXUIElementSetMessagingTimeout` -- and a C binary calling one of
+# them passed `--binary` as clean (Codex, reviewing the focused-fields branch on 2026-09-13).
+# `BundleTests` now compiles such binaries and runs this script on them.
 #
 # The names are matched EXACTLY — a leading underscore, the C name, end of line — rather than as
 # substrings. A substring `CGEventPost` would also match `CGEventPostToPid`, which is harmless, but a
@@ -270,7 +273,30 @@ check_keystrokes() {
 # Every accessibility, Secure Input and posting entry point the daemon's focused-field path calls,
 # so a client or menu that reached any of them -- the trust check or a settable attribute included,
 # not only the element read -- fails by name.
-POSTING='CGEventPost|CGEventPostToPid|CGEventKeyboardSetUnicodeString|AXUIElementCreateSystemWide|AXUIElementCreateApplication|AXUIElementCopyAttributeValue|AXUIElementSetAttributeValue|AXIsProcessTrusted|AXIsProcessTrustedWithOptions|IsSecureEventInputEnabled'
+POSTING='CGEventPost|CGEventPostToPid|CGEventKeyboardSetUnicodeString|AXUIElementCreateSystemWide|AXUIElementCreateApplication|AXUIElementCopyAttributeValue|AXUIElementCopyAttributeNames|AXUIElementIsAttributeSettable|AXUIElementSetAttributeValue|AXUIElementGetPid|AXUIElementSetMessagingTimeout|AXIsProcessTrusted|AXIsProcessTrustedWithOptions|IsSecureEventInputEnabled'
+# What counts as that capability when the DAEMON is read back (check 4b), by family rather than by
+# name, so a function nobody has listed yet is still seen. `AXUIElementGetTypeID` is the one import
+# of the family that is not a capability: a CoreFoundation type id, which sends no message.
+POSTING_FAMILY='AXUIElement[A-Za-z]+|AXIsProcessTrusted[A-Za-z]*|AXObserver[A-Za-z]+|CGEventPost[A-Za-z]*|CGEventKeyboardSetUnicodeString|IsSecureEventInputEnabled'
+POSTING_EXEMPT='AXUIElementGetTypeID'
+
+# Check 4b: every capability function the daemon imports is on `POSTING`. Without it the list is a
+# promise about the adapter that nothing compares with the adapter.
+check_posting_list_covers() {
+    local path="$1"
+    local undefined family missing
+    if ! undefined="$(nm -u "$path" 2>&1)"; then
+        printf '%s\n' "$undefined" >&2
+        fail "nm -u could not read $path — the invariant 14 list check did not run"
+        return
+    fi
+    family="$(printf '%s\n' "$undefined" | grep -E "^_($POSTING_FAMILY)\$" || true)"
+    missing="$(printf '%s\n' "$family" | grep -vE "^_($POSTING|$POSTING_EXEMPT)\$" | grep -v '^$' || true)"
+    if [ -n "$missing" ]; then
+        printf '%s\n' "$missing" >&2
+        fail "$path imports accessibility or posting functions that POSTING does not name — add them, or dictactl and the menu could call them unseen (invariant 14)"
+    fi
+}
 
 check_posting() {
     local path="$1"
@@ -306,8 +332,9 @@ fi
 if [ -n "$DAEMON" ]; then
     before="$status"
     check_keystrokes "$DAEMON" "the hold trigger"
+    check_posting_list_covers "$DAEMON"
     if [ "$status" -eq "$before" ]; then
-        echo "linkage: clean — $(basename "$DAEMON") reads modifier state, never a key stream"
+        echo "linkage: clean — $(basename "$DAEMON") reads modifier state, never a key stream, and every accessibility or posting function it imports is on the invariant 14 list"
     fi
 fi
 

@@ -171,15 +171,119 @@ struct MenuBundleTests {
         let script = try BundleTests.text(at: "Scripts/linkage.sh")
         // Invariant 14's "never by dictactl or the menu-bar UI" is a property of the linked
         // binaries, so the script's row is the whole check; losing it loses the clause silently.
-        #expect(script.contains(
-            "POSTING='CGEventPost|CGEventPostToPid|CGEventKeyboardSetUnicodeString|"
-                + "AXUIElementCreateSystemWide|AXUIElementCreateApplication|"
-                + "AXUIElementCopyAttributeValue|AXUIElementSetAttributeValue|AXIsProcessTrusted|"
-                + "AXIsProcessTrustedWithOptions|IsSecureEventInputEnabled'"
-        ))
+        #expect(!Self.postingList(script).isEmpty)
         #expect(script.contains("check_posting \"$BINARY\""))
         #expect(script.contains("check_posting \"$MENU\""))
-        // Never on the daemon: it posts by design when the option is on.
+        // Never on the daemon: it posts by design when the option is on. What the daemon is held to
+        // instead is that the list names everything it imports of that kind.
         #expect(!script.contains("check_posting \"$DAEMON\""))
+        #expect(script.contains("check_posting_list_covers \"$DAEMON\""))
+    }
+
+    /// The function names on `linkage.sh`'s `POSTING` line.
+    static func postingList(_ script: String) -> [String] {
+        guard let line = script.split(separator: "\n").first(where: { $0.hasPrefix("POSTING='") })
+        else { return [] }
+        return line.dropFirst("POSTING='".count).dropLast().split(separator: "|").map(String.init)
+    }
+
+    @Test("linkage.sh fails a real binary calling any listed function, and passes one calling none")
+    func linkageFailsABinaryThatPosts() throws {
+        // Behaviour, not the regex's text: the first list missed four functions the adapter
+        // called, and a test comparing the literal agreed with it. So a C binary is compiled that
+        // references every listed name from a function nothing calls -- the link keeps it -- and
+        // the gate must name each one. The control, with no reference, must pass, or a failure
+        // above could be the gate failing for some other reason.
+        let script = try BundleTests.text(at: "Scripts/linkage.sh")
+        let names = Self.postingList(script)
+        #expect(names.contains("AXUIElementCopyAttributeNames"))
+        #expect(names.contains("AXUIElementGetPid"))
+        #expect(names.contains("AXUIElementIsAttributeSettable"))
+        #expect(names.contains("AXUIElementSetMessagingTimeout"))
+
+        let lab = try LinkageLab()
+        defer { lab.remove() }
+        let clean = try lab.compile("clean", calling: [])
+        let posting = try lab.compile("posting", calling: names)
+
+        let passed = try lab.linkage(["--binary", clean])
+        #expect(passed.status == 0, "the control failed: \(passed.stderr)")
+        let failed = try lab.linkage(["--binary", posting])
+        #expect(failed.status == 1)
+        for name in names {
+            #expect(failed.stderr.contains("_\(name)\n"), "--binary did not name \(name)")
+        }
+    }
+
+    @Test("linkage.sh fails a daemon importing an accessibility function the list does not name")
+    func linkageHoldsTheListToTheDaemon() throws {
+        // Check 4b, against a binary rather than `Dicta`: a family member nobody listed.
+        let lab = try LinkageLab()
+        defer { lab.remove() }
+        let clean = try lab.compile("clean", calling: [])
+        let unlisted = try lab.compile("unlisted", calling: ["AXUIElementCopyActionNames"])
+        let listed = try lab.compile("listed",
+                                     calling: ["AXUIElementGetPid", "AXUIElementGetTypeID"])
+
+        #expect(try lab.linkage(["--daemon", clean]).status == 0)
+        #expect(try lab.linkage(["--daemon", listed]).status == 0,
+                "a listed function, or the exempt type id, was reported as missing")
+        let failed = try lab.linkage(["--daemon", unlisted])
+        #expect(failed.status == 1)
+        #expect(failed.stderr.contains("_AXUIElementCopyActionNames"))
+    }
+
+    /// A temporary directory for tiny C binaries, and `linkage.sh` run on them.
+    struct LinkageLab {
+        let directory: URL
+
+        init() throws {
+            directory = URL(fileURLWithPath: "/tmp")
+                .appendingPathComponent("dicta-linkage-\(UUID().uuidString.prefix(8))")
+            try FileManager.default.createDirectory(at: directory,
+                                                    withIntermediateDirectories: true)
+        }
+
+        func remove() {
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        /// A binary whose `touch` references each of `functions`, declared with no prototype that
+        /// matters: the linker resolves names, and nothing calls `touch`.
+        func compile(_ name: String, calling functions: [String]) throws -> String {
+            let declarations = functions.map { "void \($0)(void);" }.joined(separator: "\n")
+            let calls = functions.map { "    \($0)();" }.joined(separator: "\n")
+            let source = "\(declarations)\nvoid touch(void) {\n\(calls)\n}\n"
+                + "int main(void) { return 0; }\n"
+            let sourceFile = directory.appendingPathComponent("\(name).c")
+            try source.write(to: sourceFile, atomically: true, encoding: .utf8)
+            let binary = directory.appendingPathComponent(name).path
+            let built = try Self.run("/usr/bin/xcrun", [
+                "clang", "-o", binary, sourceFile.path,
+                "-framework", "ApplicationServices", "-framework", "Carbon",
+            ])
+            try #require(built.status == 0, "clang failed: \(built.stderr)")
+            return binary
+        }
+
+        func linkage(_ arguments: [String]) throws -> (status: Int32, stderr: String) {
+            let script = BundleTests.repositoryRoot.appendingPathComponent("Scripts/linkage.sh")
+            return try Self.run("/bin/bash", [script.path] + arguments)
+        }
+
+        static func run(_ executable: String,
+                        _ arguments: [String]) throws -> (status: Int32, stderr: String) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: executable)
+            process.arguments = arguments
+            process.currentDirectoryURL = BundleTests.repositoryRoot
+            let errors = Pipe()
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = errors
+            try process.run()
+            let data = errors.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+        }
     }
 }

@@ -99,6 +99,125 @@ struct FocusedFieldTests {
         #expect(notAString.subrole == nil && !notAString.answered)
     }
 
+    // MARK: - AXManualAccessibility, once
+
+    /// A scripted application for `readEnablingManualAccessibility`: each read takes the next
+    /// answer, and every call is counted, so a test sees which branch ran and not only its result.
+    final class ScriptedApplication: @unchecked Sendable {
+        private(set) var reads = 0
+        private(set) var checks = 0
+        private(set) var enables = 0
+        private(set) var settles = 0
+        private var answers: [Result<Int, FocusedFieldError>]
+        let alreadyOn: Bool
+        let enableStatus: AXError
+
+        init(answers: [Result<Int, FocusedFieldError>], alreadyOn: Bool = false,
+             enableStatus: AXError = .success) {
+            self.answers = answers
+            self.alreadyOn = alreadyOn
+            self.enableStatus = enableStatus
+        }
+
+        func run() -> Result<Int, FocusedFieldError> {
+            do {
+                return .success(try SystemFocusedFieldAccess.readEnablingManualAccessibility(
+                    read: { () throws -> Int in
+                        reads += 1
+                        return try answers.removeFirst().get()
+                    },
+                    isManualAccessibilityOn: {
+                        checks += 1
+                        return alreadyOn
+                    },
+                    enable: {
+                        enables += 1
+                        return enableStatus
+                    },
+                    settle: { settles += 1 }
+                ))
+            } catch let error as FocusedFieldError {
+                return .failure(error)
+            } catch {
+                Issue.record("an error outside the table: \(error)")
+                return .failure(.cannotTell(reason: "\(error)"))
+            }
+        }
+    }
+
+    @Test("an element found on the first read costs no attribute call")
+    func aFirstReadNeedsNoFallback() {
+        let app = ScriptedApplication(answers: [.success(7)])
+        #expect(app.run() == .success(7))
+        #expect(app.reads == 1 && app.checks == 0 && app.enables == 0 && app.settles == 0)
+    }
+
+    @Test("an error other than no element is returned as it is, with no attribute call")
+    func aFirstReadErrorIsNotRetried() {
+        for error in [FocusedFieldError.cannotTell(reason: "cannotComplete"),
+                      .definitelyDifferent(reason: "invalidUIElement")] {
+            let app = ScriptedApplication(answers: [.failure(error)])
+            #expect(app.run() == .failure(error))
+            #expect(app.reads == 1 && app.checks == 0 && app.enables == 0)
+        }
+    }
+
+    @Test("no element, then the attribute set, then an element: the field is found after a settle")
+    func anElectronTreeSwitchedOnIsReadAgain() {
+        let app = ScriptedApplication(answers: [.failure(.noElement), .success(9)])
+        #expect(app.run() == .success(9))
+        #expect(app.reads == 2 && app.checks == 1 && app.enables == 1 && app.settles == 1)
+    }
+
+    @Test("no element, the attribute set, and still no element is unknown, never an absence")
+    func stillNoElementAfterTheSwitchIsUnknown() {
+        // SPEC.md D31: the tree may still be building, so this says nothing about the field. As
+        // `noElement` it reached delivery's re-validation as `target-gone`.
+        let app = ScriptedApplication(answers: [.failure(.noElement), .failure(.noElement)])
+        guard case .failure(.cannotTell) = app.run() else {
+            Issue.record("expected cannotTell")
+            return
+        }
+        #expect(app.reads == 2 && app.enables == 1 && app.settles == 1)
+    }
+
+    @Test("no element with the attribute already on is the application's own answer")
+    func noElementWithTheSwitchOnIsDefinite() {
+        let app = ScriptedApplication(answers: [.failure(.noElement)], alreadyOn: true)
+        #expect(app.run() == .failure(.noElement))
+        #expect(app.reads == 1 && app.checks == 1 && app.enables == 0 && app.settles == 0)
+    }
+
+    @Test("an application with no such attribute keeps its no element, with no re-read",
+          arguments: [AXError.attributeUnsupported, .notImplemented])
+    func anUnsupportedSwitchKeepsNoElement(_ status: AXError) {
+        let app = ScriptedApplication(answers: [.failure(.noElement)], enableStatus: status)
+        #expect(app.run() == .failure(.noElement))
+        #expect(app.reads == 1 && app.enables == 1 && app.settles == 0)
+    }
+
+    @Test("a set that could not complete says nothing about the field, and is not re-read",
+          arguments: [AXError.cannotComplete, .apiDisabled, .failure, .illegalArgument, .noValue])
+    func aFailedSwitchIsUnknown(_ status: AXError) {
+        // A timeout or a revoked grant while switching the tree on: the editor the user can see
+        // has not been shown to be gone.
+        let app = ScriptedApplication(answers: [.failure(.noElement)], enableStatus: status)
+        guard case let .failure(.cannotTell(reason)) = app.run() else {
+            Issue.record("expected cannotTell for \(status.rawValue)")
+            return
+        }
+        #expect(reason.contains("AXManualAccessibility"))
+        #expect(app.reads == 1 && app.enables == 1 && app.settles == 0)
+    }
+
+    @Test("an application gone while its attribute is set is definitely different")
+    func aVanishedApplicationIsDefinite() {
+        let app = ScriptedApplication(answers: [.failure(.noElement)],
+                                      enableStatus: .invalidUIElement)
+        #expect(app.run() == .failure(.definitelyDifferent(reason: "invalidUIElement")))
+        #expect(app.settles == 0)
+    }
+
     // MARK: - identity, never content
 
     @Test("the adapter can copy only identity attributes, never a field's value or selected text")

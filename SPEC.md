@@ -647,7 +647,10 @@ focused-element read failed in every application at every timeout (F11). Electro
 VS Code and Slack — expose no focused element until `AXManualAccessibility` is set on the
 application (F11). **Decided by the user on 2026-09-13:** when the application answers with no
 element, dicta sets `AXManualAccessibility` on that application once, re-reads once, and refuses as
-unknown if the element is still absent. **That is a side effect on another application, and it is
+unknown if the element is still absent. A set that fails is unknown as well — a timeout or a revoked
+grant says nothing about the field — with two exceptions: an application that answers it has no such
+attribute is one without the switch, and its "no element" stands; and an application element that
+is invalid is gone, as everywhere else. **That is a side effect on another application, and it is
 stated rather than hidden**: the attribute stays set for the life of that process, whether or not the
 dictation went ahead. F11 saw no visible change in VS Code in a short check; its performance cost,
 and how long Electron takes to build its tree after it is set, were not measured.

@@ -236,7 +236,7 @@ public final class Daemon: @unchecked Sendable {
     private var fieldHandles: [AttemptID: FieldHandle] = [:]
     /// **Guarded by `stateLock`.** A test's code, run inside the critical section that accepts a
     /// field start. See `duringFieldAcceptance`.
-    private var fieldAcceptanceHook: (@Sendable (AttemptID) -> Void)?
+    private var fieldAcceptanceHook: (@Sendable (AttemptID, Bool) -> Void)?
     /// **Guarded by `stateLock`.** Attempts whose audio belongs to the record and to nothing else
     /// (D26), because they were cancelled, capped or faulted after the microphone had opened.
     private var journalling: Set<AttemptID> = []
@@ -468,9 +468,14 @@ public final class Daemon: @unchecked Sendable {
 
     /// Runs `body` inside the critical section that accepts a field start, before the lock is
     /// released -- the one window in which an abort or a fault on another thread could otherwise
-    /// end the attempt before its handle was stored. `body` must not wait for anything that takes
-    /// the daemon's lock: it is holding it.
-    public func duringFieldAcceptance(_ body: (@Sendable (AttemptID) -> Void)?) {
+    /// end the attempt before its handle was stored -- with whether that attempt's handle is
+    /// ALREADY stored at that point.
+    ///
+    /// `apply` calls it, not the field start's own insert, so it reports the section's state
+    /// whatever the insert does: an insert moved to a later acquisition is `false` here on every
+    /// run, where a contending abort would catch it only when the scheduler happened to agree.
+    /// `body` must not wait for anything that takes the daemon's lock: it is holding it.
+    public func duringFieldAcceptance(_ body: (@Sendable (AttemptID, Bool) -> Void)?) {
         stateLock.withLock { fieldAcceptanceHook = body }
     }
 
@@ -678,7 +683,6 @@ public final class Daemon: @unchecked Sendable {
         let handle = element.handle
         return respond(to: apply(event(for: request, target: target)) { attempt in
             self.fieldHandles[attempt] = handle
-            self.fieldAcceptanceHook?(attempt)
         })
     }
 
@@ -784,8 +788,10 @@ public final class Daemon: @unchecked Sendable {
             if let ended = before.attempt, machine.phase.attempt?.id != ended.id {
                 fieldHandles[ended.id] = nil
             }
-            if before.attempt == nil, let started = machine.phase.attempt {
-                onAcceptedStartLocked?(started.id)
+            if before.attempt == nil, let started = machine.phase.attempt,
+               let onAcceptedStartLocked {
+                onAcceptedStartLocked(started.id)
+                fieldAcceptanceHook?(started.id, fieldHandles[started.id] != nil)
             }
             transitionSequence += 1
             let ending = endingLocked(event, before: before, after: machine.phase,

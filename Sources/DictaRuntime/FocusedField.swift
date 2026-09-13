@@ -251,19 +251,16 @@ public final class SystemFocusedFieldAccess: FocusedFieldAccess, @unchecked Send
     private func readFocusedElement(expectedPID: Int32) throws -> FocusedElement {
         // Through the application element of the expected pid, never the system-wide one (F11).
         let application = AXUIElementCreateApplication(expectedPID)
-        let element: AXUIElement
-        do {
-            element = try focused(in: application)
-        } catch FocusedFieldError.noElement {
-            // Electron answers `noValue` until its tree is switched on (F11). Switched on once per
-            // application process -- the attribute stays set for that process's life, which D31
-            // states as a side effect -- and read again once.
-            guard switchOnManualAccessibility(application) else {
-                throw FocusedFieldError.noElement
-            }
-            Thread.sleep(forTimeInterval: Self.manualAccessibilitySettle)
-            element = try focused(in: application)
-        }
+        let element = try Self.readEnablingManualAccessibility(
+            read: { try focused(in: application) },
+            isManualAccessibilityOn: { isManualAccessibilityOn(application) },
+            enable: {
+                AXUIElementSetAttributeValue(
+                    application, ReadAttribute.manualAccessibility.rawValue as CFString,
+                    kCFBooleanTrue)
+            },
+            settle: { Thread.sleep(forTimeInterval: Self.manualAccessibilitySettle) }
+        )
 
         var owner: pid_t = 0
         if let failure = FocusedFieldError.from(AXUIElementGetPid(element, &owner)) {
@@ -286,21 +283,64 @@ public final class SystemFocusedFieldAccess: FocusedFieldAccess, @unchecked Send
         return unsafeDowncast(value, to: AXUIElement.self)
     }
 
-    /// `false` when the attribute is already on -- `noValue` then means nothing is focused -- or
-    /// when the application refuses it, in which case a re-read could not change the answer.
-    ///
-    /// Read before it is set rather than remembered by pid, so "once per application process" holds
-    /// for a pid the system has since reused.
-    private func switchOnManualAccessibility(_ application: AXUIElement) -> Bool {
+    /// Whether `AXManualAccessibility` reads as on. Read before it is set rather than remembered by
+    /// pid, so "once per application process" holds for a pid the system has since reused. A read
+    /// that fails is "not known to be on", and the set that follows decides.
+    private func isManualAccessibilityOn(_ application: AXUIElement) -> Bool {
         var current: CFTypeRef?
-        if copy(.manualAccessibility, of: application, into: &current) == .success,
-           let current, CFGetTypeID(current) == CFBooleanGetTypeID(),
-           CFBooleanGetValue(unsafeDowncast(current, to: CFBoolean.self)) {
-            return false
+        guard copy(.manualAccessibility, of: application, into: &current) == .success,
+              let current, CFGetTypeID(current) == CFBooleanGetTypeID() else { return false }
+        return CFBooleanGetValue(unsafeDowncast(current, to: CFBoolean.self))
+    }
+
+    /// The focused-element read, with D31's one fallback for an application that answers "no
+    /// focused element": set `AXManualAccessibility` once, wait, read once more.
+    ///
+    /// Electron answers `noValue` until its tree is switched on (F11), so that first `noValue` is
+    /// not yet an answer about the field. What each branch may conclude:
+    ///   - **already on**: the tree is switched on and says nothing is focused -- `noElement`;
+    ///   - **refused as unsupported** (`attributeUnsupported`, `notImplemented`): an application
+    ///     with no such switch, whose `noValue` was already its own answer -- `noElement`;
+    ///   - **gone** (`invalidUIElement`): `definitelyDifferent`, as everywhere else;
+    ///   - **any other failure to set it** -- a timeout, a revoked grant: nothing was learned about
+    ///     the field, so `cannotTell`, never an absence;
+    ///   - **set, and the re-read still has no element**: the tree may still be building, which
+    ///     SPEC.md D31 refuses as unknown -- `cannotTell`.
+    ///
+    /// The attribute stays set for that process's life, which D31 states as a side effect. The
+    /// accessibility calls are closures so that this exact flow is what a test scripts.
+    public static func readEnablingManualAccessibility<Element>(
+        read: () throws -> Element,
+        isManualAccessibilityOn: () -> Bool,
+        enable: () -> AXError,
+        settle: () -> Void
+    ) throws -> Element {
+        do {
+            return try read()
+        } catch FocusedFieldError.noElement {
+            guard !isManualAccessibilityOn() else { throw FocusedFieldError.noElement }
+            let status = enable()
+            switch status {
+            case .success:
+                break
+            case .attributeUnsupported, .notImplemented:
+                throw FocusedFieldError.noElement
+            case .invalidUIElement:
+                throw FocusedFieldError.definitelyDifferent(
+                    reason: FocusedFieldError.name(of: status))
+            default:
+                throw FocusedFieldError.cannotTell(
+                    reason: "AXManualAccessibility could not be set: "
+                        + FocusedFieldError.name(of: status))
+            }
+            settle()
+            do {
+                return try read()
+            } catch FocusedFieldError.noElement {
+                throw FocusedFieldError.cannotTell(
+                    reason: "still no focused element after AXManualAccessibility was set")
+            }
         }
-        return AXUIElementSetAttributeValue(
-            application, ReadAttribute.manualAccessibility.rawValue as CFString, kCFBooleanTrue
-        ) == .success
     }
 
     /// Metadata only. A failed read is `nil`, never a guess: `FieldEligibility` refuses what it

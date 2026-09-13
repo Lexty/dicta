@@ -2418,55 +2418,44 @@ struct DaemonTests {
         #expect(harness.daemon.fieldHandle(for: second)?.token == 2)
     }
 
-    @Test("an abort landing as a field start is accepted never leaves a handle behind")
-    func anAbortInterleavedWithAcceptanceLeavesNoHandle() throws {
+    @Test("a field handle is stored inside the critical section that accepts its start")
+    func aFieldHandleIsStoredInsideAcceptance() throws {
+        // The property an interleaved abort depends on: no thread can take the lock between the
+        // acceptance and the insert. It is asserted from INSIDE that section rather than by racing
+        // an abort against it, because a race is lost or won by the scheduler -- a contender that
+        // had not reached the lock yet let an insert moved after the unlock pass. The hook is
+        // called by `apply` itself, so moving the insert out of the section cannot move the hook
+        // with it.
         let harness = Harness(focusedFields: true)
         let daemon = harness.daemon
-        let aborted = Locked<Response?>(nil)
-        let abortDone = DispatchSemaphore(value: 0)
-        // Runs INSIDE the critical section that accepts the start. It launches the contender and
-        // waits only for that thread to be RUNNING, then gives it a moment to reach the lock --
-        // never for the abort itself, which needs the same lock and would deadlock. Without the
-        // moment, an insert made after the lock was released would usually still beat a thread
-        // that had not been scheduled yet, and the test would pass against the very bug it names.
-        daemon.duringFieldAcceptance { [weak daemon] _ in
-            let running = DispatchSemaphore(value: 0)
-            let contender = Thread {
-                running.signal()
-                aborted.set(daemon?.handle(.request(Request(cmd: .abort))))
-                abortDone.signal()
-            }
-            contender.name = "dicta.test.abort"
-            contender.start()
-            _ = running.wait(timeout: .now() + 5)
-            usleep(20_000)
+        let seen = Locked<[(AttemptID, Bool)]>([])
+        daemon.duringFieldAcceptance { attempt, stored in
+            seen.set(seen.value + [(attempt, stored)])
         }
-        // Watches, from a third thread, for a handle that exists without its accepted attempt.
-        let watching = Locked(true)
-        let orphans = Locked<[AttemptID]>([])
-        let watcherDone = DispatchSemaphore(value: 0)
-        let watcher = Thread { [weak daemon] in
-            while watching.value, let daemon {
-                let seen = daemon.fieldHandleAttempts
-                let orphaned = seen.held.filter { $0 != seen.live }
-                if !orphaned.isEmpty { orphans.set(orphans.value + orphaned) }
-            }
-            watcherDone.signal()
-        }
-        watcher.start()
-
         let started = harness.fieldStart()
-        #expect(abortDone.wait(timeout: .now() + 5) == .success)
-        watching.set(false)
-        #expect(watcherDone.wait(timeout: .now() + 5) == .success)
         daemon.duringFieldAcceptance(nil)
 
+        let id = try #require(started.attempt)
         #expect(started.kind == .accepted)
-        #expect(try #require(aborted.value).kind == .accepted)
+        #expect(seen.value.count == 1)
+        #expect(seen.value.first?.0 == id)
+        #expect(seen.value.first?.1 == true,
+                "the handle was not stored in the section that accepted the start")
+
+        // And the abort that could have interleaved, taken afterwards, leaves nothing behind.
+        #expect(harness.send(Request(cmd: .abort, attempt: id)).kind == .accepted)
         #expect(daemon.state == .idle)
-        #expect(daemon.fieldHandleAttempts.held.isEmpty,
-                "the handle of an attempt that had already ended was stored after it")
-        #expect(orphans.value.isEmpty)
+        #expect(daemon.fieldHandleAttempts == Daemon.FieldOwnership(live: nil, held: []))
+    }
+
+    @Test("an agterm start never reaches the field acceptance hook")
+    func anAgtermStartDoesNotRunTheFieldHook() {
+        let harness = Harness(focusedFields: true)
+        let calls = Locked(0)
+        harness.daemon.duringFieldAcceptance { _, _ in calls.set(calls.value + 1) }
+        #expect(harness.chord().kind == .accepted)
+        harness.daemon.duringFieldAcceptance(nil)
+        #expect(calls.value == 0)
     }
 
     enum FieldEnding: String, CaseIterable, CustomTestStringConvertible, Sendable {
