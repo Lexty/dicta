@@ -423,6 +423,226 @@ struct StatusViewModelTests {
         #expect(fake.with { $0.sent }.isEmpty)
     }
 
+    // MARK: - the setup window
+
+    /// An idle snapshot with a choice pending, which is what opens the window by itself.
+    static let pending = SetupModelTests.snapshot(.undecided)
+
+    /// A model with a fake presenter attached before `start()`, as `MenuRoot` attaches its own.
+    static func presented(_ fake: FakeMenuWorld) -> (StatusViewModel, FakeSetupPresenter) {
+        let model = model(fake)
+        let presenter = FakeSetupPresenter()
+        model.setupPresenter = presenter
+        return (model, presenter)
+    }
+
+    /// The requests `world.send` has received, once `count` have arrived.
+    ///
+    /// The setup window's requests go through the view model's real `OrderedSender`, whose worker
+    /// is a real `Thread` the fake does not hold, so this waits on the fake's arrivals with a
+    /// timeout. A request that should NOT be sent is checked by sending a later one that should,
+    /// and finding it alone: the sender keeps order, so the first would have arrived before it.
+    static func sent(_ fake: FakeMenuWorld, count: Int,
+                     sourceLocation: SourceLocation = #_sourceLocation) -> [Request] {
+        let arrived = fake.waitUntil { $0.sent.count >= count }
+        #expect(arrived, "the setup sender delivered too few requests",
+                sourceLocation: sourceLocation)
+        return fake.with { $0.sent }
+    }
+
+    @Test("an idle first snapshot with a choice pending shows the window once")
+    func idlePendingFirstSnapshotShows() {
+        let fake = FakeMenuWorld()
+        let (model, presenter) = Self.presented(fake)
+        fake.script([.update(Self.pending), .update(Self.pending)], then: .open)
+        model.start()
+        fake.runOffMain("watch")
+        fake.releaseMain(at: 0)
+        #expect(presenter.shows == 1)
+        // The same pending snapshot again is not the first of this launch.
+        fake.settle()
+        #expect(presenter.shows == 1)
+    }
+
+    @Test("a busy first snapshot never shows the window, and neither does a later idle one")
+    func busyFirstSnapshotConsumesTheLatch() {
+        let fake = FakeMenuWorld()
+        let (model, presenter) = Self.presented(fake)
+        let busy = SetupModelTests.snapshot(.undecided, state: .recording)
+        fake.script([.update(busy), .update(Self.pending)], then: .open)
+        model.start()
+        fake.settle()
+        #expect(model.model.snapshot == Self.pending)
+        #expect(presenter.shows == 0)
+    }
+
+    @Test("a reconnect followed by a second pending snapshot shows nothing")
+    func reconnectDoesNotReopen() {
+        let fake = FakeMenuWorld()
+        let (model, presenter) = Self.presented(fake)
+        let crashed = ControlClient.ClientError.daemonCrashed(path: Self.socket)
+        fake.script([.update(Self.pending)], then: .throwing(crashed))
+        model.start()
+        fake.settle()
+        #expect(presenter.shows == 1)
+        #expect(model.model.link == .failed(crashed.description))
+
+        fake.script([.update(Self.pending)], then: .open)
+        fake.fireAfter()
+        fake.settle()
+        #expect(model.model.link == .connected)
+        #expect(presenter.shows == 1)
+    }
+
+    @Test("a presenter attached after the first snapshot never gets that launch's open")
+    func latePresenterMissesTheOpen() {
+        let fake = FakeMenuWorld()
+        let model = Self.model(fake)
+        fake.script([.update(Self.pending), .update(Self.pending)], then: .open)
+        model.start()
+        fake.runOffMain("watch")
+        fake.releaseMain(at: 0)
+        // Why `MenuRoot` attaches the presenter before anything can call `start()`: the latch was
+        // consumed with nobody to show, and a later snapshot may not retry (D27).
+        let presenter = FakeSetupPresenter()
+        model.setupPresenter = presenter
+        fake.settle()
+        #expect(model.model.snapshot == Self.pending)
+        #expect(presenter.shows == 0)
+    }
+
+    @Test("openSetup, the banner's Set Up action and perform(.openSetup) all show the window")
+    func everyDoorShowsTheWindow() throws {
+        let fake = FakeMenuWorld()
+        let (model, presenter) = Self.presented(fake)
+        model.openSetup()
+        #expect(presenter.shows == 1)
+        model.perform(.openSetup)
+        #expect(presenter.shows == 2)
+
+        // A setup step pending after the first snapshot: the banner offers "Set Up…", and its
+        // action is the same door. The footer's "Set Up…" row calls `openSetup()`, which
+        // `MenuBundleTests` reads.
+        let needed = StatusSnapshot(state: .idle, readiness: .setupNeeded,
+                                    setup: SetupSnapshot(scope: .undecided, offerSeen: false))
+        let busy = StatusSnapshot(state: .recording)
+        fake.script([.update(busy), .update(needed)], then: .open)
+        model.start()
+        fake.settle()
+        #expect(presenter.shows == 2)
+        let banner = try #require(model.model.banner)
+        #expect(banner.actionTitle == "Set Up…")
+        model.perform(try #require(banner.action))
+        #expect(presenter.shows == 3)
+        #expect(fake.with { $0.sent }.isEmpty)
+    }
+
+    @Test("with the link down, openSetup still shows the window, on the unavailable screen")
+    func linkDownStillShowsTheWindow() {
+        let fake = FakeMenuWorld()
+        fake.with { $0.socketPresent = false }
+        let (model, presenter) = Self.presented(fake)
+        model.start()
+        fake.settle()
+        #expect(model.model.link == .notRunning)
+        model.openSetup()
+        #expect(presenter.shows == 1)
+        #expect(model.setup.screen == .unavailable)
+    }
+
+    @Test("a click on the fresh screen hands SetupModel's request to world.send")
+    func freshClickSendsTheModelsRequest() {
+        let fake = FakeMenuWorld()
+        let model = Self.connected(fake, to: Self.pending)
+        let expected = model.setup.effect(of: .setUpDictation).request
+        #expect(expected == SetupModelTests.configureOtherApps)
+        model.setupClicked(.setUpDictation)
+        #expect(Self.sent(fake, count: 1) == [SetupModelTests.configureOtherApps])
+        #expect(fake.with { $0.sentPaths } == [Self.socket])
+    }
+
+    @Test("two different clicks arrive at world.send in click order")
+    func clicksArriveInOrder() {
+        let fake = FakeMenuWorld()
+        let model = Self.connected(fake, to: Self.pending)
+        // Waits on the real sender's worker thread, with a timeout (`sent`). Ordering under a held
+        // transport is `OrderedSenderTests`'; this pins that the model uses the sender at all.
+        model.setupClicked(.setUpDictation)
+        model.setupClicked(.useOnlyWithAgterm)
+        #expect(Self.sent(fake, count: 2)
+            == [SetupModelTests.configureOtherApps, SetupModelTests.configureAgtermOnly])
+    }
+
+    @Test("Allow Access flips accessibilityRequested, and the row then opens the pane")
+    func allowAccessFlipsTheRequest() {
+        let fake = FakeMenuWorld()
+        let checklist = SetupModelTests.snapshot(
+            .otherApps, faculties: Faculties(microphone: true, models: true, terminal: true,
+                                             scope: .otherApps, accessibility: false))
+        let model = Self.connected(fake, to: checklist)
+        #expect(!model.accessibilityRequested)
+        // Not drawn yet, so not a click: nothing flips.
+        model.setupClicked(.openAccessibilitySettings)
+        #expect(!model.accessibilityRequested)
+
+        model.setupClicked(.allowAccess)
+        #expect(model.accessibilityRequested)
+        #expect(Self.sent(fake, count: 1) == [SetupModelTests.prompt])
+
+        model.setupClicked(.openAccessibilitySettings)
+        #expect(Self.sent(fake, count: 2) == [SetupModelTests.prompt, SetupModelTests.check])
+        #expect(fake.with { $0.opened } == [SetupModel.accessibilitySettings])
+    }
+
+    @Test("becoming key checks the grant without a prompt, under other-apps only")
+    func becomingKeyChecksUnderOtherAppsOnly() {
+        let otherApps = FakeMenuWorld()
+        let checking = Self.connected(otherApps, to: SetupModelTests.snapshot(.otherApps))
+        checking.setupBecameKey()
+        #expect(Self.sent(otherApps, count: 1) == [SetupModelTests.check])
+
+        let fresh = FakeMenuWorld()
+        let quiet = Self.connected(fresh, to: Self.pending)
+        quiet.setupBecameKey()
+        // The later click arriving alone shows becoming key sent nothing before it.
+        quiet.setupClicked(.setUpDictation)
+        #expect(Self.sent(fresh, count: 1) == [SetupModelTests.configureOtherApps])
+    }
+
+    @Test("closing sends offerSeen only on the first-time offer")
+    func closingRecordsOnlyTheFirstOffer() {
+        let offer = FakeMenuWorld()
+        let firstTime = Self.connected(offer, to: SetupModelTests.snapshot(.agtermOnly))
+        #expect(firstTime.setup.screen == .offer(firstTime: true))
+        firstTime.setupClosed()
+        #expect(Self.sent(offer, count: 1) == [SetupModelTests.configureOfferSeen])
+
+        let seen = FakeMenuWorld()
+        let later = Self.connected(seen, to: SetupModelTests.snapshot(.agtermOnly, offerSeen: true))
+        later.setupClosed()
+        later.setupClicked(.enable)
+        #expect(Self.sent(seen, count: 1) == [SetupModelTests.configureOtherApps])
+
+        let fresh = FakeMenuWorld()
+        let unanswered = Self.connected(fresh, to: Self.pending)
+        unanswered.setupClosed()
+        unanswered.setupClicked(.setUpDictation)
+        #expect(Self.sent(fresh, count: 1) == [SetupModelTests.configureOtherApps])
+    }
+
+    @Test("a control the screen no longer draws sends nothing")
+    func undrawnControlSendsNothing() {
+        let fake = FakeMenuWorld()
+        let model = Self.connected(fake, to: Self.pending)
+        // The fresh screen draws neither: a click that landed after the stream replaced the screen.
+        model.setupClicked(.keepAgtermOnly)
+        model.setupClicked(.fetchModels)
+        model.setupClicked(.setUpDictation)
+        #expect(Self.sent(fake, count: 1) == [SetupModelTests.configureOtherApps])
+        #expect(fake.with { $0.ran }.isEmpty)
+        #expect(fake.with { $0.opened }.isEmpty)
+    }
+
     // MARK: - the session name
 
     @Test("with no agterm found, the name lookup starts no work and the caption uses the id")

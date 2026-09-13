@@ -71,13 +71,32 @@ final class FakeMenuWorld: @unchecked Sendable {
         var ran: [Run] = []
     }
 
-    private let lock = NSLock()
+    /// A condition rather than a plain lock, so `waitUntil` wakes for a change made on another
+    /// thread: the setup window's real `OrderedSender` worker is the one such caller.
+    private let lock = NSCondition()
     private var state = State()
 
     /// Reads or changes the state under the lock. Never call a capability from inside `body`.
     @discardableResult
     func with<T>(_ body: (inout State) -> T) -> T {
-        lock.withLock { body(&state) }
+        lock.withLock {
+            defer { lock.broadcast() }
+            return body(&state)
+        }
+    }
+
+    /// Blocks until `condition` holds, or `timeout` passes. Whether it held.
+    ///
+    /// **The one wait in the fake**, for work that runs on a real thread the test does not hold:
+    /// the setup sender's worker. Everything else is run by the test and needs no waiting.
+    func waitUntil(timeout: TimeInterval = 5, _ condition: (State) -> Bool) -> Bool {
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        return lock.withLock {
+            while !condition(state) {
+                guard lock.wait(until: deadline) else { return condition(state) }
+            }
+            return true
+        }
     }
 
     /// The error an unscripted watch throws: a socket with nobody behind it.

@@ -667,24 +667,37 @@ case symbol(String) }`.
 **Files:**
 - Modify: `Sources/DictaTestRunner/StatusViewModelTests.swift`
 
-- [ ] write latch tests with a fake `SetupWindowPresenting`:
+- [x] write latch tests with a fake `SetupWindowPresenting`:
   - an idle first snapshot with a pending choice calls `show()` once;
   - a busy first snapshot never does, and neither does a later one;
   - a reconnect, followed by a second pending snapshot, shows nothing
-- [ ] write tests for `openSetup`:
+  - plus "a presenter attached after the first snapshot never gets that launch's open", which pins
+    why `MenuRoot` attaches it before `start()`
+- [x] write tests for `openSetup`:
   - `openSetup()`, `perform(.openSetup)` and the "Set Up…" row call `show()`;
   - with the link down, `openSetup()` still shows the window, and the model's screen is
     `.unavailable`
-- [ ] write click tests:
+  - the footer's "Set Up…" row is a SwiftUI button in `DictaMenu`, so `MenuBundleTests` reads that
+    it calls `model.openSetup()` and that `setupPresenter?.show()` is the only `.show()` call; the
+    banner's "Set Up…" action is driven through the model
+- [x] write click tests:
   - `setupClicked` on the fresh screen hands `SetupModel`'s request to `world.send`;
   - two different clicks arrive at `world.send` in click order, waiting with a timeout on the real
     sender's thread, as noted in the test;
   - `.allowAccess` flips `accessibilityRequested`
-- [ ] write tests for the window's events:
+  - every setup request goes through the real sender, so each of these tests waits: the fake's
+    lock became an `NSCondition`, with `waitUntil(timeout:)` as its one wait. A request that must
+    NOT be sent is checked by a later one that must, arriving alone: the sender keeps order
+- [x] write tests for the window's events:
   - `setupBecameKey()` sends a non-prompting `accessibility` only under `other-apps`;
   - `setupClosed()` sends `offerSeen` only on the first-time offer;
   - a control the screen no longer draws sends nothing
-- [ ] run `bash Scripts/test.sh`; must pass before Task 7
+  - these pin behaviour that already held, so they passed first. Watched failing on a mutated
+    model instead: a latch that opened on every snapshot failed the five latch and door tests, and
+    becoming key sending `status` failed the becoming-key test under both screens
+- [x] run `bash Scripts/test.sh`; must pass before Task 7
+  - 930 tests in 52 suites passed under Xcode 26.6 and under the Command Line Tools, linkage
+    clean, lint and `git diff --check` clean
 
 ### Task 7: Quiet the ordinary outcome and mark exceptions on the second line
 

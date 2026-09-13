@@ -206,6 +206,11 @@ struct MenuBundleTests {
         #expect(sources.components(separatedBy: "activate(ignoringOtherApps").count == 1)
         #expect(sources.contains("firstSnapshot.observe(event.snapshot)"))
         #expect(sources.contains("firstSnapshotOfThisLaunch: true)"))
+        // Every door is `openSetup()`, which `StatusViewModelTests` drives: the footer's row calls
+        // it, and it is the one place the presenter is asked to show.
+        #expect(sources.contains("Button(\"Set Up…\") { model.openSetup() }"))
+        #expect(sources.components(separatedBy: ".show()").count == 2)
+        #expect(sources.contains("setupPresenter?.show()"))
     }
 
     // MARK: - Who owns and starts the model
