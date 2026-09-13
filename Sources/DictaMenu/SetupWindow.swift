@@ -1,5 +1,6 @@
 import AppKit
 import DictaCore
+import DictaMenuKit
 import SwiftUI
 
 // The setup window (D27, D31). It draws `SetupModel` and reports three things back to the view
@@ -14,36 +15,36 @@ import SwiftUI
 // itself at launch (only macOS 15 can suppress that, and the package targets 14), and window
 // restoration may reopen it at login. Each of those would take focus from agterm with nobody having
 // asked, which D27 allows this window only on purpose. An `NSWindow` opens when `show()` is called
-// and at no other moment, so the view model opens it directly, with nothing to bridge. H35 and H41
-// score what is left: that it comes forward, and that it never appears unasked.
+// and at no other moment, so the view model opens it through its presenter, with nothing to
+// bridge. H35 and H41 score what is left: that it comes forward, and that it never appears unasked.
 
 /// Owns the one setup window, built on first use and kept for the process.
+///
+/// The presenter `StatusViewModel` asks to `show()`, in acta's `ReminderPresenting` shape: it
+/// holds the model weakly, draws it, and reports the window's two events back through the model's
+/// public methods. `MenuRoot` owns it and attaches it before the model starts.
 @MainActor
-final class SetupWindowController: NSObject, NSWindowDelegate {
+final class SetupWindowController: NSObject, NSWindowDelegate, SetupWindowPresenting {
     private var window: NSWindow?
-    private let content: () -> AnyView
-    private let becameKey: () -> Void
-    private let closed: () -> Void
+    private weak var model: StatusViewModel?
 
-    init(content: @escaping () -> AnyView, becameKey: @escaping () -> Void,
-         closed: @escaping () -> Void) {
-        self.content = content
-        self.becameKey = becameKey
-        self.closed = closed
+    init(model: StatusViewModel) {
+        self.model = model
     }
 
     /// Opens the window, or brings it forward, and activates the app — the only moment this process
     /// ever activates itself (D27).
     func show() {
-        let window = self.window ?? make()
+        guard let model else { return }
+        let window = self.window ?? make(model)
         self.window = window
         if !window.isVisible { window.center() }
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
     }
 
-    private func make() -> NSWindow {
-        let hosting = NSHostingController(rootView: content())
+    private func make(_ model: StatusViewModel) -> NSWindow {
+        let hosting = NSHostingController(rootView: SetupView(model: model))
         // The window follows the screen it draws: a checklist is taller than an offer.
         hosting.sizingOptions = [.preferredContentSize]
         let window = NSWindow(contentViewController: hosting)
@@ -60,11 +61,11 @@ final class SetupWindowController: NSObject, NSWindowDelegate {
     func windowDidBecomeKey(_ notification: Notification) {
         // Opening makes it key, and so does coming back from System Settings or from the system's
         // own Accessibility dialog — which is why this never prompts (`effectOfBecomingKey`).
-        becameKey()
+        model?.setupBecameKey()
     }
 
     func windowWillClose(_ notification: Notification) {
-        closed()
+        model?.setupClosed()
     }
 }
 

@@ -13,9 +13,10 @@ import Foundation
 
 /// Delivers items one at a time, in the order they were enqueued, off the caller's thread.
 ///
-/// The worker is a real `Thread`, for `StatusViewModel.offMain`'s reason, started when an item
-/// arrives with none running and ending when it finds nothing left: nothing waits on an empty
-/// queue, and nothing polls. At most one worker exists at a time, which is the whole of the order.
+/// The worker is a real `Thread`, for the reason `MenuWorld.system`'s `offMain` gives (in
+/// `DictaMenu`), started when an item arrives with none running and ending when it finds nothing
+/// left: nothing waits on an empty queue, and nothing polls. At most one worker exists at a time,
+/// which is the whole of the order.
 public final class OrderedSender<Item: Sendable>: @unchecked Sendable {
     private let name: String
     private let deliver: @Sendable (Item) -> Void

@@ -1,10 +1,12 @@
 import DictaCore
+import DictaMenuKit
 import SwiftUI
 
 // The menu-bar item (D27). A SECOND client of the control socket, never a second face of the
 // daemon: this process links DictaCore, DictaIPC and DictaRecord, as `dictactl` could, plus
-// SwiftUI. It opens no microphone, loads no model, and the daemon holds no reference to it — if
-// this binary is absent, quit or crashed, every dictation behaves identically.
+// DictaMenuKit, which holds the menu's logic over those three, plus SwiftUI. It opens no
+// microphone, loads no model, and the daemon holds no reference to it — if this binary is absent,
+// quit or crashed, every dictation behaves identically.
 //
 // Why the file is not called `main.swift`: a SwiftUI `@main` type and top-level code cannot coexist
 // in a target, and `main.swift` IS top-level code. Naming it after the type is the ordinary fix.
@@ -17,34 +19,48 @@ import SwiftUI
 
 @main
 struct DictaMenuApp: App {
-    @StateObject private var model = StatusViewModel()
+    /// The model and its setup-window presenter, paired before anything starts the model.
+    @StateObject private var root = MenuRoot()
 
     var body: some Scene {
         MenuBarExtra {
-            Panel(model: model)
+            Panel(model: root.model)
         } label: {
-            // The 90% of this UI: passive, always visible, never focused, no click. `mic` rather
-            // than acta's `waveform` because two items from one family sit in the same strip and
-            // must be distinguishable by SHAPE, not only by position.
-            //
-            // D13 applies here in full — the glyph lights on `listening`, never on the keypress —
-            // and it holds by construction: the state it draws comes from the daemon's own
-            // transitions, the same ones that drive the agterm indicator, so the two cannot
-            // disagree.
-            BarItem(label: model.model.barLabel(at: model.now))
-                // **The stream starts HERE, not in the panel**, and that is a fix rather than a
-                // style. `Panel` is built lazily by `MenuBarExtra` — it does not exist until the
-                // item is clicked — so a `.task` on it meant the watch connection was opened by the
-                // first person to open the panel and by nobody else. Measured on the installed
-                // build (2026-08-24): a freshly launched `DictaMenu` held ZERO sockets, so the
-                // glyph sat on its seeded state from login onwards. Every test of it passed
-                // because everyone testing a panel opens the panel. The label is the view that
-                // always exists, which makes it the only honest place for this.
-                .task { model.start() }
+            MenuBarLabel(model: root.model)
         }
         // `.window`, matching acta. `.menu` would give a list of commands; what this needs is a
         // panel with a header, banners and rows.
         .menuBarExtraStyle(.window)
+    }
+}
+
+/// The view that is always there: the menu-bar item, observing the model itself.
+///
+/// Its own view, with its own `@ObservedObject`, because `MenuRoot` owns the model without
+/// observing it: an `ObservableObject` does not forward a child's changes, so a label drawn from
+/// `root.model` in the app's body would never redraw.
+struct MenuBarLabel: View {
+    @ObservedObject var model: StatusViewModel
+
+    var body: some View {
+        // The 90% of this UI: passive, always visible, never focused, no click. `mic` rather
+        // than acta's `waveform` because two items from one family sit in the same strip and
+        // must be distinguishable by SHAPE, not only by position.
+        //
+        // D13 applies here in full — the glyph lights on `listening`, never on the keypress —
+        // and it holds by construction: the state it draws comes from the daemon's own
+        // transitions, the same ones that drive the agterm indicator, so the two cannot
+        // disagree.
+        BarItem(label: model.model.barLabel(at: model.now))
+            // **The stream starts HERE, not in the panel**, and that is a fix rather than a
+            // style. `Panel` is built lazily by `MenuBarExtra` — it does not exist until the
+            // item is clicked — so a `.task` on it meant the watch connection was opened by the
+            // first person to open the panel and by nobody else. Measured on the installed
+            // build (2026-08-24): a freshly launched `DictaMenu` held ZERO sockets, so the
+            // glyph sat on its seeded state from login onwards. Every test of it passed
+            // because everyone testing a panel opens the panel. The label is the view that
+            // always exists, which makes it the only honest place for this.
+            .task { model.start() }
     }
 }
 

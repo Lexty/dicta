@@ -502,8 +502,13 @@ case symbol(String) }`.
 - Create: `Sources/DictaTestRunner/MenuWorldFakes.swift`
 - Create: `Sources/DictaTestRunner/StatusViewModelTests.swift`
 
-- [ ] write the fake world in `MenuWorldFakes.swift`, as the Testing Strategy describes
-- [ ] write characterization tests, `@MainActor`, against the class as it will be:
+- [x] write the fake world in `MenuWorldFakes.swift`, as the Testing Strategy describes
+  - `FakeMenuWorld`: every capability under one lock, with scripted `watch` streams. A stream's
+    ending is `.returns`, `.throwing(error)` or `.open`. The fake's watch must return, since it runs
+    on the test's thread, so `.open` drops the one hop that return makes: a stream still open has
+    not made it yet. Also `runOffMain(name?)`, `releaseMain(at:)` and `releaseMain()`, `settle()`,
+    `fireAfter()`, `tick()`, and `FakeSetupPresenter`
+- [x] write characterization tests, `@MainActor`, against the class as it will be:
   - the synchronous first model;
   - `start()` connects, and with no socket the link is `.notRunning`;
   - an update publishes the model;
@@ -512,30 +517,48 @@ case symbol(String) }`.
   - `openRecord` reveals the injected record URL;
   - the banner actions reach their effects;
   - no `locateAgterm` result starts no thread
-- [ ] move `StatusViewModel` into `DictaMenuKit`:
+  - 11 tests in `StatusViewModelTests`, plus a clean `.end` keeping its reason and a found agterm
+    asked once per session. Watched failing: `stopAndType` sending `.raw`, and `openRecord`
+    revealing `Paths.current.record`, each failed its test
+- [x] move `StatusViewModel` into `DictaMenuKit`:
   - replace each system call with its `world` capability;
   - declare the public surface listed in the Solution Overview;
   - replace the cached `SetupWindowController` with `weak var setupPresenter`;
   - make `setupBecameKey` and `setupClosed` public.
 
   The three defects stay.
-- [ ] write `MenuWorld.system` in `SystemMenuWorld.swift`, and make `SetupWindowController` adopt
+  - Swift 6 refused `[weak self]` re-captured inside the `@Sendable` watch callback nested in the
+    off-main closure, so the event sink (`deliver`) is built on the main actor before the thread
+    starts. `refreshRecent` and `resolveTargetName` stay internal; the tests reach them through
+    `start()` and `panelAppeared()`
+- [x] write `MenuWorld.system` in `SystemMenuWorld.swift`, and make `SetupWindowController` adopt
   `SetupWindowPresenting`, taking the model weakly
-- [ ] add `MenuRoot` in `DictaMenu`, the app's `@StateObject`:
+  - the ticker's `@MainActor` closure crosses into `Timer`'s `@Sendable` block in a private
+    `@unchecked Sendable` box and runs under `MainActor.assumeIsolated`: the block runs on the main
+    run loop. The timer is carried into `MenuCancel` the same way
+- [x] add `MenuRoot` in `DictaMenu`, the app's `@StateObject`:
   - its `init` builds the model, then the controller, then assigns `setupPresenter`;
   - the label becomes `MenuBarLabel(model: root.model)`, a view with
     `@ObservedObject var model: StatusViewModel` that renders `BarItem` and carries
     `.task { model.start() }`;
   - `Panel(model: root.model)` is unchanged;
   - update the module-list comment at `DictaMenuApp.swift:4-7`
-- [ ] extend `MenuBundleTests` with source checks:
+- [x] extend `MenuBundleTests` with source checks:
   - in `Sources/DictaMenu`, `setupPresenter =` appears inside `MenuRoot`'s `init`;
   - the only call of `StatusViewModel.start()` in `Sources/DictaMenu` is `MenuBarLabel`'s `.task`,
     and `Panel` has none; `panelAppeared()`'s internal call stays, and `SystemMenuWorld`'s
     `Thread.start()` for the off-main and watch workers is not a model start;
   - `BarItem(` is built only inside a view declaring `@ObservedObject var model: StatusViewModel`;
   - no file other than `MenuRoot` constructs `StatusViewModel(`
-- [ ] run `bash Scripts/test.sh`; linkage clean. Must pass before Task 3
+  - done as two tests over a brace-counting reader of top-level declarations, which has its own
+    test. Watched failing: a `model.start()` added to `Panel`'s `.task` failed the start check. The
+    first version of the init check read everything after `init()`, so an assignment moved into a
+    later method still passed; it now reads the init's own body, and that move fails it
+- [x] run `bash Scripts/test.sh`; linkage clean. Must pass before Task 3
+  - 902 tests in 52 suites passed under Xcode 26.6 and, twice, under the Command Line Tools.
+    Linkage, lint and `git diff --check` were clean. The first Command Line Tools run, straight
+    after a full rebuild, failed only Task 1's known flake "a stream never goes backwards"
+    (`sequences.count → 2`). `RecentDictations.swift` needed no change: it never names the model
 
 ### Task 3: Stop the ticker when the connection ends (defect a)
 

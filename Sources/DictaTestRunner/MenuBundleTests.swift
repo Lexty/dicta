@@ -208,6 +208,117 @@ struct MenuBundleTests {
         #expect(sources.contains("firstSnapshotOfThisLaunch: true)"))
     }
 
+    // MARK: - Who owns and starts the model
+
+    /// Each Swift file of a menu directory, by name, in a stable order.
+    static func sourceFiles(in directory: String) throws -> [(name: String, text: String)] {
+        let url = BundleTests.repositoryRoot.appendingPathComponent(directory)
+        return try FileManager.default.contentsOfDirectory(atPath: url.path)
+            .filter { $0.hasSuffix(".swift") }.sorted()
+            .map { ($0, try BundleTests.text(at: "\(directory)/\($0)")) }
+    }
+
+    /// The top-level declarations of a Swift source: each one's header (the text since the
+    /// previous declaration ended, doc comments and attributes included) and its braced body.
+    ///
+    /// Brace counting, with whole-line comments skipped: enough for the menu's own files, whose
+    /// strings carry no braces. A brace that did turn up in one would shift a body, and the checks
+    /// below would fail rather than pass.
+    static func topLevelDeclarations(in source: String) -> [(header: String, body: String)] {
+        let code = source.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces).hasPrefix("//") ? "" : String($0) }
+            .joined(separator: "\n")
+        var declarations: [(header: String, body: String)] = []
+        var depth = 0
+        var header = ""
+        var body = ""
+        for character in code {
+            switch character {
+            case "{":
+                if depth > 0 { body.append(character) }
+                depth += 1
+            case "}":
+                depth -= 1
+                if depth > 0 {
+                    body.append(character)
+                } else {
+                    declarations.append((header, body))
+                    header = ""
+                    body = ""
+                }
+            default:
+                if depth > 0 { body.append(character) } else { header.append(character) }
+            }
+        }
+        return declarations
+    }
+
+    @Test("the declaration reader finds each top-level body, and skips commented braces")
+    func declarationReader() {
+        let source = """
+            // struct Commented {
+            @MainActor
+            final class Root {
+                init() { value = 1 }
+            }
+            struct View { var body: some View { Text("a") } }
+            """
+        let declarations = Self.topLevelDeclarations(in: source)
+        #expect(declarations.count == 2)
+        #expect(declarations.first?.header.contains("final class Root") == true)
+        #expect(declarations.first?.body.contains("init() { value = 1 }") == true)
+        #expect(declarations.last?.header.contains("struct View") == true)
+        #expect(declarations.last?.body.contains("Text(\"a\")") == true)
+    }
+
+    @Test("MenuRoot attaches the setup presenter in its init, and alone builds the model")
+    func menuRootOwnsTheModel() throws {
+        // D27's first-snapshot open is consumed whether or not a presenter is attached, so the
+        // presenter must be attached before anything can start the model: in the one init that
+        // builds it, and in no later hook.
+        let menu = try Self.sourceFiles(in: "Sources/DictaMenu")
+        let root = try #require(menu.first { $0.name == "MenuRoot.swift" })
+        let declaration = try #require(Self.topLevelDeclarations(in: root.text)
+            .first { $0.header.contains("final class MenuRoot") })
+        let initializer = try #require(declaration.body.range(of: "init() "))
+        let initBody = try #require(Self.topLevelDeclarations(
+            in: String(declaration.body[initializer.lowerBound...])).first?.body)
+        let built = try #require(initBody.range(of: "StatusViewModel("))
+        let attached = try #require(initBody.range(of: "setupPresenter ="))
+        #expect(built.lowerBound < attached.lowerBound)
+
+        let everything = try menu + Self.sourceFiles(in: "Sources/DictaMenuKit")
+        for file in everything where file.name != "MenuRoot.swift" {
+            #expect(!file.text.contains("StatusViewModel("), "\(file.name) builds a model")
+            #expect(!file.text.contains("setupPresenter ="), "\(file.name) attaches a presenter")
+        }
+    }
+
+    @Test("only MenuBarLabel starts the model, and only it and a model observer draw the bar item")
+    func onlyTheLabelStartsTheModel() throws {
+        var starts: [String] = []
+        var barItems: [String] = []
+        for file in try Self.sourceFiles(in: "Sources/DictaMenu") {
+            for declaration in Self.topLevelDeclarations(in: file.text) {
+                let name = declaration.header.split(separator: "\n").last
+                    .map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+                // `Thread.start()` in the world's workers is a thread, not the model.
+                let modelStarts = declaration.body.components(separatedBy: ".start()").count - 1
+                    - (declaration.body.components(separatedBy: "thread.start()").count - 1)
+                starts += Array(repeating: "\(file.name): \(name)", count: modelStarts)
+                if declaration.body.contains("BarItem(") {
+                    barItems.append(name)
+                    #expect(declaration.body.contains("@ObservedObject var model: StatusViewModel"),
+                            "\(name) draws BarItem without observing the model")
+                }
+            }
+        }
+        // The label is the view that always exists; `Panel` is built lazily, and its
+        // `panelAppeared()` starts the model from inside `DictaMenuKit`.
+        #expect(starts == ["DictaMenuApp.swift: struct MenuBarLabel: View"])
+        #expect(barItems == ["struct MenuBarLabel: View"])
+    }
+
     @Test("linkage.sh forbids the client and the menu posting keystrokes or reading accessibility")
     func linkageForbidsPostingOutsideTheDaemon() throws {
         let script = try BundleTests.text(at: "Scripts/linkage.sh")
