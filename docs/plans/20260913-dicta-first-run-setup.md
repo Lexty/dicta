@@ -489,25 +489,25 @@ way.
 - Create: `Sources/DictaTestRunner/SetupStoreTests.swift`
 - Modify: `docs/manual-checklist.md`
 
-- [ ] write failing tests in a temporary directory: absent → `.absent`; valid → `.loaded`; each
+- [x] write failing tests in a temporary directory: absent → `.absent`; valid → `.loaded`; each
   unreadable kind → `.unreadable(problem)` and the file is byte-identical afterwards
-- [ ] write failing tests: `save` goes through `setup.json.tmp`, `fsync` and rename, sets 0600; a
+- [x] write failing tests: `save` goes through `setup.json.tmp`, `fsync` and rename, sets 0600; a
   failing save (read-only directory) throws with a reason and leaves the previous file intact
-- [ ] write failing tests: `replace(_:)` over an unreadable file leaves `setup.json.unreadable` with
+- [x] write failing tests: `replace(_:)` over an unreadable file leaves `setup.json.unreadable` with
   the old bytes and `setup.json` with the new state; an older `.unreadable` is replaced
-- [ ] write failing tests through a filesystem seam that fails one named step (the temporary write,
+- [x] write failing tests through a filesystem seam that fails one named step (the temporary write,
   `fsync`, removing the old backup, `link`, `rename`): each failure throws, and `setup.json` is
   byte-identical afterwards; then `bootstrap(flag: true, ...)` over the result still reports
   `unreadable` and applies `agtermOnly` — the failed replace never turns into a migration
-- [ ] write failing tests for `bootstrap(flag:record:)`: each migration row writes the file; an
+- [x] write failing tests for `bootstrap(flag:record:)`: each migration row writes the file; an
   existing file ignores the flag and says so; unreadable writes nothing and reports the problem; a
   failed first save is a save error while the migrated state still applies
-- [ ] write failing tests: after a failed `replace`, the store still reports the load problem and
+- [x] write failing tests: after a failed `replace`, the store still reports the load problem and
   the next `configure`-style write goes through `replace` again; a successful one clears the load
   problem and the save error
-- [ ] implement `SetupStore(url:)` (no default) with `load`, `save`, `replace`, `bootstrap`
-- [ ] re-cite the "setup.json unreadable" §7 row to these tests
-- [ ] run tests — must pass before Task 4
+- [x] implement `SetupStore(url:)` (no default) with `load`, `save`, `replace`, `bootstrap`
+- [x] re-cite the "setup.json unreadable" §7 row to these tests
+- [x] run tests — must pass before Task 4
 
 ### Task 4: the wire — `configure`, `accessibility`, and their `dictactl` spellings
 
