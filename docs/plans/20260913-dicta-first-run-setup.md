@@ -800,21 +800,34 @@ way.
 - Create: `Sources/DictaMenu/SetupWindow.swift`
 - Modify: `Sources/DictaTestRunner/MenuBundleTests.swift`
 
-- [ ] ⚠️ measure first, on hardware: whether `@Environment(\.openWindow)` from the `MenuBarExtra`
+- [x] ⚠️ measure first, on hardware: whether `@Environment(\.openWindow)` from the `MenuBarExtra`
   label opens a `Window` scene in this `LSUIElement` app and `NSApp.activate()` brings it forward;
   record the result here, and if it does not work, open through `NSApp` from the view model instead
-- [ ] add `Window("Set Up Dicta", id: "setup")` rendering `SetupModel.screen`; the panel gains a "Set
-  Up…" row, and `perform(.openSetup)` replaces Task 5's temporary no-op
-- [ ] `StatusViewModel.receive` consults `FirstSnapshotLatch` and, when `SetupModel.shouldAutoOpen`,
+  (not measured — needs a person at the machine; this run had none. The `NSApp` path was taken
+  without it, because the scene carries two more unmeasured risks of taking focus unasked: a
+  `Window` beside a `MenuBarExtra` may open at launch, which only macOS 15's
+  `defaultLaunchBehavior` suppresses while the package targets 14, and restoration may reopen it.
+  An `NSWindow` built by `SetupWindowController` opens only when `show()` is called; H35 (a) and
+  H41 score whether it comes forward and never appears unasked)
+- [x] add `Window("Set Up Dicta", id: "setup")` rendering `SetupModel.screen`; the panel gains a "Set
+  Up…" row, and `perform(.openSetup)` replaces Task 5's temporary no-op (an `NSWindow` titled "Set
+  Up Dicta" hosting `SetupView`, per the item above; "Set Up…" sits in the footer beside Open
+  Record, recorded as a divergence in `docs/ui-vocabulary.md`)
+- [x] `StatusViewModel.receive` consults `FirstSnapshotLatch` and, when `SetupModel.shouldAutoOpen`,
   asks the scene to open (the label's `.task` only starts the model); `NSApp.activate()` only then
   and on an explicit open
-- [ ] `StatusViewModel`: `configure(...)` and `accessibility(prompt:)` through the existing `send`
+- [x] `StatusViewModel`: `configure(...)` and `accessibility(prompt:)` through the existing `send`
   (the answer stays dropped; a failed write arrives as `setup.saveError`); the non-prompting check on
   opening and on the window becoming key, as `SetupModel` decides; the Accessibility deep link
   through `NSWorkspace.open`; remember `accessibilityRequested` for this launch
-- [ ] extend `MenuBundleTests` only where it asserts something real: `Scripts/linkage.sh` still
-  passes the menu (no AX symbol); the latch and every decision are covered by Task 11
-- [ ] run tests (including `Scripts/linkage.sh`) — must pass before Task 13
+- [x] extend `MenuBundleTests` only where it asserts something real: `Scripts/linkage.sh` still
+  passes the menu (no AX symbol); the latch and every decision are covered by Task 11 (two tests
+  read the menu's sources: it spells no `configure` or `accessibility` request and no `prompt`, only
+  `SetupModel`'s effects; and `NSApp.activate` appears once, with the auto-open behind the latch)
+- [x] run tests (including `Scripts/linkage.sh`) — must pass before Task 13
+- [x] ➕ the window stays open after every click and follows the stream, so a failed write stays
+  visible on the screen whose operation failed; after "Keep agterm only" it shows the ordinary
+  enable screen, and closing it then sends nothing more
 
 ### Task 13: Verify acceptance criteria
 

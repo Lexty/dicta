@@ -46,6 +46,15 @@ final class StatusViewModel: ObservableObject {
     /// Whether the panel is on screen, which is one of the two reasons to run a second hand.
     private var panelOpen = false
 
+    /// Whether "Allow Access…" was clicked during this launch, which turns the row's action into
+    /// "Open Accessibility Settings": the system shows its dialog once, and a second click must not
+    /// look as if it did nothing.
+    @Published private(set) var accessibilityRequested = false
+    /// Answers `true` on the first snapshot of this process and never again (`FirstSnapshotLatch`).
+    private var firstSnapshot = FirstSnapshotLatch()
+    /// Built on first use, so a menu that never shows the window never builds one.
+    private var setupWindowController: SetupWindowController?
+
     init(socketPath: String = Paths.current.socket.path,
          record: URL = Paths.current.record) {
         self.socketPath = socketPath
@@ -131,6 +140,14 @@ final class StatusViewModel: ObservableObject {
         switch event.kind {
         case .update:
             model = MenuModel(link: .connected, snapshot: event.snapshot, receivedAt: time)
+            // The only moment the window may open without being asked: the first snapshot of this
+            // launch, if it is idle and something is pending. Never later, so it cannot take focus
+            // from the pane just dictated into (D27).
+            if firstSnapshot.observe(event.snapshot),
+               SetupModel(snapshot: event.snapshot, firstSnapshotOfThisLaunch: true)
+                   .shouldAutoOpen {
+                openSetup()
+            }
             let state = event.snapshot?.state
             // An attempt that has just ENDED is the only thing that writes to the record, and
             // invariant 10 puts the entry on disk before the first keystroke — so by the time the
@@ -356,10 +373,56 @@ final class StatusViewModel: ObservableObject {
         case .restartDaemon:
             restartDaemon()
         case .openSetup:
-            // The setup window does not exist yet; this build's banner offers the action and the
-            // click does nothing until the window arrives with it.
-            break
+            openSetup()
         }
+    }
+
+    // MARK: - the setup window (D27, D31)
+
+    /// Everything the window decides, over the latest snapshot. A lost link carries no snapshot, so
+    /// the window says setup is unavailable rather than offering a choice nobody can receive.
+    var setup: SetupModel {
+        SetupModel(snapshot: model.snapshot, accessibilityRequested: accessibilityRequested)
+    }
+
+    /// Opens the setup window and brings it forward: from the "Set Up…" row, from a banner, or at
+    /// the first snapshot of a launch.
+    func openSetup() {
+        let controller = setupWindowController ?? SetupWindowController(
+            content: { [unowned self] in AnyView(SetupView(model: self)) },
+            becameKey: { [weak self] in self?.setupBecameKey() },
+            closed: { [weak self] in self?.setupClosed() })
+        setupWindowController = controller
+        controller.show()
+    }
+
+    /// A button in the window. What it sends is `SetupModel`'s; a control the current screen no
+    /// longer draws sends nothing.
+    func setupClicked(_ control: SetupControl) {
+        let effect = setup.effect(of: control)
+        guard !effect.isNothing else { return }
+        if control == .allowAccess { accessibilityRequested = true }
+        apply(effect)
+    }
+
+    /// The window opened or became key: the person may be back from System Settings, so the grant
+    /// is checked — under `other-apps` only, and never with a prompt.
+    private func setupBecameKey() {
+        apply(setup.effectOfBecomingKey)
+    }
+
+    /// The window closed. Only the first-time offer records anything: closing it is an answer.
+    private func setupClosed() {
+        apply(setup.effectOfClosing)
+    }
+
+    /// Sends what an effect names. The answer is dropped as every other command's is: a saved
+    /// choice and a failed write both arrive on the watch stream, as `setup.saveError` for the
+    /// second.
+    private func apply(_ effect: SetupEffect) {
+        if let request = effect.request { send(request) }
+        if let url = effect.url { NSWorkspace.shared.open(url) }
+        if let action = effect.action { perform(action) }
     }
 
     /// `launchctl kickstart -k`, which is why the footer says Restart and not Quit: launchd's

@@ -76,6 +76,7 @@ Written down so they are not later "fixed" into inconsistency.
 | menu-bar item | glyph alone | glyph **plus a running clock** while the microphone is open | measured: a glyph that changes only its fill is not legible without being looked at, and macOS's own microphone indicator says "some app", not "dicta" (SPEC.md F9). The clock changes the item's width, which is the change peripheral vision reads |
 | primary action | symmetric Start/Stop | **Stop and Abort only** | a click has no session to aim at (D4, D22, D30) |
 | footer right | `Quit` | `Restart` | launchd `KeepAlive` makes a Quit button a lie |
+| footer left | one verb | `Open Record` and `Set Up…` | the setup window opens by itself only at the first snapshot of a launch, so it needs a door that is always there (D27) |
 | degraded screen | `UnsupportedContent` at 240 pt for macOS 14 | none | dicta needs no capture-era availability gate |
 | history rows | open in Finder | copy to clipboard | dicta's artefact is text, and the UI never injects (D28) |
 | a row with nothing delivered | — | shows what was HEARD, in italic, and has **no copy button at all** | D28's structural half: the clipboard is loaded from `final` and never from `recognised`, so a row that produced no `final` has nothing for a button to carry |

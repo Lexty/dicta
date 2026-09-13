@@ -166,6 +166,43 @@ struct MenuBundleTests {
         #expect(script.contains("swift build --product DictaMenu"))
     }
 
+    // MARK: - The setup window
+
+    /// Every Swift file of the menu, concatenated, in a stable order.
+    static func menuSources() throws -> String {
+        let directory = BundleTests.repositoryRoot.appendingPathComponent("Sources/DictaMenu")
+        let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+            .filter { $0.hasSuffix(".swift") }.sorted()
+        #expect(names.contains("SetupWindow.swift"))
+        return try names.map { try BundleTests.text(at: "Sources/DictaMenu/\($0)") }
+            .joined(separator: "\n")
+    }
+
+    @Test("the menu sends configure and accessibility only as SetupModel decides")
+    func menuSetupRequestsComeFromTheModel() throws {
+        let sources = try Self.menuSources()
+        // `SetupModel` is where the prompt is decided and tested: never on becoming key, only for
+        // a click on a control the screen draws. A request spelled here would walk around that.
+        #expect(!sources.contains("cmd: .configure"))
+        #expect(!sources.contains("cmd: .accessibility"))
+        #expect(!sources.contains("prompt:"))
+        #expect(sources.contains("setup.effect(of: control)"))
+        #expect(sources.contains("setup.effectOfBecomingKey"))
+        #expect(sources.contains("setup.effectOfClosing"))
+    }
+
+    @Test("the menu activates itself in one place, and opens by itself only through the latch")
+    func menuActivatesOnlyWhenTheWindowOpens() throws {
+        let sources = try Self.menuSources()
+        // D27: the window takes focus from agterm only when opened on purpose or at the first
+        // snapshot of a launch. One activation, inside the window's `show()`, is what keeps a later
+        // edit from adding a second door.
+        #expect(sources.components(separatedBy: "NSApp.activate").count == 2)
+        #expect(sources.components(separatedBy: "activate(ignoringOtherApps").count == 1)
+        #expect(sources.contains("firstSnapshot.observe(event.snapshot)"))
+        #expect(sources.contains("firstSnapshotOfThisLaunch: true)"))
+    }
+
     @Test("linkage.sh forbids the client and the menu posting keystrokes or reading accessibility")
     func linkageForbidsPostingOutsideTheDaemon() throws {
         let script = try BundleTests.text(at: "Scripts/linkage.sh")

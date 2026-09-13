@@ -171,7 +171,10 @@ struct Panel: View {
         .background(banner.tint.color.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
     }
 
-    /// `Open Record` left, `Restart` right — and deliberately NO Quit.
+    /// `Open Record` and `Set Up…` left, `Restart` right — and deliberately NO Quit.
+    ///
+    /// `Set Up…` is the window's one door that is always there: it opens by itself only at the
+    /// first snapshot of a launch, and a banner offers it only while a step is pending (D27).
     ///
     /// The daemon's LaunchAgent has `KeepAlive`, so quitting it would be undone within ten seconds;
     /// a control that cannot do what it says must not exist. acta keeps its Quit because quitting
@@ -180,6 +183,7 @@ struct Panel: View {
     private var footer: some View {
         HStack {
             Button("Open Record") { model.openRecord() }
+            Button("Set Up…") { model.openSetup() }
             Spacer()
             Button("Restart") { model.restartDaemon() }
         }
