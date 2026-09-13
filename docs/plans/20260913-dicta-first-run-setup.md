@@ -831,23 +831,35 @@ way.
 
 ### Task 13: Verify acceptance criteria
 
-- [ ] fresh (`undecided`, no agterm): the socket is served, readiness `setupNeeded` (amber, not a
+- [x] fresh (`undecided`, no agterm): the socket is served, readiness `setupNeeded` (amber, not a
   fault), zero accessibility calls, `shouldAutoOpen` true on the first snapshot
-- [ ] existing agterm-only user: agterm dictation unchanged; offer shown once; every way of closing it
+- [x] existing agterm-only user: agterm dictation unchanged; offer shown once; every way of closing it
   records `offerSeen`
-- [ ] `--focused-fields` users keep their mode across the upgrade, including the window in which
+- [x] `--focused-fields` users keep their mode across the upgrade, including the window in which
   `install.sh` rewrites the plist first
-- [ ] `configure` applies without a restart, never to a live attempt; a failed write — a failed
+- [x] `configure` applies without a restart, never to a live attempt; a failed write — a failed
   replace over an unreadable file included — changes nothing and is visible on the stream
-- [ ] the grant is requested only by `accessibility` with `prompt` under `otherApps`; no start-up
+- [x] the grant is requested only by `accessibility` with `prompt` under `otherApps`; no start-up
   prompt; no timer anywhere checks the grant; a missing grant on a hold is silent
-- [ ] a stale grant report (closed, or an earlier generation) never reaches readiness; an accepted
+- [x] a stale grant report (closed, or an earlier generation) never reaches readiness; an accepted
   attempt's final validation still runs after the gate closes
-- [ ] from the window alone, a person can enable other apps after declining and return to agterm
+- [x] from the window alone, a person can enable other apps after declining and return to agterm
   only after enabling
-- [ ] every §7 row added in Task 1 that a machine can check cites a test; `ChecklistTests` pass
-- [ ] run full test suite: `bash Scripts/test.sh`; `bash Scripts/lint.sh`
-- [ ] no UI e2e suite exists; H items listed in Post-Completion
+- [x] every §7 row added in Task 1 that a machine can check cites a test; `ChecklistTests` pass
+- [x] run full test suite: `bash Scripts/test.sh`; `bash Scripts/lint.sh`
+- [x] no UI e2e suite exists; H items listed in Post-Completion
+- [x] ➕ three criteria had evidence only in parts, so three daemon tests close them: "with no choice
+  and no agterm, the socket is served, setup waits, and nothing asks" (a served socket, `setupNeeded`
+  not a fault, zero calls, the window due and fresh); "a grant report from a closed gate or an
+  earlier generation never reaches readiness" (the switch's discard carried to the daemon's
+  snapshot); and "start-up never asks for the grant: only the accessibility verb with prompt does"
+  (reads `main.swift` and every daemon and menu source: `requestTrust()` has one caller, behind
+  `prompt`). The §7 rows for a revoked grant and a menu not running now cite tests beside their H
+  items, as do row 14 and the one for `accessibility` outside `other-apps`; the checklist's prose no
+  longer says the setup rows wait for tests. 863 tests pass under Swift 6.3.3; lint is clean
+  (SwiftLint not installed, built-in checks only). Not checked by a machine: `install.sh` end to end
+  (H33), every real close path of the window reaching `effectOfClosing` (H36), the window coming
+  forward (H35, H41)
 
 ### Task 14: [Final] Update documentation
 

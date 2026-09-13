@@ -2852,6 +2852,64 @@ struct DaemonTests {
         #expect(snapshot.faculties?.accessibility == true)
     }
 
+    @Test("a grant report from a closed gate or an earlier generation never reaches readiness")
+    func aStaleGrantReportNeverReachesReadiness() throws {
+        let harness = Harness(focusedFields: true)
+        harness.daemon.observe {
+            $0.microphone = true
+            $0.models = true
+            $0.terminal = true
+        }
+        let first = try #require(harness.fieldSwitch.current?.generation)
+        #expect(harness.send(Self.status).snapshot?.readiness == .ready)
+
+        // Closed: a check admitted before the choice went back to agterm only reports nothing.
+        #expect(harness.send(Request(cmd: .configure, scope: .agtermOnly)).kind == .accepted)
+        #expect(!harness.fieldSwitch.report(trusted: false, generation: first))
+        let closed = try #require(harness.send(Self.status).snapshot)
+        #expect(closed.faculties?.accessibility == nil)
+        #expect(closed.readiness == .ready)
+
+        // Reopened: the opening's own check found the grant, and the earlier generation's missing
+        // grant does not overwrite it.
+        #expect(harness.send(Request(cmd: .configure, scope: .otherApps)).kind == .accepted)
+        let reopened = try #require(harness.fieldSwitch.current?.generation)
+        #expect(reopened != first)
+        #expect(!harness.fieldSwitch.report(trusted: false, generation: first))
+        #expect(harness.fieldSwitch.grant == true)
+        let snapshot = try #require(harness.send(Self.status).snapshot)
+        #expect(snapshot.faculties?.accessibility == true)
+        #expect(snapshot.readiness == .ready)
+    }
+
+    @Test("start-up never asks for the grant: only the accessibility verb with prompt does")
+    func onlyTheAccessibilityVerbPrompts() throws {
+        // Invariant 14 and D31: the system's dialog arrives only after the window has explained
+        // why. A behavioural test cannot reach `main.swift`, so its text is read instead.
+        let main = try BundleTests.text(at: "Sources/Dicta/main.swift")
+        #expect(!main.contains("requestTrust"))
+        #expect(!main.contains("AXIsProcessTrusted"))
+
+        var callers: [String] = []
+        var prompts: [String] = []
+        for directory in ["Sources/Dicta", "Sources/DictaRuntime", "Sources/DictaCore",
+                          "Sources/DictaIPC", "Sources/DictaMenu"] {
+            let url = BundleTests.repositoryRoot.appendingPathComponent(directory)
+            let names = try FileManager.default.contentsOfDirectory(atPath: url.path)
+                .filter { $0.hasSuffix(".swift") }
+            for name in names {
+                let lines = try BundleTests.text(at: "\(directory)/\(name)").split(separator: "\n")
+                callers += lines.filter { $0.contains("requestTrust()") && !$0.contains("func ") }
+                    .map { "\(name): \($0.trimmingCharacters(in: .whitespaces))" }
+                prompts += lines.filter { $0.contains("AXIsProcessTrustedWithOptions(") }
+                    .map { "\(name): \($0.trimmingCharacters(in: .whitespaces))" }
+            }
+        }
+        #expect(callers == ["Daemon.swift: if prompt { access.requestTrust() }"])
+        #expect(prompts.count == 1)
+        #expect(prompts.first?.hasPrefix("FocusedField.swift:") == true)
+    }
+
     @Test("a daemon given no setup refuses both verbs and reports no choice, and carries its hold")
     func aDaemonWithoutSetup() throws {
         let daemon = Self.daemonWithoutAgterm(feedback: FakeNotifier(),
@@ -2920,6 +2978,40 @@ struct DaemonTests {
         let status = Request(cmd: .status)
         #expect(off.handle(.request(status)).snapshot?.readiness == .terminalMissing)
         #expect(on.handle(.request(status)).snapshot?.readiness == .fieldsOnly)
+    }
+
+    @Test("with no choice and no agterm, the socket is served, setup waits, and nothing asks")
+    func noChoiceNoAgtermIsNotConfigured() throws {
+        // A fresh install: `undecided`, no agterm. The daemon waits instead of exiting, readiness
+        // is a step to take rather than a fault, a hold does nothing, and nothing looks at the
+        // grant.
+        let access = FakeFocusedFieldAccess()
+        let daemon = Self.daemonWithoutAgterm(
+            feedback: FakeNotifier(), setup: Self.fieldSetup(scope: .undecided, access: access))
+        defer { daemon.stop() }
+        daemon.observe {
+            $0.microphone = true
+            $0.models = true
+            $0.terminal = false
+        }
+        try daemon.start()
+        let watcher = WatchStreamTests.Watcher()
+        watcher.start(path: daemon.configuration.socketPath)
+        #expect(Self.waitForWatchers(daemon))
+
+        #expect(SnapshotPublishingTests.waitFor(watcher) { $0.readiness == .setupNeeded })
+        let snapshot = try #require(watcher.events.last?.snapshot)
+        #expect(snapshot.readiness.blocksDictation)
+        #expect(!snapshot.readiness.isFault)
+        #expect(snapshot.setup == SetupSnapshot(scope: .undecided, offerSeen: false))
+        #expect(snapshot.faculties?.accessibility == nil)
+        #expect(SetupModel(snapshot: snapshot, firstSnapshotOfThisLaunch: true).shouldAutoOpen)
+        #expect(SetupModel(snapshot: snapshot).screen == .fresh(showsAgtermOnly: false))
+
+        let hold = daemon.handle(.request(Request(cmd: .start, field: Self.field)))
+        #expect(hold.kind == .rejected)
+        #expect(hold.message?.contains("not set up to type into other apps") == true)
+        #expect(access.callLog.isEmpty)
     }
 
     @Test("with no agterm and no grant, a daemon with focused fields waits on Accessibility")
