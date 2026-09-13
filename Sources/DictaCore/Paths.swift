@@ -1,6 +1,6 @@
 import Foundation
 
-/// Where dicta keeps its four files.
+/// Where dicta keeps its files.
 ///
 /// All of them sit in one directory under `~/Library/Application Support`, named after the bundle
 /// id — the same identity the microphone TCC grant attaches to (D11). One directory rather than
@@ -41,6 +41,10 @@ public struct Paths: Sendable, Equatable {
 
     /// Everything else that is configurable — the filter command of D9b, when step 4 arrives.
     public var config: URL { support.appendingPathComponent("config.json") }
+
+    /// Where dictation goes, as the person chose it (D31): `SetupState`, written by the daemon
+    /// alone. A file of its own rather than a key in `config`, which is D9b's and hand-edited.
+    public var setup: URL { support.appendingPathComponent("setup.json") }
 
     /// Creates the support directory if it is missing, and returns it. Idempotent, so a caller may
     /// invoke it on every start without checking first.

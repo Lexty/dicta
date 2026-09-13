@@ -470,15 +470,17 @@ way.
 - Create: `Sources/DictaTestRunner/SetupStateTests.swift`
 - Modify: `Sources/DictaTestRunner/PathsTests.swift`
 
-- [ ] write failing tests: the migration table row by row; `recordFact` from a successful read with
+- [x] write failing tests: the migration table row by row; `recordFact` from a successful read with
   zero, one (an aborted line counts) and many lines, and from a failed read
-- [ ] write failing tests: JSON round trip; raw values; unknown keys ignored; unknown scope, newer
+- [x] write failing tests: JSON round trip; raw values; unknown keys ignored; unknown scope, newer
   schema and invalid JSON are unreadable with distinct `SetupLoadProblem`s, never a default
-- [ ] write failing tests: `Paths.setup` is `setup.json` in the support directory and distinct from
+- [x] write failing tests: `Paths.setup` is `setup.json` in the support directory and distinct from
   `config`
-- [ ] implement `SetupScope`, `SetupState`, `SetupLoadProblem`,
+- [x] implement `SetupScope`, `SetupState`, `SetupLoadProblem`,
   `SetupMigration.initial(flag:record:)`, `SetupMigration.recordFact`, `Paths.setup`
-- [ ] run tests — must pass before Task 3
+  (`SetupLoadProblem` is `unreadable(reason:)` | `newerSchema(found:)`; an unknown scope is
+  `unreadable` with a reason naming it; `recordFact` takes a `Result<[RecordEntry], any Error>`)
+- [x] run tests — must pass before Task 3
 
 ### Task 3: `SetupStore` — the daemon's one writer of `setup.json`
 

@@ -2,7 +2,7 @@ import DictaCore
 import Foundation
 import Testing
 
-/// Where dicta keeps its four files. The tests run against a temporary home rather than the real
+/// Where dicta keeps its files. The tests run against a temporary home rather than the real
 /// one, which is the whole reason `Paths` takes its home as a value instead of reading it globally.
 @Suite("paths")
 struct PathsTests {
@@ -16,22 +16,33 @@ struct PathsTests {
         let paths = Paths(home: URL(fileURLWithPath: "/Users/nobody"))
         #expect(paths.support.path ==
             "/Users/nobody/Library/Application Support/dev.personal.dicta")
-        for file in [paths.socket, paths.record, paths.dictionary, paths.config] {
+        for file in [paths.socket, paths.record, paths.dictionary, paths.config, paths.setup] {
             #expect(file.deletingLastPathComponent().path == paths.support.path,
                     "\(file.lastPathComponent) is not in the support directory")
         }
     }
 
-    @Test("the four files have distinct, stable names")
+    @Test("the files have distinct, stable names")
     func fileNames() {
         let paths = Paths(home: URL(fileURLWithPath: "/Users/nobody"))
         #expect(paths.socket.lastPathComponent == "control.sock")
         #expect(paths.record.lastPathComponent == "record.jsonl")
         #expect(paths.dictionary.lastPathComponent == "replacements.conf")
         #expect(paths.config.lastPathComponent == "config.json")
-        let names = [paths.socket, paths.record, paths.dictionary, paths.config]
+        #expect(paths.setup.lastPathComponent == "setup.json")
+        let names = [paths.socket, paths.record, paths.dictionary, paths.config, paths.setup]
             .map(\.lastPathComponent)
         #expect(Set(names).count == names.count)
+    }
+
+    @Test("the setup choice has a file of its own, not D9b's config.json")
+    func setupIsNotConfig() {
+        // config.json is reserved for the filter command of D9b. Sharing it would make the daemon a
+        // second writer of a file a person edits by hand, and a filter edit could lose a choice.
+        let paths = Paths(home: URL(fileURLWithPath: "/Users/nobody"))
+        #expect(paths.setup.path
+            == "/Users/nobody/Library/Application Support/dev.personal.dicta/setup.json")
+        #expect(paths.setup != paths.config)
     }
 
     @Test("the socket path fits in sun_path")
