@@ -522,7 +522,8 @@ testing.linker` to the `DictaTests` target — otherwise the failing test cannot
   `EventPoster` and `Pacer` seams, their system adapters and `FocusedFieldInjector`),
   `SystemFeedback.swift` (sounds and notifications where there is no agterm indicator) and
   `FocusedFieldWiring.swift`, whose `FocusedFieldSwitch` builds none of them until its gate opens.
-  `SetupStore.swift` is the one writer of `setup.json`.
+  `SetupStore.swift` is the one writer of `setup.json`, and `DaemonLock.swift` the claim, taken
+  before it, that only one daemon is running.
 - `Sources/Dicta/` — the daemon executable. Wiring only: flags are parsed by `DaemonOptions` in
   `DictaCore`, so they are testable.
 - `Sources/dictactl/` — the client the keymap invokes. **DictaCore + DictaIPC and nothing else**,
@@ -532,7 +533,8 @@ testing.linker` to the `DictaTests` target — otherwise the failing test cannot
   SwiftUI, and nothing else** — `dictactl`'s dependency budget, one target wider. It opens no
   microphone, loads no model, and links no `DictaRuntime`, which is invariants 8 and 11 and is
   asserted by `Scripts/linkage.sh` rather than by any test. Wiring only: a socket, a thread, a
-  `@Published`, and `SetupWindowController`, which renders `SetupModel`.
+  `@Published`, and `SetupWindowController`, which renders `SetupModel` and sends what it decides
+  through `OrderedSender`, so the daemon receives the window's requests in the order they were made.
 - `Sources/DictaTestRunner/` — where the tests actually are.
 - `Tests/DictaTests/` — a compile-only stub. Never put an assertion here (see D18 above).
 

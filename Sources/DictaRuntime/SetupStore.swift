@@ -116,6 +116,14 @@ public final class SetupStore: SetupPersisting, @unchecked Sendable {
             guard lstat(url.path, &entry) == 0 else { return .absent }
             return .unreadable(.unreadable(reason: "it is a symbolic link to nothing"))
         } catch {
+            // A directory is named as one: `link(2)` refuses it, so no choice made in the window
+            // can replace it, and a reason that promised otherwise would send the person round a
+            // loop.
+            var entry = stat()
+            if lstat(url.path, &entry) == 0, entry.st_mode & S_IFMT == S_IFDIR {
+                return .unreadable(.unreadable(reason: "it is a directory, which dicta will not "
+                    + "remove -- move it away by hand"))
+            }
             let reason = (error as NSError).localizedFailureReason ?? "\(error)"
             return .unreadable(.unreadable(reason: "it cannot be read: \(reason)"))
         }
@@ -130,7 +138,13 @@ public final class SetupStore: SetupPersisting, @unchecked Sendable {
     /// Reads the file, or migrates when there is none, and records what it found. Only an absent
     /// file is ever written here: an unreadable one is reported and kept, and the flag is ignored
     /// whenever any file exists.
-    public func bootstrap(flag: Bool, record: SetupMigration.RecordFact) -> SetupBootstrap {
+    ///
+    /// `owner` is never read. It guards the call site, not the lock: a start-up that failed to take
+    /// the daemon lock -- held by another daemon, or unopenable -- has no `DaemonLock` to pass, so
+    /// it cannot reach this beside the one that did (§7). The type cannot tell which lock it is or
+    /// whether it is still held; that `main.swift` keeps its own, unreleased, for its lifetime.
+    public func bootstrap(flag: Bool, record: SetupMigration.RecordFact,
+                          owner: DaemonLock) -> SetupBootstrap {
         lock.withLock {
             switch load() {
             case let .loaded(state):
@@ -194,9 +208,13 @@ public final class SetupStore: SetupPersisting, @unchecked Sendable {
             try step(.removeBackup, backupURL.path, tolerating: ENOENT) {
                 unlink(backupURL.path)
             }
-            // A file that has vanished since it was found unreadable has nothing left to keep.
+            // `linkat` with no `AT_SYMLINK_FOLLOW`, because `link(2)` follows a symbolic link: a
+            // `setup.json` linking to nothing would fail with `ENOENT` and be taken for a file that
+            // has vanished, and the rename would drop the link with nothing kept. Measured on
+            // macOS 26: this form links the symbolic link itself. `ENOENT` is then only what it
+            // says -- a file removed since it was found unreadable, with nothing left to keep.
             try step(.link, backupURL.path, tolerating: ENOENT) {
-                Darwin.link(url.path, backupURL.path)
+                linkat(AT_FDCWD, url.path, AT_FDCWD, backupURL.path, 0)
             }
         } catch {
             unlink(temporaryURL.path)

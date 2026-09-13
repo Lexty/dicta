@@ -825,3 +825,17 @@ public final class FakeSetupStore: SetupPersisting, @unchecked Sendable {
         }
     }
 }
+
+public extension DaemonLock {
+    /// A lock of its own, for a test that has to hand `SetupStore.bootstrap` the lock it asks for.
+    /// Taken on a fresh file whose name is then removed, so tests never contend with each other or
+    /// leave a file behind; the descriptor still holds the lock until the value goes away.
+    static func scratch() -> DaemonLock {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dicta-owner-\(UUID().uuidString).lock")
+        // A fresh name has no holder, so a failure here is the test machine's, and fatal to say so.
+        let lock = try! DaemonLock.acquire(at: url)
+        unlink(url.path)
+        return lock
+    }
+}

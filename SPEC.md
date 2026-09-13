@@ -477,7 +477,8 @@ reason rather than against it:
   middle of a session;
 - **it decides nothing by itself.** Every screen and every button's payload is a pure value (D19),
   and every consequence — a choice saved, or a write that failed — arrives on the `watch` stream like
-  every other state, never from the verb's own answer;
+  every other state, never from the verb's own answer. What it sends reaches the daemon in the order
+  it was made: two choices clicked in quick succession land in click order, and the last one stands;
 - **the menu still makes no accessibility call** (invariant 14). The grant is the daemon's, so the
   window asks the daemon through `accessibility` (§6) and opens System Settings by a deep link.
 
@@ -601,7 +602,9 @@ choice a person makes, and `configure` refuses it. This replaced the daemon's `-
 flag as the switch, because a flag inside a LaunchAgent is a switch nobody but a developer can
 reach.
 
-**The daemon is the file's one writer**; the menu never touches it. A write encodes the state into
+**The daemon is the file's one writer**; the menu never touches it. Before start-up reads or writes
+it, the daemon takes an exclusive lock on `daemon.lock` in the same directory and holds it for its
+whole life, so two daemons starting together cannot both migrate (§7). A write encodes the state into
 `setup.json.tmp` in the same directory with mode 0600, `fsync`s it and `rename(2)`s it over
 `setup.json`; a failure at any step, `fsync` included, ends the write and changes nothing. Unknown
 keys are ignored on read. An unknown `scope`, a `schema` newer than the build, or invalid JSON makes
@@ -609,7 +612,8 @@ the file **unreadable**: that is reported, the reader never overwrites it, and a
 re-migrates it — not even with the flag still in the agent. A `configure` over an unreadable file
 **replaces** it without a moment in which `setup.json` is missing: the new state is written and
 synced to the temporary file, an older `setup.json.unreadable` is removed, `setup.json` is hard-linked
-to `setup.json.unreadable`, and only then is the temporary file renamed over `setup.json`. A failure
+to `setup.json.unreadable` — a symbolic link as itself, never followed — and only then is the
+temporary file renamed over `setup.json`. A failure
 before the rename leaves `setup.json` byte-identical. The problem stands until a replacement
 succeeds, so a retry after a failed one replaces again; a failed write is a separate save error,
 cleared by the next write that succeeds. That is the operational failure contract, not a power-loss
@@ -1414,7 +1418,7 @@ Every row states: no injection unless said otherwise, a visible reason, and what
 | client cannot reach the daemon | — | loud local failure — desktop notification, not just stderr |
 | daemon wedged during an attempt | **capture fault** | watchdog discards; no injection |
 | daemon crashed leaving a stale indicator | — | reset the known target's status when the daemon next starts |
-| second daemon instance attempted | — | refuse to start; a live socket means a live daemon |
+| second daemon instance attempted | — | refuse to start, before `setup.json` is read or written: a held `daemon.lock` means a live daemon, and so does a live socket, for one from before the lock. A `daemon.lock` that cannot be opened or taken refuses the start too, naming which, because a start that owns nothing must not write |
 | abort during injection | — | refused (D20) |
 | hold key pressed while agterm is not frontmost, with the scope not `other-apps` | — | silent no-op; no attempt starts, no indicator, no sound (D22) |
 | hold shorter than the floor | — | the attempt is aborted rather than stopped: no text, no injection, no sound (D21) |
@@ -1442,6 +1446,7 @@ Every row states: no injection unless said otherwise, a visible reason, and what
 | the Accessibility grant is revoked while the scope is `other-apps` | — | noticed at the next check — a hold's threshold, a field start, or the setup window asking — and never by a timer; readiness turns amber, a pending step and not a fault; no window opens by itself; holds on the focused-field path are silent. An attempt already accepted fails its final validation and says nothing was inserted (D31, D32) |
 | the menu-bar UI is not running while a choice is pending | — | nothing about dictation changes: agterm dictation works as before, fields stay closed and no accessibility call is made. `dictactl configure` makes the same choice, and the window offers itself at the next menu launch (D27, D31) |
 | `configure` during a dictation | — | the live attempt finishes under the scope it was accepted under, through the wiring it captured, final validation included; the new scope affects the next start only (D31) |
+| two setup choices made before the first reaches the daemon | — | both are sent, in the order they were made, and the last one is the choice in force and in `setup.json`: the window's requests travel one at a time, so a first request slow to connect is never overtaken by a later one (D27) |
 | the gate closes between the threshold's gate read and its grant check | — | that one admitted grant check may still run; its report is discarded as stale, no frontmost or focused-element read follows, and nothing is sent. A start already on its way is refused by the daemon's own read of the gate, with no further accessibility call (D31) |
 | the active session cannot be read from the tree when the hold key goes down | — | nothing starts; notify, because the key did mean something and produced nothing |
 | the hold trigger is not armed, or its source reads nothing | — | the chords are unaffected and remain the whole interface. **This failure is silent by construction and that is stated rather than hidden**: `CGEventSource.flagsState` returns a word of flags and has no error channel, so "no modifier is down" and "this is not working" are the same answer. What exists instead is a startup line naming the armed key, and `--no-hold` to turn it off deliberately |
@@ -1630,8 +1635,8 @@ Each with the observation that counts as a pass:
   only from the setup window, after it has said why, and its revocation stops delivery; a password field, a button or a tree receives nothing; a
   right-hand `⌘` shortcut released before the floor leaves no trace at all; and a machine with no
   agterm dictates.
-- **The setup window** (D27, D31). It opens by itself only at the first idle snapshot of a menu
-  launch with a choice pending, and never takes focus in the middle of a session; from the window
+- **The setup window** (D27, D31). It opens by itself only at the first snapshot of a menu launch,
+  and only if that snapshot is idle and a choice is pending, and never takes focus in the middle of a session; from the window
   alone a person can enable other apps, go back to agterm only and enable them again, each taking
   effect at the next hold without a restart.
 - **The panel is a recovery path and not only a display** (D28). After a dictation that went
@@ -1670,8 +1675,8 @@ provided the behaviour and budgets still hold.
 
 Streaming recognition and live partial text (D1, D13). Silence-based auto-stop (D2). Multi-line
 injection (D8). A dock TILE — neither bundle has one (D11, D27). A settings window beyond the
-menu's setup window, which takes focus only when opened on purpose or at the first idle snapshot of a
-menu launch (D27). Any injection at all from the UI (D28). Chords and `raw` outside agterm
+menu's setup window, which takes focus only when opened on purpose or at the first snapshot of a menu
+launch, when that snapshot is idle (D27). Any injection at all from the UI (D28). Chords and `raw` outside agterm
 (D31). An accessibility read-back of delivered text (D32). Cloud recognition. `acta`'s crash-safety machinery for audio (D14). Automatic retry of
 a failed injection (§7).
 

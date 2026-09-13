@@ -54,11 +54,18 @@ final class StatusViewModel: ObservableObject {
     private var firstSnapshot = FirstSnapshotLatch()
     /// Built on first use, so a menu that never shows the window never builds one.
     private var setupWindowController: SetupWindowController?
+    /// The window's requests, delivered in the order they were made (`OrderedSender`). Not `send`:
+    /// a thread per request would let a slow first click land after a second one and overwrite it.
+    private let setupSender: OrderedSender<Request>
 
     init(socketPath: String = Paths.current.socket.path,
          record: URL = Paths.current.record) {
         self.socketPath = socketPath
         recordURL = record
+        setupSender = OrderedSender(name: "dev.personal.dicta.menu.setup") { request in
+            // Dropped, as `send` drops it: every consequence arrives on the watch stream.
+            _ = try? ControlClient.send(request, to: socketPath)
+        }
         // Seeded SYNCHRONOUSLY, before the first frame is drawn. acta's `ControlViewModel` does the
         // same thing and it is the detail most worth copying: without it the panel flashes blank
         // every single time it is opened, which reads as a broken app rather than a loading one.
@@ -416,11 +423,11 @@ final class StatusViewModel: ObservableObject {
         apply(setup.effectOfClosing)
     }
 
-    /// Sends what an effect names. The answer is dropped as every other command's is: a saved
-    /// choice and a failed write both arrive on the watch stream, as `setup.saveError` for the
-    /// second.
+    /// Sends what an effect names, through `setupSender`, in the order the window reported it. The
+    /// answer is dropped as every other command's is: a saved choice and a failed write both arrive
+    /// on the watch stream, as `setup.saveError` for the second.
     private func apply(_ effect: SetupEffect) {
-        if let request = effect.request { send(request) }
+        if let request = effect.request { setupSender.enqueue(request) }
         if let url = effect.url { NSWorkspace.shared.open(url) }
         if let action = effect.action { perform(action) }
     }

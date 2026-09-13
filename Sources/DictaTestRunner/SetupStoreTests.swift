@@ -38,6 +38,12 @@ struct SetupStoreTests {
         FileManager.default.fileExists(atPath: url.path)
     }
 
+    /// Where a symbolic link at `url` points, or `nil` when `url` is not one. Read without
+    /// following it, since a link to nothing is exactly what `exists` cannot see.
+    static func symlinkDestination(_ url: URL) -> String? {
+        try? FileManager.default.destinationOfSymbolicLink(atPath: url.path)
+    }
+
     /// What each unreadable kind looks like on disk, and the problem it must load as.
     static let unreadableFiles: [(String, @Sendable (SetupLoadProblem) -> Bool)] = [
         ("{", { if case .unreadable = $0 { true } else { false } }),
@@ -109,7 +115,7 @@ struct SetupStoreTests {
                 continue
             }
             #expect(matches(problem), "\(text) loaded as \(problem)")
-            _ = store.bootstrap(flag: true, record: .lines(0))
+            _ = store.bootstrap(flag: true, record: .lines(0), owner: .scratch())
             #expect(Self.bytes(url) == Data(text.utf8), "reading \(text) changed it")
             #expect(!Self.exists(store.temporaryURL))
             #expect(!Self.exists(store.backupURL))
@@ -143,17 +149,62 @@ struct SetupStoreTests {
             Issue.record("a dangling symlink at setup.json loaded as \(store.load())")
             return
         }
-        let bootstrap = store.bootstrap(flag: true, record: .lines(0))
+        let bootstrap = store.bootstrap(flag: true, record: .lines(0), owner: .scratch())
         #expect(steps.passed.isEmpty)
         #expect(bootstrap.state == SetupStore.whileUnreadable)
         #expect(bootstrap.flagIgnored)
 
-        // Choosing again replaces it; a link to nothing has no original to keep.
+        // Choosing again replaces it, and the link itself is the original kept.
         let chosen = SetupState(scope: .otherApps, offerSeen: true)
         try store.write(chosen)
         #expect(store.load() == .loaded(chosen))
         #expect(store.loadProblem == nil)
-        #expect(!Self.exists(store.backupURL))
+        #expect(Self.symlinkDestination(store.backupURL) == nowhere.path)
+    }
+
+    @Test("a failed rename leaves a dangling symlink as it was, and still unreadable")
+    func danglingSymlinkSurvivesAFailedReplacement() throws {
+        let url = try Self.scratch()
+        defer { Self.discard(url) }
+        let nowhere = url.deletingLastPathComponent().appendingPathComponent("gone")
+        try FileManager.default.createSymbolicLink(at: url, withDestinationURL: nowhere)
+        let store = Steps(failing: [.rename: EIO]).store(url)
+
+        #expect(throws: SetupStoreError.self) {
+            try store.replace(SetupState(scope: .otherApps, offerSeen: true))
+        }
+        #expect(Self.symlinkDestination(url) == nowhere.path)
+        #expect(!Self.exists(store.temporaryURL))
+
+        // The restart with the legacy flag still in the agent: kept as a problem, never migrated.
+        let restarted = SetupStore(url: url)
+        let bootstrap = restarted.bootstrap(flag: true, record: .lines(0), owner: .scratch())
+        guard case .unreadable = bootstrap.source else {
+            Issue.record("after a failed replacement, bootstrap was \(bootstrap.source)")
+            return
+        }
+        #expect(Self.symlinkDestination(url) == nowhere.path)
+    }
+
+    @Test("a directory at setup.json is named, and a choice over it fails without touching it")
+    func aDirectoryIsKeptAndNamed() throws {
+        let url = try Self.scratch()
+        defer { Self.discard(url) }
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+        let inside = url.appendingPathComponent("somebody's.json")
+        try Data("kept".utf8).write(to: inside)
+        let store = SetupStore(url: url)
+        _ = store.bootstrap(flag: false, record: .lines(0), owner: .scratch())
+        let problem = try #require(store.loadProblem)
+        #expect(problem.description.contains("directory"))
+
+        #expect(throws: SetupStoreError.self) {
+            try store.write(SetupState(scope: .otherApps, offerSeen: true))
+        }
+        #expect(store.loadProblem == problem)
+        #expect(store.saveError != nil)
+        #expect(Self.bytes(inside) == Data("kept".utf8))
+        #expect(!Self.exists(store.temporaryURL))
     }
 
     // MARK: - saving
@@ -308,7 +359,7 @@ struct SetupStoreTests {
         // A restart after the failure, with a legacy --focused-fields still in the agent: the file
         // is still unreadable, behaves as agterm only, and nothing re-migrates over it.
         let restarted = SetupStore(url: url)
-        let bootstrap = restarted.bootstrap(flag: true, record: .lines(0))
+        let bootstrap = restarted.bootstrap(flag: true, record: .lines(0), owner: .scratch())
         #expect(bootstrap.state == SetupState(scope: .agtermOnly, offerSeen: false))
         guard case .unreadable = bootstrap.source else {
             Issue.record("after a failed \(step), bootstrap was \(bootstrap.source)")
@@ -327,7 +378,7 @@ struct SetupStoreTests {
         let url = try Self.scratch()
         defer { Self.discard(url) }
         let store = SetupStore(url: url)
-        let bootstrap = store.bootstrap(flag: flag, record: record)
+        let bootstrap = store.bootstrap(flag: flag, record: record, owner: .scratch())
         let expected = SetupMigration.initial(flag: flag, record: record)
         #expect(bootstrap == SetupBootstrap(state: expected,
                                             source: .migrated(flag: flag, record: record),
@@ -344,10 +395,12 @@ struct SetupStoreTests {
         let chosen = SetupState(scope: .agtermOnly, offerSeen: true)
         try chosen.encoded().write(to: url)
         let before = Self.bytes(url)
-        let withFlag = SetupStore(url: url).bootstrap(flag: true, record: .lines(0))
+        let withFlag = SetupStore(url: url).bootstrap(flag: true, record: .lines(0),
+                                                      owner: .scratch())
         #expect(withFlag == SetupBootstrap(state: chosen, source: .file, flagIgnored: true,
                                            saveError: nil))
-        let withoutFlag = SetupStore(url: url).bootstrap(flag: false, record: .lines(0))
+        let withoutFlag = SetupStore(url: url).bootstrap(flag: false, record: .lines(0),
+                                                         owner: .scratch())
         #expect(withoutFlag.flagIgnored == false)
         #expect(withoutFlag.state == chosen)
         #expect(Self.bytes(url) == before)
@@ -361,7 +414,7 @@ struct SetupStoreTests {
             try Data(text.utf8).write(to: url)
             let steps = Steps()
             let store = steps.store(url)
-            let bootstrap = store.bootstrap(flag: false, record: .lines(0))
+            let bootstrap = store.bootstrap(flag: false, record: .lines(0), owner: .scratch())
             #expect(steps.passed.isEmpty, "bootstrap over \(text) wrote: \(steps.passed)")
             #expect(bootstrap.state == SetupStore.whileUnreadable)
             #expect(bootstrap.state.scope == .agtermOnly)
@@ -383,7 +436,7 @@ struct SetupStoreTests {
         defer { Self.discard(url) }
         let steps = Steps(failing: [.sync: EIO])
         let store = steps.store(url)
-        let bootstrap = store.bootstrap(flag: true, record: .lines(0))
+        let bootstrap = store.bootstrap(flag: true, record: .lines(0), owner: .scratch())
         #expect(bootstrap.state == SetupState(scope: .otherApps, offerSeen: true))
         #expect(bootstrap.source == .migrated(flag: true, record: .lines(0)))
         let reason = try #require(bootstrap.saveError)
@@ -402,7 +455,7 @@ struct SetupStoreTests {
         try Data("{".utf8).write(to: url)
         let steps = Steps()
         let store = steps.store(url)
-        _ = store.bootstrap(flag: false, record: .lines(0))
+        _ = store.bootstrap(flag: false, record: .lines(0), owner: .scratch())
         #expect(store.loadProblem != nil)
         try FileManager.default.removeItem(at: url)
 
@@ -423,7 +476,7 @@ struct SetupStoreTests {
         try original.write(to: url)
         let steps = Steps(failing: [.link: EACCES])
         let store = steps.store(url)
-        _ = store.bootstrap(flag: false, record: .lines(0))
+        _ = store.bootstrap(flag: false, record: .lines(0), owner: .scratch())
         let problem = try #require(store.loadProblem)
 
         #expect(throws: SetupStoreError.self) {
@@ -450,7 +503,7 @@ struct SetupStoreTests {
         defer { Self.discard(url) }
         let steps = Steps(failing: [.rename: ENOSPC])
         let store = steps.store(url)
-        _ = store.bootstrap(flag: false, record: .lines(0))
+        _ = store.bootstrap(flag: false, record: .lines(0), owner: .scratch())
         #expect(store.saveError != nil)
 
         #expect(throws: SetupStoreError.self) {

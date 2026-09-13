@@ -2659,7 +2659,7 @@ struct DaemonTests {
         // and would never be reached by a plain save.
         let fault = Locked<SetupStore.Step?>(nil)
         let store = SetupStore(url: url) { step in step == fault.value ? EACCES : nil }
-        let bootstrap = store.bootstrap(flag: true, record: .lines(0))
+        let bootstrap = store.bootstrap(flag: true, record: .lines(0), owner: .scratch())
         let problem = try #require(store.loadProblem)
         let harness = Harness(setup: bootstrap.state, persisting: store)
         let watcher = try Self.watching(harness)
@@ -2865,7 +2865,7 @@ struct DaemonTests {
         let store = SetupStore(url: directory.appendingPathComponent("setup.json")) { step in
             step == .sync ? EIO : nil
         }
-        let bootstrap = store.bootstrap(flag: true, record: .lines(0))
+        let bootstrap = store.bootstrap(flag: true, record: .lines(0), owner: .scratch())
         let reason = try #require(bootstrap.saveError)
 
         let harness = Harness(setup: bootstrap.state, persisting: store)

@@ -239,10 +239,11 @@ struct DaemonOptionsTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let url = directory.appendingPathComponent("setup.json")
 
-        let first = SetupStore(url: url).bootstrap(flag: true, record: .lines(0))
+        let first = SetupStore(url: url).bootstrap(flag: true, record: .lines(0), owner: .scratch())
         #expect(StartupLines.describe(first, agtermFound: false)
             == ["setup: other-apps, seeded from --focused-fields; written to setup.json"])
-        let second = SetupStore(url: url).bootstrap(flag: true, record: .lines(0))
+        let second = SetupStore(url: url).bootstrap(flag: true, record: .lines(0),
+                                                    owner: .scratch())
         #expect(StartupLines.describe(second, agtermFound: false) == [
             "setup: other-apps, from setup.json",
             "setup: --focused-fields was ignored, because setup.json exists and decides",

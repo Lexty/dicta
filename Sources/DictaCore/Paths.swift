@@ -46,6 +46,12 @@ public struct Paths: Sendable, Equatable {
     /// alone. A file of its own rather than a key in `config`, which is D9b's and hand-edited.
     public var setup: URL { support.appendingPathComponent("setup.json") }
 
+    /// Held by the running daemon for its whole life (`DaemonLock`), and taken before it reads or
+    /// writes `setup.json`. Here rather than beside the socket, whose path `--control` moves: two
+    /// daemons on two sockets still share this `setup.json`, so they must share this lock. Never
+    /// removed -- a second inode at the same path would be a second lock two owners could hold.
+    public var daemonLock: URL { support.appendingPathComponent("daemon.lock") }
+
     /// Creates the support directory if it is missing, and returns it. Idempotent, so a caller may
     /// invoke it on every start without checking first.
     @discardableResult

@@ -69,11 +69,27 @@ if options.fetchModels {
     exit(0)
 }
 
-// The second-instance refusal (§7), asked before anything below leaves a trace. `daemon.start` is
-// where it is enforced, but by then `setup.json` has been bootstrapped from THIS command line: a
-// flagless manual start beside a running agent that still carries `--focused-fields` would record
-// `agterm-only` and then exit, and the next install would read that file as the choice and drop the
-// agent's seed.
+// The second-instance refusal (§7), taken before anything below leaves a trace. `daemon.start`
+// binds the socket, but by then `setup.json` has been bootstrapped from THIS command line: a
+// flagless manual start beside an agent that still carries `--focused-fields` would record
+// `agterm-only`, and the next install would read that file as the choice and drop the agent's seed.
+//
+// The lock, not the socket probe, is what makes this hold for two daemons starting together: a
+// probe owns nothing, so both would pass it and both would migrate. Held for the life of the
+// process -- a top-level constant is never released -- and given up by the kernel when it exits.
+//
+// ANY failure to take it ends start-up, not only another daemon holding it. A lock that could not
+// be opened or taken says nothing about whether `setup.json` can be written, and two starts that
+// both failed to lock would both migrate; the error names which failure it was. `bootstrap` takes
+// the lock as an argument, so no path through here reaches it without one.
+let daemonLock: DaemonLock
+do {
+    daemonLock = try DaemonLock.acquire(at: Paths.current.daemonLock)
+} catch {
+    log("\(error)")
+    exit(EXIT_FAILURE)
+}
+// Asked as well, for a running daemon from before the lock existed, which holds none.
 do {
     try ControlServer.refuseIfRunning(path: controlSocket)
 } catch {
@@ -120,7 +136,8 @@ let fieldSwitch = FocusedFieldSwitch(frontmost: frontmost, feedback: feedback)
 let setupStore = SetupStore(url: Paths.current.setup)
 let setupBootstrap = setupStore.bootstrap(
     flag: options.focusedFields,
-    record: SetupMigration.recordFact(Result { try FileHistory().entries() }))
+    record: SetupMigration.recordFact(Result { try FileHistory().entries() }),
+    owner: daemonLock)
 for line in StartupLines.describe(setupBootstrap, agtermFound: agtermctl != nil) {
     log(line)
 }

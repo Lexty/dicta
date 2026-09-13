@@ -16,7 +16,8 @@ struct PathsTests {
         let paths = Paths(home: URL(fileURLWithPath: "/Users/nobody"))
         #expect(paths.support.path ==
             "/Users/nobody/Library/Application Support/dev.personal.dicta")
-        for file in [paths.socket, paths.record, paths.dictionary, paths.config, paths.setup] {
+        for file in [paths.socket, paths.record, paths.dictionary, paths.config, paths.setup,
+                     paths.daemonLock] {
             #expect(file.deletingLastPathComponent().path == paths.support.path,
                     "\(file.lastPathComponent) is not in the support directory")
         }
@@ -30,7 +31,9 @@ struct PathsTests {
         #expect(paths.dictionary.lastPathComponent == "replacements.conf")
         #expect(paths.config.lastPathComponent == "config.json")
         #expect(paths.setup.lastPathComponent == "setup.json")
-        let names = [paths.socket, paths.record, paths.dictionary, paths.config, paths.setup]
+        #expect(paths.daemonLock.lastPathComponent == "daemon.lock")
+        let names = [paths.socket, paths.record, paths.dictionary, paths.config, paths.setup,
+                     paths.daemonLock]
             .map(\.lastPathComponent)
         #expect(Set(names).count == names.count)
     }
