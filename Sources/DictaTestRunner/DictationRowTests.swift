@@ -272,6 +272,23 @@ struct DictationRowTests {
         #expect(Target(sessionID: "S1", pane: .right).caption(name: nil) == "S1 · right")
     }
 
+    @Test("a focused field's target line names the application, and nothing a session could")
+    func fieldCaption() {
+        let code = Target.focusedField(FieldTarget(bundleID: "com.microsoft.VSCode",
+                                                   appName: "Code", pid: 4242))
+        #expect(code.caption(name: nil) == "Code")
+        // A session name belongs to agterm's tree; handed one here, it cannot describe a field.
+        #expect(code.caption(name: "claude-code") == "Code")
+        #expect(code.sessionID == nil)
+        // An application with no name still gets a caption someone can compare: an empty target
+        // line is worse than an identifier.
+        #expect(Target.focusedField(FieldTarget(bundleID: "dev.example.tool", appName: "", pid: 7))
+            .caption(name: nil) == "dev.example.tool")
+        #expect(Target.focusedField(FieldTarget(bundleID: nil, appName: "", pid: 7))
+            .caption(name: nil) == "pid 7")
+        #expect(Target(sessionID: "S1", pane: .left).sessionID == "S1")
+    }
+
     @Test("the name reader and the target resolver read the same tree")
     func oneTreeTwoReaders() throws {
         // The drift guard for a decoder that is deliberately a SECOND one: `Agterm`'s parser lives

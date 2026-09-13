@@ -105,7 +105,8 @@ public struct RecordEntry: Codable, Sendable, Equatable {
     /// What was injected, or would have been: replaced, filtered or deliberately not, sanitised.
     public var final: String
     public var rules: RulesApplied
-    /// Session id and pane (§5), as resolved at the start and never substituted (D4).
+    /// Session id and pane, or the focused field's application (§5, D31), as resolved at the start
+    /// and never substituted (D4).
     public var target: Target
     /// The reason the user was shown, when there was one. Several reasons are joined, because an
     /// attempt can have both a filter fallback and a delivery failure.

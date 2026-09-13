@@ -222,7 +222,7 @@ final class StatusViewModel: ObservableObject {
     /// The caption for the live attempt, resolved as far as it can be.
     var targetCaption: String? {
         guard let target = liveTarget else { return nil }
-        return target.caption(name: names[target.sessionID])
+        return target.caption(name: target.sessionID.flatMap { names[$0] })
     }
 
     /// The target of an attempt that is happening NOW, and nothing else.
@@ -243,6 +243,7 @@ final class StatusViewModel: ObservableObject {
     /// property of a session and a row from yesterday would be captioned with whatever that session
     /// happens to be called now — a caption that changes under a record that cannot.
     func resolveTargetName() {
+        // A focused field has no session and nothing to look up: its caption is already its name.
         guard let session = liveTarget?.sessionID else {
             targetName = nil
             return

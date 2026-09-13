@@ -7,6 +7,12 @@ import Foundation
 //     echo '{"cmd":"status"}' \
 //         | nc -U ~/Library/Application\ Support/dev.personal.dicta/control.sock
 //
+// `Target` is the one enum with associated values, and it earns the exception twice (D31). Its JSON
+// is still flat and hand-written — an agterm target is exactly the object every earlier build wrote
+// into the record, so a year of `record.jsonl` still decodes — and the type, unlike a struct with
+// two optional halves, makes it impossible to hand a focused field to the agterm adapter by
+// forgetting to check which half is set.
+//
 // The vocabulary is §6's, not a looser one: states and commands are enums, so an unknown value is a
 // decode error at the edge rather than a string the daemon has to re-interpret in five places.
 
@@ -229,16 +235,89 @@ public enum Pane: String, Codable, Sendable, CaseIterable {
     case scratch
 }
 
-/// Where an attempt's text goes: a session id plus a pane (§5). The two halves are **not** equally
-/// accurate — the session id is keypress-accurate, the pane is live focus roughly 40 ms later — and
-/// this type exists so that both are carried together and re-validated together before injection.
-public struct Target: Codable, Sendable, Equatable {
+/// Where an attempt's text goes: an agterm pane, or the focused text field of another application
+/// (§2, D31). Either is captured at the start of an attempt, re-validated before delivery, and
+/// never re-aimed at whatever has focus instead (D4).
+///
+/// The JSON is hand-written rather than synthesised, because the synthesised shape of an enum would
+/// wrap today's object in a key of its own and orphan every line already on disk:
+///
+///     {"pane":"left","sessionID":"…"}                          an agterm pane, byte-identical to
+///                                                             what every earlier build wrote
+///     {"field":{"appName":"Code","bundleID":"…","pid":4242}}   a focused field
+///
+/// Decoding keys on the presence of `field`; an object with neither shape is a decode error, never
+/// a guess at which one was meant.
+public enum Target: Codable, Sendable, Equatable {
+    case agterm(AgtermTarget)
+    case focusedField(FieldTarget)
+
+    /// An agterm pane. Every target before D31 was one, and most call sites still build one.
+    public init(sessionID: String, pane: Pane) {
+        self = .agterm(AgtermTarget(sessionID: sessionID, pane: pane))
+    }
+
+    /// The agterm session this target names, and `nil` for a field, which has none.
+    public var sessionID: String? {
+        switch self {
+        case let .agterm(target): target.sessionID
+        case .focusedField: nil
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case field
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if container.contains(.field) {
+            self = .focusedField(try container.decode(FieldTarget.self, forKey: .field))
+        } else {
+            self = .agterm(try AgtermTarget(from: decoder))
+        }
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        switch self {
+        case let .agterm(target):
+            try target.encode(to: encoder)
+        case let .focusedField(field):
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(field, forKey: .field)
+        }
+    }
+}
+
+/// A session id plus a pane (§5). The two halves are **not** equally accurate — the session id is
+/// keypress-accurate, the pane is live focus roughly 40 ms later — and this type exists so that
+/// both are carried together and re-validated together before injection.
+public struct AgtermTarget: Codable, Sendable, Equatable {
     public var sessionID: String
     public var pane: Pane
 
     public init(sessionID: String, pane: Pane) {
         self.sessionID = sessionID
         self.pane = pane
+    }
+}
+
+/// The focused text field of another application, as far as it can leave the daemon (§5, D31).
+///
+/// Identity, never content: the application, and nothing the field holds. The element itself is
+/// an `AXUIElement` and stays parked in the daemon beside the attempt, so this type — and
+/// `DictaCore` — never reaches ApplicationServices. The field is focus read shortly after the
+/// hold's floor, which is looser than an agterm pane, and §5 says so.
+public struct FieldTarget: Codable, Sendable, Equatable {
+    /// `nil` for an application that has none; carried as absent rather than invented.
+    public var bundleID: String?
+    public var appName: String
+    public var pid: Int32
+
+    public init(bundleID: String?, appName: String, pid: Int32) {
+        self.bundleID = bundleID
+        self.appName = appName
+        self.pid = pid
     }
 }
 

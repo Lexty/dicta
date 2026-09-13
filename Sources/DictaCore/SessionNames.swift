@@ -55,15 +55,31 @@ public enum SessionNames {
 }
 
 public extension Target {
-    /// The target line's caption: `claude-code · left`, or the id's head when no name is known.
+    /// The target line's caption: `claude-code · left` for a pane, `Code` for a focused field.
     ///
-    /// The pane is always shown and the name never replaces it. Both halves are the target (§5),
-    /// and this line exists to be D4 made visible — the one moment where noticing the wrong pane is
-    /// still free. A caption naming only a session would be silent about the half a user is most
-    /// likely to have got wrong, since the pane follows focus and the session does not.
+    /// For a pane, the pane is always shown and the name never replaces it. Both halves are the
+    /// target (§5), and this line exists to be D4 made visible — the one moment where noticing the
+    /// wrong pane is still free. A caption naming only a session would be silent about the half a
+    /// user is most likely to have got wrong, since the pane follows focus and the session does
+    /// not.
+    ///
+    /// `name` is a session name and describes nothing about a field, so a field ignores it.
     func caption(name: String?) -> String {
-        let head = name ?? Self.shorten(sessionID)
-        return "\(head) · \(pane.rawValue)"
+        switch self {
+        case let .agterm(target):
+            let head = name ?? Self.shorten(target.sessionID)
+            return "\(head) · \(target.pane.rawValue)"
+        case let .focusedField(field):
+            return Self.caption(field)
+        }
+    }
+
+    /// A field's caption: the application's name, then its bundle id, then its pid. Never empty,
+    /// for the reason a session falls back to its id: an empty target line is worse than a number.
+    static func caption(_ field: FieldTarget) -> String {
+        if !field.appName.isEmpty { return field.appName }
+        if let bundleID = field.bundleID, !bundleID.isEmpty { return bundleID }
+        return "pid \(field.pid)"
     }
 
     /// A session id, shortened to something a person can compare at a glance. Full ids are UUIDs

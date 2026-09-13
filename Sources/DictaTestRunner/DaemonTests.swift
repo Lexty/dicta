@@ -1995,6 +1995,27 @@ struct DaemonTests {
         #expect(!FileManager.default.fileExists(atPath: harness.activeTargetFile.path))
     }
 
+    @Test("a parked file written before the target had two shapes still puts its light out",
+          arguments: [
+              // `ParkedAttempt` as the agterm-only build wrote it, socket and all.
+              #"{"target":{"sessionID":"S1","pane":"left"},"agtermSocket":"/tmp/a.sock"}"#,
+              // The earlier build still, which parked a bare `Target`.
+              #"{"sessionID":"S1","pane":"left"}"#,
+          ])
+    func startupClearsAnIndicatorParkedByAnEarlierBuild(json: String) throws {
+        // Bytes, not a value encoded by this build: the file is left behind by a daemon that
+        // crashed, which is by definition a daemon that may be older than the one reading it.
+        let harness = Harness()
+        try Data(json.utf8).write(to: harness.activeTargetFile)
+
+        try harness.daemon.start()
+        defer { harness.daemon.stop() }
+
+        #expect(harness.notifier.signals == [.clear(.agterm(AgtermTarget(sessionID: "S1",
+                                                                         pane: .left)))])
+        #expect(!FileManager.default.fileExists(atPath: harness.activeTargetFile.path))
+    }
+
     @Test("a parked target is no more readable than the record beside it")
     func theParkedTargetIsPrivate() throws {
         // Every other file dicta owns says 0600 explicitly -- the socket is chmodded, the record is

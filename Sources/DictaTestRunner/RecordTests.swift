@@ -48,6 +48,42 @@ struct RecordTests {
         #expect(decoded.error == "the pane went away")
     }
 
+    // MARK: - the target's two shapes (D31)
+
+    @Test("a line the agterm-only build wrote decodes to an agterm target and re-encodes unchanged")
+    func anAgtermLineIsByteIdentical() throws {
+        // Written by `Record.encode` on the build before `Target` became a sum, and checked in as
+        // bytes rather than rebuilt from a value: the claim is about what is already on disk. An
+        // agterm target must keep today's flat `{"pane", "sessionID"}` object, so a record written
+        // after this change is indistinguishable from one written before it.
+        let line = #"""
+        {"at":"2025-12-17T19:33:20.000Z","audioSeconds":8.74,"final":"one two","id":7,\#
+        "mode":"clean","outcome":"injected","recognised":"one two",\#
+        "rules":{"fired":["mr-1"],"version":"2026-08-14T00:00:00Z"},\#
+        "speechEndedAt":"2025-12-17T19:33:28.750Z","speechStartedAt":"2025-12-17T19:33:20.000Z",\#
+        "target":{"pane":"right","sessionID":"7C3F9B2E-4A1D-4E6B-8F20-5D9A1C6E3B47"}}
+
+        """#
+        let entry = try Record.decode(Data(line.utf8))
+        #expect(entry.target == Target(sessionID: "7C3F9B2E-4A1D-4E6B-8F20-5D9A1C6E3B47",
+                                       pane: .right))
+        #expect(String(decoding: try Record.encode(entry), as: UTF8.self) == line)
+    }
+
+    @Test("an attempt aimed at a focused field names the application in the record")
+    func aFocusedFieldLineRoundTrips() throws {
+        let target = Target.focusedField(FieldTarget(bundleID: "com.microsoft.VSCode",
+                                                     appName: "Code", pid: 4242))
+        let original = RecordEntry(id: 9, at: Self.when, outcome: .injected, mode: .clean,
+                                   recognised: "one two", final: "one two", target: target)
+
+        let line = String(decoding: try Record.encode(original), as: UTF8.self)
+
+        #expect(line.contains(
+            #""target":{"field":{"appName":"Code","bundleID":"com.microsoft.VSCode","pid":4242}}"#))
+        #expect(try Record.decode(Data(line.utf8)) == original)
+    }
+
     @Test("the twelve outcomes are exactly §9's, spelled as §9 spells them")
     func outcomeVocabularyIsTheSpecs() {
         // Not a tautology: the table in §9 is what a human greps the file with, so the raw values
@@ -788,7 +824,8 @@ struct SpeechWindowTests {
         let entry = try Record.decode(Data(line.utf8))
         #expect(entry.id == 1)
         #expect(entry.outcome == .aborted)
-        #expect(entry.target.sessionID == "7C3F9B2E-4A1D-4E6B-8F20-5D9A1C6E3B47")
+        #expect(entry.target == Target(sessionID: "7C3F9B2E-4A1D-4E6B-8F20-5D9A1C6E3B47",
+                                       pane: .left))
         #expect(entry.speechStartedAt == nil)
         #expect(entry.speechEndedAt == nil)
         #expect(entry.audioSeconds == nil)

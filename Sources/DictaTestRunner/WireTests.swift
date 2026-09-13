@@ -65,8 +65,56 @@ struct WireTests {
         let response = Response(kind: .accepted, state: .recording, attempt: 3, target: target)
         let decoded = try Wire.decode(Response.self, from: Wire.encode(response))
         #expect(decoded == response)
-        #expect(decoded.target?.sessionID == "session:7")
-        #expect(decoded.target?.pane == .right)
+        #expect(decoded.target == .agterm(AgtermTarget(sessionID: "session:7", pane: .right)))
+    }
+
+    // MARK: - the target's two shapes (D31)
+
+    static func sortedJSON(_ target: Target) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return String(decoding: try encoder.encode(target), as: UTF8.self)
+    }
+
+    @Test("an agterm target is still the flat object every earlier build wrote")
+    func agtermTargetKeepsTheFlatShape() throws {
+        // No `agterm` wrapper and no discriminator: the record and the parked file already hold
+        // this shape, and a new agterm line must be indistinguishable from an old one.
+        let target = Target(sessionID: "S1", pane: .left)
+        #expect(target == .agterm(AgtermTarget(sessionID: "S1", pane: .left)))
+        #expect(try Self.sortedJSON(target) == #"{"pane":"left","sessionID":"S1"}"#)
+        let flat = Data(#"{"sessionID":"S1","pane":"left"}"#.utf8)
+        let decoded = try JSONDecoder().decode(Target.self, from: flat)
+        #expect(decoded == target)
+    }
+
+    @Test("a focused-field target round-trips under a key of its own")
+    func focusedFieldTargetRoundTrips() throws {
+        let target = Target.focusedField(FieldTarget(bundleID: "com.microsoft.VSCode",
+                                                     appName: "Code", pid: 4242))
+        #expect(try Self.sortedJSON(target)
+            == #"{"field":{"appName":"Code","bundleID":"com.microsoft.VSCode","pid":4242}}"#)
+        #expect(try JSONDecoder().decode(Target.self, from: Data(try Self.sortedJSON(target).utf8))
+            == target)
+
+        // An application may have no bundle identifier, and the absence is carried, not invented.
+        let bare = Target.focusedField(FieldTarget(bundleID: nil, appName: "tool", pid: 7))
+        #expect(try Self.sortedJSON(bare) == #"{"field":{"appName":"tool","pid":7}}"#)
+        #expect(try JSONDecoder().decode(Target.self, from: Data(try Self.sortedJSON(bare).utf8))
+            == bare)
+
+        let response = Response(kind: .accepted, state: .recording, attempt: 3, target: target)
+        #expect(try Wire.decode(Response.self, from: Wire.encode(response)) == response)
+    }
+
+    @Test("an object carrying neither shape is a decode error, never a guess",
+          arguments: [#"{}"#, #"{"pane":"left"}"#, #"{"sessionID":"S1"}"#,
+                      #"{"app":"Code","pid":1}"#, #"{"field":{"appName":"Code"}}"#,
+                      #"{"field":null}"#, #""left""#])
+    func neitherShapeFailsToDecode(json: String) {
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(Target.self, from: Data(json.utf8))
+        }
     }
 
     @Test("the request names only the session, because the pane is not knowable at keypress")

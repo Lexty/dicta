@@ -215,7 +215,7 @@ public struct Agterm: Injector, Notifier, Sendable {
     /// Both halves, and only existence: the pane does not have to still be FOCUSED. Focus having
     /// moved to the sibling pane is not a reason to follow it -- the text belongs where the user
     /// was when they started speaking, and re-aiming is the one thing invariant 3 forbids.
-    public func validate(_ target: Target) throws {
+    public func validate(_ target: AgtermTarget) throws {
         let surfaces: [TreeSurface]
         do {
             surfaces = try self.surfaces(ofSession: target.sessionID)
@@ -229,11 +229,11 @@ public struct Agterm: Injector, Notifier, Sendable {
             // writing `target-gone` into the record for a session that is almost certainly alive.
             // A missing `agtermctl`, a timeout or a refused command say nothing about the session
             // at all. `notStarted` is the truthful one for all of those: no keystroke was sent.
-            throw Self.unconfirmed(target, error)
+            throw Self.unconfirmed(.agterm(target), error)
         }
         guard surfaces.contains(where: { $0.kind == target.pane.rawValue }) else {
             throw DeliveryFailure.targetGone(
-                target,
+                .agterm(target),
                 reason: "the \(target.pane.rawValue) pane of \(target.sessionID) is gone"
             )
         }
@@ -326,10 +326,17 @@ public struct Agterm: Injector, Notifier, Sendable {
     /// What is NOT here: a retry. §7 is explicit -- a retry after keystrokes have begun doubles
     /// part of the text, and the user is told the insertion may be partial instead.
     public func inject(_ text: String, into target: Target) throws {
-        try validate(target)
+        guard case let .agterm(pane) = target else {
+            // The daemon routes a field to its own injector and never here (D31). If one arrives
+            // anyway, nothing is typed: agterm has no pane to aim at, and picking the focused one
+            // would be D4's forbidden substitution.
+            throw DeliveryFailure.notStarted(target,
+                                             reason: "a focused field is not an agterm pane")
+        }
+        try validate(pane)
 
-        let arguments = ["session", "type", "--pane", target.pane.rawValue,
-                         "--target", target.sessionID, "--json", "--", text]
+        let arguments = ["session", "type", "--pane", pane.pane.rawValue,
+                         "--target", pane.sessionID, "--json", "--", text]
         let output: CommandOutput
         do {
             output = try invoke("session type", arguments)
@@ -361,8 +368,13 @@ public struct Agterm: Injector, Notifier, Sendable {
 
     // MARK: - feedback (§6)
 
+    // A focused field has no session indicator, and its feedback belongs to the notifier the daemon
+    // routes it to (D13, D31). Each method below therefore does nothing for one -- not even the
+    // osascript fallback, which would be a second notification beside that notifier's.
+
     public func announce(_ feedback: Feedback, for target: Target) {
-        _ = try? invoke("session status", Self.statusArguments(feedback, target: target))
+        guard case let .agterm(pane) = target else { return }
+        _ = try? invoke("session status", Self.statusArguments(feedback, target: pane))
     }
 
     /// Best effort by design, and loud by preference: if agterm cannot show it, `osascript` can.
@@ -373,8 +385,9 @@ public struct Agterm: Injector, Notifier, Sendable {
         // description -- and one that begins with a dash would be eaten as a flag. §7's whole
         // premise is that these are the failures nobody is watching, so losing one is the worst
         // outcome available.
+        if case .focusedField = target { return }
         var arguments = ["notify", "--title", "dicta"]
-        if let target { arguments += ["--target", target.sessionID] }
+        if let session = target?.sessionID { arguments += ["--target", session] }
         arguments += ["--", message]
         if let output = try? invoke("notify", arguments), output.succeeded { return }
         let script = "display notification \(Self.quoted(message)) with title \"dicta\""
@@ -382,12 +395,13 @@ public struct Agterm: Injector, Notifier, Sendable {
     }
 
     public func clearIndicator(for target: Target) {
+        guard case let .agterm(pane) = target else { return }
         _ = try? invoke("session status", ["session", "status", "idle",
-                                           "--pane", target.pane.rawValue,
-                                           "--target", target.sessionID])
+                                           "--pane", pane.pane.rawValue,
+                                           "--target", pane.sessionID])
     }
 
-    static func statusArguments(_ feedback: Feedback, target: Target) -> [String] {
+    static func statusArguments(_ feedback: Feedback, target: AgtermTarget) -> [String] {
         var arguments = ["session", "status"]
         switch feedback {
         case .listening:

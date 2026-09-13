@@ -1412,9 +1412,10 @@ public final class Daemon: @unchecked Sendable {
         var target: Target
         var agtermSocket: String?
 
-        /// Tolerates a file written by an earlier build, which held a bare `Target`. A parked file
-        /// that cannot be read is a stale indicator nobody puts out, so the fallback is worth four
-        /// lines.
+        /// Tolerates a file written by an earlier build, which held a bare `Target` -- always an
+        /// agterm pane, and it still decodes as `.agterm` because that case kept the flat shape. A
+        /// parked file that cannot be read is a stale indicator nobody puts out, so the fallback is
+        /// worth four lines.
         static func decode(_ data: Data) -> ParkedAttempt? {
             if let parked = try? JSONDecoder().decode(ParkedAttempt.self, from: data) {
                 return parked

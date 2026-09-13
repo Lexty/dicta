@@ -757,19 +757,30 @@ about `returned`.
   `DaemonTests.swift`, `Fakes.swift`, and any test that reads `.sessionID`/`.pane` directly (grep
   the 11 reads)
 
-- [ ] write the red tests first:
+- [x] write the red tests first:
   - a `record.jsonl` line produced by the current build, checked in as a literal, decodes to
     `.agterm` and re-encodes byte-identical;
   - `.focusedField` round-trips;
   - an object with neither shape fails to decode;
   - an `active-target` file and a legacy bare-`Target` parked attempt still decode.
-- [ ] introduce `AgtermTarget`, the `Target` enum, the `init(sessionID:pane:)` convenience and the
+- [x] introduce `AgtermTarget`, the `Target` enum, the `init(sessionID:pane:)` convenience and the
   custom `Codable`, and update Wire.swift's header comment.
-- [ ] switch `Agterm`'s internals to `AgtermTarget`. Test that its injector, given a `.focusedField`,
+- [x] switch `Agterm`'s internals to `AgtermTarget`. Test that its injector, given a `.focusedField`,
   throws `notStarted` with no subprocess run, and that its notifier does nothing.
-- [ ] update `SessionNames` and `StatusViewModel` to switch on the case. Add the field caption (the
+- [x] update `SessionNames` and `StatusViewModel` to switch on the case. Add the field caption (the
   app name) as a pure DictaCore function, with a test.
-- [ ] run tests — must pass before next task
+- [x] run tests — must pass before next task
+
+- ➕ **Outcome (2026-09-13).** `Target` is `.agterm(AgtermTarget)` or `.focusedField(FieldTarget)`
+  with a hand-written `Codable`; the agterm case keeps the flat object.
+  - **The byte-identical literal was checked against the old build first:** the record test passed
+    on the agterm-only `Target` before the enum existed, so it is what that build wrote.
+  - **Added beyond the list:** `Target.sessionID: String?` (nil for a field), which the menu's name
+    lookup and the agterm notifier use instead of a switch at each site; `Agterm.validate` now takes
+    `AgtermTarget`.
+  - **Deferred as planned:** `clearStaleIndicator` still hands any parked target to the agterm
+    notifier, which ignores a field; routing by case is Task 8's.
+  - Tests: 592 in 34 suites green under Xcode 26.6 (Swift 6.3.3), nine new; lint clean.
 
 ### Task 4: `KeystrokeChunks` and `FieldEligibility` — the pure decisions of delivery
 

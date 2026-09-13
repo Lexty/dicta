@@ -270,7 +270,7 @@ struct AgtermTests {
             windows: Self.windows(["W1", "W2"], active: "W1")
         )
 
-        try Self.agterm(runner).validate(Target(sessionID: "S1", pane: .right))
+        try Self.agterm(runner).validate(AgtermTarget(sessionID: "S1", pane: .right))
 
         // The frontmost window first and alone, because it is the answer on every ordinary chord.
         #expect(runner.verbs == ["tree --json", "window list", "tree --json"])
@@ -634,6 +634,47 @@ struct AgtermTests {
                 return
             }
         }
+    }
+
+    // MARK: - a focused field is not agterm's (D31)
+
+    static let field = Target.focusedField(FieldTarget(bundleID: "com.microsoft.VSCode",
+                                                       appName: "Code", pid: 4242))
+
+    @Test("handed a focused field, the agterm injector refuses without running anything")
+    func aFocusedFieldIsNeverTypedThroughAgterm() throws {
+        // The daemon never routes one here. If it ever did, the only honest answer is that
+        // nothing was typed: agterm has no pane to aim at, and guessing one -- the focused session,
+        // say -- is D4's forbidden substitution.
+        let runner = StubRunner(tree: Self.oneLeftPane)
+
+        do {
+            try Self.agterm(runner).inject("hello", into: Self.field)
+            Issue.record("a focused field was typed into through agterm")
+        } catch let failure as DeliveryFailure {
+            guard case let .notStarted(target, _) = failure else {
+                Issue.record("expected notStarted, got \(failure)")
+                return
+            }
+            #expect(target == Self.field)
+        }
+        #expect(runner.invocations.isEmpty)
+    }
+
+    @Test("handed a focused field, the agterm notifier does nothing")
+    func aFocusedFieldGetsNoAgtermFeedback() {
+        let runner = StubRunner(tree: Self.oneLeftPane)
+        let agterm = Self.agterm(runner)
+
+        for feedback in Feedback.allCases {
+            agterm.announce(feedback, for: Self.field)
+        }
+        agterm.notify("the target is gone", for: Self.field)
+        agterm.clearIndicator(for: Self.field)
+
+        // Not even the osascript fallback: feedback for a field target belongs to the notifier the
+        // daemon routes it to, and an agterm session named after nothing would be a wrong light.
+        #expect(runner.invocations.isEmpty)
     }
 
     // MARK: - feedback (§6)
