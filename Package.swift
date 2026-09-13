@@ -177,6 +177,8 @@ let package = Package(
             dependencies: ["DictaCore", "DictaIPC", "DictaRecord"],
             path: "Sources/DictaMenu"
         ),
+        // TEMPORARY: plan 20260912-dicta-focused-fields, Task 1 (F11). Deleted once F11 is written.
+        .executableTarget(name: "FieldProbe", path: "Sources/FieldProbe"),
         .executableTarget(
             name: "DictaTestRunner",
             dependencies: ["DictaCore", "DictaIPC", "DictaRecord", "DictaRuntime"],
