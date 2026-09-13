@@ -23,8 +23,9 @@ This plan takes three backlog items together, because all three touch the menu (
 
 **Consistency with acta is a requirement, not a nicety.** The user's rule for questions the two
 apps share: take acta's approach, or take another one and file the same change in acta's backlog.
-Every shared question below follows acta's approach, so no acta backlog item is needed. The one
-forced difference is where the view model lives, and it is recorded as a divergence.
+Every shared question below follows acta's approach, so no acta backlog item is needed. The two
+forced differences are where the view model lives (a dependency, D27) and the word kept on
+ordinary rows (dicta has two ordinary outcomes); both are recorded with their reasons.
 
 **What this buys:**
 - The menu-side code grown on this branch becomes reachable from `DictaTestRunner`. That covers the
@@ -250,8 +251,8 @@ which links FluidAudio and AVFoundation (D27).
 - one file that builds the system world.
 
 **Why dicta differs from acta here.** acta keeps its `ControlViewModel` in `ActaRuntime` with SwiftUI.
-dicta cannot, because its runtime is the daemon's. This is the one forced divergence, and it is
-recorded in `docs/ui-vocabulary.md`.
+dicta cannot, because its runtime is the daemon's. That dependency forces the difference, and it is
+recorded in `docs/ui-vocabulary.md` with that reason.
 
 **`StatusViewModel` moves into `DictaMenuKit` under the same name.**
 - It stays `@MainActor` and `ObservableObject`.
@@ -280,8 +281,25 @@ principle as acta: the view model is real and only the lowest seam is fake.
 - In `DictaMenu`, `SetupWindowController` adopts the protocol. It takes the model in `init`, holds it
   weakly, renders `SetupView(model:)`, and calls the public `setupBecameKey()` and `setupClosed()`
   from its window delegate.
-- `DictaMenuApp` builds the controller once, keeps it alive, and assigns it as the presenter. That is
-  the counterpart of acta's `reminderPanelBox`.
+- **The presenter is installed before the stream starts, in acta's order** (`ActaApp.swift:142-146`:
+  retain the panel, assign the presenter, then `coordinator.start()`).
+  - `FirstSnapshotLatch` is consumed by the first snapshot whether or not a presenter is attached,
+    so a presenter attached after `start()` would silently lose that launch's automatic open.
+  - Retrying the open on a later snapshot is not the fix; D27 forbids it.
+  - `DictaMenu` therefore owns one stable pairing outside the lazy panel: a `@MainActor` `MenuRoot:
+    ObservableObject`, held as the app's `@StateObject`. Its `init` builds the model, then the
+    `SetupWindowController`, then assigns `setupPresenter`.
+  - The model has two entry points to `start()`: the label's `.task` (`DictaMenuApp.swift:43`), and
+    `panelAppeared()` (`StatusViewModel.swift:87`), which calls it idempotently. Both come after
+    `MenuRoot.init`, so the presenter is attached before either. No other view starts the model.
+  - **Ownership is not observation.** `ObservableObject` does not forward a child's changes:
+    `MenuRoot` holding the model does not make the app redraw when the model changes. Codex measured
+    it with a Combine probe: a mutated child `@Published` gave 0 events on the root and 1 on the child.
+  - So the always-visible label is its own view, `MenuBarLabel`, with
+    `@ObservedObject var model: StatusViewModel`. It renders today's `BarItem` and carries the
+    `.task { model.start() }`. `Panel` already observes the model the same way (`@ObservedObject`,
+    `DictaMenuApp.swift:93`). `MenuRoot` owns lifetime and order; it forwards nothing.
+  - `MenuRoot` is the counterpart of acta's `reminderPanelBox`.
 - A test uses a fake presenter and calls the two public methods directly.
 
 ### The three fixes
@@ -320,12 +338,27 @@ principle as acta: the view model is real and only the lowest seam is fake.
     not failure.
   - `.symbol(String)` for the amber and red outcomes. The proposal is `exclamationmark.triangle` for
     amber and `xmark.circle` for red; a person judges them on the built panel (H44).
-- **Placement.** `RecentRow` draws the symbol at 9 pt, tinted, at the start of the second line,
-  followed by `secondary(at:)` unchanged.
-- **One word.** The only copy of the outcome word stays inside `secondary(at:)`, which is
-  `AttemptOutcome.label`. The reason line keeps its tint.
-- **What dicta cannot copy from acta.** acta tints the word too. dicta would have to split
-  `secondary(at:)` for that, so only the symbol is tinted. This is recorded as a divergence.
+- **Grouping and tint follow acta** (`ActaApp.swift:849-859`: the symbol and the outcome word first,
+  both tinted, then the stamp).
+  - `DictaCore` exposes the second line as parts rather than one string:
+    `DictationRow.secondaryParts(at:) -> (outcome: String, details: [String])`.
+    - `outcome` is `AttemptOutcome.label`, still its only source.
+    - `details` are the relative time, "recognised only", "raw" and the duration, in today's order.
+  - `secondary(at:)` stays, as those parts joined with the outcome first. Its tests are updated for
+    the new order.
+- **What `RecentRow` draws on the second line:**
+  - the 9 pt symbol for `.symbol`;
+  - the outcome word, tinted for `.symbol`, faint for `.faint`, and `.secondary` for an ordinary
+    outcome;
+  - `· <details>` at `.tertiary`, as acta draws its stamp.
+
+  The reason line keeps its tint.
+- **Where dicta still differs, and why that is not a choice of approach.** acta's one ordinary state,
+  `saved`, prints no word: there is only one ordinary state, so a word would say nothing. dicta has
+  two ordinary outcomes, `typed` and `returned to caller`, which say different things about where the
+  text went. So the ordinary word stays, untinted and unmarked. That is acta's rule, "the ordinary is
+  quiet", applied to a domain with two ordinary states. It is recorded in `docs/ui-vocabulary.md`
+  with that reason.
 
 ### Vocabulary
 
@@ -336,8 +369,10 @@ nothing of dicta. Leave out acta's introduction.
 - the `list` element's dot on every row;
 - :94's module list, which gains `DictaMenuKit`.
 
-**Record dicta's decisions, rewording existing rows rather than duplicating them:**
-- quiet ordinary rows with symbol-marked exceptions, symbol-only tint;
+**Record dicta's decisions, rewording existing rows rather than duplicating them.** Each difference
+from acta carries the reason it is forced:
+- quiet ordinary rows, and exceptions marked by a symbol and a tinted word first, as in acta;
+  the ordinary word kept because dicta has two ordinary outcomes;
 - the failed-read label, same as acta's inventory failure;
 - the header status line kept (D30);
 - no Quit (already at :78);
@@ -405,6 +440,8 @@ In `DictaCore/DictationRow.swift`:
 In `DictaCore/Presentation.swift`: `enum OutcomeMarker: Equatable, Sendable { case faint;
 case symbol(String) }`.
 - `AttemptOutcome.marker: OutcomeMarker?`, forwarded by `DictationRow.marker`.
+- `DictationRow.secondaryParts(at:) -> (outcome: String, details: [String])`; `secondary(at:)` joins
+  them with the outcome first.
 - Update the doc comments at `Presentation.swift:122` and `DictationRow.swift:61`.
 
 ## What Goes Where
@@ -444,9 +481,10 @@ case symbol(String) }`.
 
 **Files:**
 - Create: `Sources/DictaMenuKit/StatusViewModel.swift` (moved from `Sources/DictaMenu/`)
-- Create: `Sources/DictaMenu/SystemMenuWorld.swift`
-- Modify: `Sources/DictaMenu/DictaMenuApp.swift`, `Sources/DictaMenu/SetupWindow.swift`,
+- Create: `Sources/DictaMenu/SystemMenuWorld.swift`, `Sources/DictaMenu/MenuRoot.swift`
+- Modify: `Sources/DictaMenu/DictaMenuApp.swift` (`MenuBarLabel`), `Sources/DictaMenu/SetupWindow.swift`,
   `Sources/DictaMenu/RecentDictations.swift`
+- Modify: `Sources/DictaTestRunner/MenuBundleTests.swift`
 - Modify: `Sources/DictaCore/OrderedSender.swift` (the `offMain` comment)
 - Create: `Sources/DictaTestRunner/MenuWorldFakes.swift`
 - Create: `Sources/DictaTestRunner/StatusViewModelTests.swift`
@@ -468,9 +506,22 @@ case symbol(String) }`.
   - make `setupBecameKey` and `setupClosed` public.
 
   The three defects stay.
-- [ ] write `MenuWorld.system` in `SystemMenuWorld.swift`. Make `SetupWindowController` adopt
-  `SetupWindowPresenting`, taking the model weakly. In `DictaMenuApp`, build the controller once,
-  keep it, and assign `setupPresenter`. Update the module-list comment at `DictaMenuApp.swift:4-7`
+- [ ] write `MenuWorld.system` in `SystemMenuWorld.swift`, and make `SetupWindowController` adopt
+  `SetupWindowPresenting`, taking the model weakly
+- [ ] add `MenuRoot` in `DictaMenu`, the app's `@StateObject`:
+  - its `init` builds the model, then the controller, then assigns `setupPresenter`;
+  - the label becomes `MenuBarLabel(model: root.model)`, a view with
+    `@ObservedObject var model: StatusViewModel` that renders `BarItem` and carries
+    `.task { model.start() }`;
+  - `Panel(model: root.model)` is unchanged;
+  - update the module-list comment at `DictaMenuApp.swift:4-7`
+- [ ] extend `MenuBundleTests` with source checks:
+  - in `Sources/DictaMenu`, `setupPresenter =` appears inside `MenuRoot`'s `init`;
+  - the only call of `StatusViewModel.start()` in `Sources/DictaMenu` is `MenuBarLabel`'s `.task`,
+    and `Panel` has none; `panelAppeared()`'s internal call stays, and `SystemMenuWorld`'s
+    `Thread.start()` for the off-main and watch workers is not a model start;
+  - `BarItem(` is built only inside a view declaring `@ObservedObject var model: StatusViewModel`;
+  - no file other than `MenuRoot` constructs `StatusViewModel(`
 - [ ] run `bash Scripts/test.sh`; linkage clean. Must pass before Task 3
 
 ### Task 3: Stop the ticker when the connection ends (defect a)
@@ -510,7 +561,8 @@ case symbol(String) }`.
 
 **Files:**
 - Modify: `Sources/DictaCore/DictationRow.swift` (`RecentState`)
-- Modify: `Sources/DictaMenuKit/StatusViewModel.swift`, `Sources/DictaMenu/RecentDictations.swift`
+- Modify: `Sources/DictaMenuKit/StatusViewModel.swift`, `Sources/DictaMenu/RecentDictations.swift`,
+  `Sources/DictaMenu/DictaMenuApp.swift` (the `RecentDictations(rows: model.recent, …)` call at :112)
 - Modify: `Sources/DictaTestRunner/DictationRowTests.swift`, `Sources/DictaTestRunner/StatusViewModelTests.swift`
 
 - [ ] write `RecentState` tests, then add it:
@@ -519,13 +571,19 @@ case symbol(String) }`.
   - `afterFailure` keeps the last good rows with the reason;
   - `afterRead` clears a failure
 - [ ] publish `recentState` from the view model as `.read(rows)`, still through `try?`, so the next
-  test can compile and fail on behaviour
+  test can compile and fail on behaviour. In the same step, change `RecentDictations` to take the
+  state and update its caller at `DictaMenuApp.swift:112`, so `DictaMenu` still builds for
+  `Scripts/linkage.sh`
 - [ ] write a failing test: a `readRecent` that throws `ReaderError.cannotRead` leaves `.failed` with
   that reason and no path, not `.read([])`. Record the failure
 - [ ] write tests:
   - an older failing read completing after a newer success leaves `.read(newer)`;
   - an older success completing after a newer failure keeps `.failed`;
-  - a record readable again clears the failure
+  - a record readable again clears the failure;
+  - a sequence through the adapter, starting from non-empty rows: success, failure, failure, recovery.
+    `lastGood` holds the first success's rows across both failures, the failure is the highest
+    applied generation after each failing read, and the recovery replaces the rows and clears the
+    failure
 - [ ] catch the error and apply it through the generation check. Update `RecentDictations`:
   - the amber `Label` above the rows when `failure != nil`;
   - the rows from `state.rows`;
@@ -569,13 +627,20 @@ case symbol(String) }`.
   - `injected` and `returned` have no marker;
   - `empty` and `aborted` are `.faint`;
   - every amber and red outcome is `.symbol(_)`, with one name per tint
-- [ ] write a test that `DictationRow.secondary(at:)` still carries `label` for every outcome, once
-- [ ] add `OutcomeMarker`, `AttemptOutcome.marker` and `DictationRow.marker`, and update the
-  doc comments at `Presentation.swift:122` and `DictationRow.swift:61`
+- [ ] write failing tests for `secondaryParts(at:)`:
+  - `outcome` is `label` for every outcome;
+  - `details` hold the time, "recognised only", "raw" and the duration in today's order, and never the
+    label;
+  - `secondary(at:)` joins them with the outcome first.
+
+  Update the existing `secondary(at:)` tests for the new order
+- [ ] add `OutcomeMarker`, `AttemptOutcome.marker`, `DictationRow.marker` and `secondaryParts(at:)`,
+  and update the doc comments at `Presentation.swift:122` and `DictationRow.swift:61`
 - [ ] update `RecentRow`:
   - remove the leading `Circle` column;
-  - draw a 9 pt tinted symbol at the start of the second line for `.symbol`;
-  - draw the second line faint for `.faint`;
+  - draw the second line as acta does: the 9 pt symbol for `.symbol`, then the outcome word (tinted
+    for `.symbol`, faint for `.faint`, `.secondary` for an ordinary outcome), then `· <details>` at
+    `.tertiary`;
   - keep the reason line's tint;
   - rewrite the row's comment
 - [ ] run `bash Scripts/test.sh`; must pass before Task 8
@@ -612,9 +677,20 @@ case symbol(String) }`.
 - [ ] add contiguous human items after H43:
   - **H44**, the markers on a mix of outcomes: symbol names judged, text aligned, words unchanged;
   - **H45**, an unreadable record (`chmod 000` then `600`);
-  - **H46**, the ticker and idle wake-ups after a recording ends, with the panel closed;
-  - **H47**, the setup window still opening only at the first idle snapshot, from "Set Up…" and from
-    a banner, through the presenter
+  - **H46**, the ticker, with the panel closed. (a) `launchctl bootout` the daemon while recording.
+    (b) Kill the daemon (`kill -9`) while recording. Each time the menu-bar clock goes, and nothing
+    redraws once a second (Activity Monitor's idle wake-ups, before and after). An ordinary recording
+    that ends cleanly is not the test, because today's code already passes it. (c) After a fresh
+    menu launch, and with the panel never opened, start a dictation: the glyph lights and the clock
+    counts in the menu bar, then both go when it ends. This is the label's own observation of the
+    model, which ownership through `MenuRoot` does not give;
+  - **H47**, the setup window through the presenter:
+    - it opens by itself only on the FIRST snapshot of a menu launch, and only if that snapshot is
+      idle;
+    - a launch whose first snapshot is busy never opens it, not even when a later snapshot is idle;
+    - "Set Up…" and a banner open it at any time.
+
+    Check that H41 states the same first-snapshot rule, and align it if not
 - [ ] run `bash Scripts/test.sh` (ChecklistTests audits citations and numbering); must pass before
   Task 10
 
@@ -626,8 +702,11 @@ case symbol(String) }`.
   - `Scripts/linkage.sh` holds;
   - the quiet-marker rules hold;
   - the vocabulary is synced
-- [ ] verify that every shared question follows acta, or is recorded as a forced divergence in
-  `docs/ui-vocabulary.md`, so that no acta backlog item is owed
+- [ ] verify that every shared question follows acta. A difference is acceptable without an acta
+  backlog item only when a dependency or a domain fact forces it, and its reason is written in
+  `docs/ui-vocabulary.md`: the view model's module (D27), and the ordinary word kept because dicta
+  has two ordinary outcomes. Any other difference is either removed or filed in acta's
+  `docs/backlog/` in the same change, per the user's rule
 - [ ] run `bash Scripts/test.sh` and report the test and suite counts; run `Scripts/lint.sh` and
   `git diff --check`
 
