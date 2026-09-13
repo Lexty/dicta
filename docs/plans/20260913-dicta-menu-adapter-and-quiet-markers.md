@@ -749,16 +749,31 @@ case symbol(String) }`.
 - Modify: `docs/ui-vocabulary.md`
 - Modify: `Sources/DictaTestRunner/DocumentationTests.swift`
 
-- [ ] re-read `~/dev/acta` `docs/ui-vocabulary.md` on `dev`, and list the amendments present then
+- [x] re-read `~/dev/acta` `docs/ui-vocabulary.md` on `dev`, and list the amendments present then
   (three as of 2026-09-13)
-- [ ] add each as a description of what acta does, marked as asking nothing of dicta, without acta's
+  - read at acta `dev` `16a50db`: 2026-09-11 the microphone merge, 2026-09-12 five panel rows,
+    2026-09-12 the reminder panel; no others
+- [x] add each as a description of what acta does, marked as asking nothing of dicta, without acta's
   introduction or its account of authorship
-- [ ] correct the `list` element row, and the module list at :94 (add `DictaMenuKit`)
-- [ ] record dicta's decisions as listed in the Solution Overview, rewording the existing "no Quit"
+  - under "acta's amendments", with paths marked as acta's; the introduction kept dicta's own and
+    gains a paragraph saying where the amendments and dicta's decisions are
+- [x] correct the `list` element row, and the module list at :94 (add `DictaMenuKit`)
+  - the row now states no dot, the second line's marker and word, "Nothing yet." only after a
+    successful read, and the failed-read label
+- [x] record dicta's decisions as listed in the Solution Overview, rewording the existing "no Quit"
   row and the no-revision paragraph rather than duplicating them
-- [ ] add one documentation test, a quotation or path only (`DocumentationTests.swift:16`): the
+  - new section "dicta's decisions, 2026-09-13" for the shared-approach ones (markers, failed read,
+    presenter); new divergence rows for the header status line, the ordinary row's word and where
+    the view model lives; the Quit row and the not-adopted paragraph reworded in place. Candidates
+    still open in `menu-panel-visual-review` are named as not decided
+- [x] add one documentation test, a quotation or path only (`DocumentationTests.swift:16`): the
   module list names `DictaMenuKit`
-- [ ] run `bash Scripts/test.sh` and `Scripts/lint.sh`; must pass before Task 9
+  - "the UI vocabulary's module list names every module the menu links, DictaMenuKit too". Watched
+    failing against the previous document: `(list → " `DictaCore`, `DictaIPC` and `DictaRecord` ")
+    .contains("`DictaMenuKit`")`
+- [x] run `bash Scripts/test.sh` and `Scripts/lint.sh`; must pass before Task 9
+  - 934 tests in 52 suites passed under Xcode 26.6 and under the Command Line Tools, linkage clean,
+    lint and `git diff --check` clean
 
 ### Task 9: SPEC §7, the manual checklist and the human items
 

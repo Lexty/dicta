@@ -107,6 +107,20 @@ struct DocumentationTests {
         #expect(!spec.contains("No implementation exists"),
                 "SPEC.md still opens by saying dicta is unimplemented")
     }
+
+    @Test("the UI vocabulary's module list names every module the menu links, DictaMenuKit too")
+    func theVocabularyNamesTheMenuModules() throws {
+        // The sentence is the written form of D27's budget, and the one module added to it since
+        // is the library a reader would otherwise not know the menu's logic lives in.
+        let vocabulary = try Self.text(at: "docs/ui-vocabulary.md")
+        let opening = try #require(vocabulary.range(of: "The menu app links"),
+                                   "docs/ui-vocabulary.md no longer lists the menu's modules")
+        let closing = try #require(vocabulary[opening.upperBound...].range(of: "plus SwiftUI"))
+        let list = vocabulary[opening.upperBound..<closing.lowerBound]
+        for module in ["DictaCore", "DictaIPC", "DictaRecord", "DictaMenuKit"] {
+            #expect(list.contains("`\(module)`"), "the menu's module list does not name \(module)")
+        }
+    }
 }
 
 private extension String {
