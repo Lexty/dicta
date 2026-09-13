@@ -858,17 +858,22 @@ case symbol(String) }`.
 
 ### Task 11: [Final] Update documentation
 
-- [ ] update `AGENTS.md`:
+- [x] update `AGENTS.md`:
   - the `Sources/DictaMenu/` structure bullet (:532-537) and a new `Sources/DictaMenuKit/` bullet;
   - the structure rule (:541-542): menu logic without I/O types goes to `DictaMenuKit`;
   - :1120-1124 and :1129-1130 (module list, "not reachable from the test runner");
   - :395-398 and :1169-1171 (the second hand, now also stopped when the link ends);
   - :361 ("Nothing yet." against a failed read);
   - :242-243, the test count, only if re-scored under both toolchains
-- [ ] update `README.md` wherever it describes row dots or the menu's modules
-- [ ] `git rm` `docs/backlog/testable-menu-adapter.md`, `docs/backlog/quiet-outcome-markers.md` and
+  - done: both structure bullets, the rule's menu exception, the setup-window paragraph and the menu's
+    module list, the second hand (both places), the failed read; the count is 934 tests in 52 suites,
+    re-scored under Xcode 26.6 and the Command Line Tools
+- [x] update `README.md` wherever it describes row dots or the menu's modules
+  - it named neither; the Recent Dictations bullet now says how an exception is marked and what a
+    failed read shows
+- [x] `git rm` `docs/backlog/testable-menu-adapter.md`, `docs/backlog/quiet-outcome-markers.md` and
   `docs/backlog/ui-vocabulary-sync.md` in the commit that lands their work
-- [ ] move this plan to `docs/plans/completed/`
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 

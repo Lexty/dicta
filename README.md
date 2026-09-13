@@ -144,7 +144,10 @@ Clicking it opens a small panel:
 - **the last five dictations**, each with what was said, how long ago, how it ended, and — when it
   did not go well — the same sentence the notification gave you. A button copies the text. That is
   the whole recovery story: if a dictation went nowhere because you closed the pane, this is where
-  you get the words back without opening a terminal.
+  you get the words back without opening a terminal. An ordinary dictation is drawn quietly; one that
+  did not go well leads its second line with a symbol and the outcome in amber or red, so it stands
+  out by shape as well as by colour. If the record itself cannot be read, the panel says so above the
+  last dictations it did read, rather than claiming there are none.
 
 A dictation that was cancelled shows what dicta *heard*, in italic, and has **no copy button**. That
 is deliberate: those words were never prepared for delivery, and the clipboard is only ever loaded

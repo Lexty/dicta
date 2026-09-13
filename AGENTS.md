@@ -239,7 +239,7 @@ testing.linker` to the `DictaTests` target — otherwise the failing test cannot
   linked** — SwiftPM finds the module on its own — and then died in dyld on
   `@rpath/Testing.framework` before reaching a single assertion. Silent at build time, fatal at run
   time: D18's shape exactly, a gate that looks like it ran and did not. `bash Scripts/test.sh` is
-  scored under both by setting `DEVELOPER_DIR`, and both give the same run — 867 tests in 47
+  scored under both by setting `DEVELOPER_DIR`, and both give the same run — 934 tests in 52
   suites, re-scored 2026-09-13.
 - **`xctest` now exists** at `/Applications/Xcode.app/Contents/Developer/usr/bin/xctest`, so D18's
   cause is absent while Xcode is selected. This changes nothing: `Tests/DictaTests` is still denied
@@ -358,10 +358,12 @@ testing.linker` to the `DictaTests` target — otherwise the failing test cannot
     medians. `SessionNames.names` — the target line's own lookup — is 0.127 ms over a 58 KB tree of
     33 sessions, and it is off the keypress path entirely: it runs only while the panel is open with
     a live attempt.
-    Note what this makes unreachable rather than fixed: `recent == []` renders "Nothing yet."
-    whether the record is empty or merely unread, and at 0.16 ms behind a read that starts at app
-    launch there is no frame in which the wrong one can be seen. A flag to tell them apart would be
-    a branch nothing can reach, so there is not one.
+    The drawer's state is `RecentState` in `DictaCore`, and only a read that succeeded and found
+    nothing says "Nothing yet." Before the first read completes nothing is drawn under the title,
+    though at 0.16 ms behind a read that starts at app launch that frame is not one anybody sees. A
+    read that FAILED is the case that mattered: it once rendered as an empty record, and now shows
+    acta's label, "The record could not be read: <reason>", above the last rows that did read. Every
+    read is numbered, so one that lands late never replaces a newer result, success or failure.
   - **A daemon restart is noticed and recovered from without the panel ever being opened.**
     `launchctl bootout` then `bootstrap`, four cycles, polled with `lsof` on the menu's own
     descriptors — an instrument that costs 36 ms per sample and therefore bounds the resolution of
@@ -394,7 +396,7 @@ testing.linker` to the `DictaTests` target — otherwise the failing test cannot
     than what to expect.
   - **The menu costs nothing while nothing is happening.** 0.00 s of CPU accumulated over 60 s idle
     with the panel closed, because the second hand runs only when something is counting — a
-    recording, or an open panel. 67 MB RSS against the daemon's 58.6 MB, which is what a SwiftUI
+    recording the menu is connected to, or an open panel. 67 MB RSS against the daemon's 58.6 MB, which is what a SwiftUI
     process costs and is not worth optimising.
   - **Not measured, and needing a person rather than a script.** Said out loud because Task 9's
     instruction was to record the boring ones too, and an unmeasured item silently omitted reads as
@@ -529,17 +531,30 @@ testing.linker` to the `DictaTests` target — otherwise the failing test cannot
 - `Sources/dictactl/` — the client the keymap invokes. **DictaCore + DictaIPC and nothing else**,
   and it never opens the microphone: the TCC grant belongs to the daemon's signed bundle, and a
   second binary opening the device would fracture it (D11, D12, invariant 8).
-- `Sources/DictaMenu/` — the menu-bar UI (D27). **`DictaCore` + `DictaIPC` + `DictaRecord` plus
-  SwiftUI, and nothing else** — `dictactl`'s dependency budget, one target wider. It opens no
-  microphone, loads no model, and links no `DictaRuntime`, which is invariants 8 and 11 and is
-  asserted by `Scripts/linkage.sh` rather than by any test. Wiring only: a socket, a thread, a
-  `@Published`, and `SetupWindowController`, which renders `SetupModel` and sends what it decides
-  through `OrderedSender`, so the daemon receives the window's requests in the order they were made.
+- `Sources/DictaMenu/` — the menu-bar UI (D27). **`DictaCore` + `DictaIPC` + `DictaRecord` +
+  `DictaMenuKit` plus SwiftUI, and nothing else** — `dictactl`'s dependency budget, one target wider.
+  It opens no microphone, loads no model, and links no `DictaRuntime`, which is invariants 8 and 11
+  and is asserted by `Scripts/linkage.sh` rather than by any test. Views and wiring only: the SwiftUI
+  views, `SetupWindowController` (the AppKit window, adopting `SetupWindowPresenting`), `MenuRoot`
+  (which attaches that presenter before anything can start the model) and `SystemMenuWorld.swift`,
+  the one file that turns `MenuWorld` into the socket, the record, the threads, the clock and
+  AppKit.
+- `Sources/DictaMenuKit/` — the menu's logic, as a library so the test runner can import it:
+  `StatusViewModel` and `MenuWorld`, the struct of capabilities every effect arrives through. **Exactly
+  the menu's budget — `DictaCore` + `DictaIPC` + `DictaRecord`, Foundation and Combine — and no
+  SwiftUI, no AppKit, never `DictaRuntime`**, held by `MenuKitBoundaryTests`. The view model is real
+  in the tests and only the world is fake (`MenuWorldFakes.swift`), so the ticker, the order reads
+  of the record land in, and what the setup window sends are all driven under test control. It sends
+  the setup window's requests through `OrderedSender`, so the daemon receives them in the order they
+  were made.
 - `Sources/DictaTestRunner/` — where the tests actually are.
 - `Tests/DictaTests/` — a compile-only stub. Never put an assertion here (see D18 above).
 
 **The structure rule: a decision goes into `DictaCore` as a pure value, its I/O into
-`DictaRuntime`, its test into `DictaTestRunner`** (D19).
+`DictaRuntime`, its test into `DictaTestRunner`** (D19). The menu is the one exception to where the
+I/O goes, because it may not link `DictaRuntime` (D27): menu logic that holds state or orders effects
+goes into `DictaMenuKit` behind `MenuWorld`, and only the views and the system world stay in
+`DictaMenu`.
 
 ## Rules worth not relearning
 
@@ -1117,17 +1132,20 @@ The rules, each of which is either a review finding or a trap:
   unasked. `isRestorable = false` is deliberate. Because the window can take focus while somebody is
   typing elsewhere, no choice is bound to Return. A future settings window must answer the same
   question before reaching for `SettingsLink`.
-- **`SetupModel` is every decision; `SetupWindow.swift` renders and sends.** The screen per state, the
-  payload of every button (including what each close sends: the first-time offer records
-  `offerSeen`, the others send nothing), and the checklist rows are pure and tested, because
-  `DictaMenu` is not reachable from the test runner. A test reads the menu's sources to hold that it
-  spells no `configure` or `accessibility` request of its own.
+- **`SetupModel` is every decision; `SetupWindow.swift` renders.** The screen per state, the payload
+  of every button (including what each close sends: the first-time offer records `offerSeen`, the
+  others send nothing), and the checklist rows are pure and tested. The wiring between them is
+  `StatusViewModel`'s, in `DictaMenuKit`, and is tested through the fake world: every way of opening
+  the window reaches the presenter, a click hands `SetupModel`'s request to `world.send` in click
+  order, and becoming key checks the grant without a prompt. What stays untested is the AppKit
+  window itself, because `DictaMenu` is not reachable from the test runner. A test reads the menu's
+  sources to hold that neither module spells a `configure` or `accessibility` request of its own.
 
 ## The menu bar, and why the daemon does not know it exists
 
 **A second signed bundle, `DictaMenu.app`, under a LaunchAgent of its own (D27).** It is `dictactl`
 with a face: a second client of the same control socket, linking `DictaCore`, `DictaIPC`,
-`DictaRecord` and SwiftUI. `Scripts/bundle.sh` builds both bundles and `Scripts/install.sh` installs
+`DictaRecord`, `DictaMenuKit` (a library over those same three) and SwiftUI. `Scripts/bundle.sh` builds both bundles and `Scripts/install.sh` installs
 both agents; one certificate, two identities, and the daemon's designated requirement did not move
 when the second arrived — which is the property the microphone grant rests on.
 
@@ -1166,9 +1184,11 @@ More that is not obvious from the code:
   width, which moves every icon to its left, and that is the change peripheral vision reads. D13
   reaches it in full: the clock starts when capture confirms, never at the keypress, and is absent
   through `warming`.
-- **The second hand runs only while something is counting** — a recording, or an open panel.
-  Otherwise the menu accrues no CPU at all over a minute, which is the same argument that stopped
-  the UI polling `status` at 1 Hz.
+- **The second hand runs only while something is counting** — a recording the menu is still
+  connected to, or an open panel. Otherwise the menu accrues no CPU at all over a minute, which is
+  the same argument that stopped the UI polling `status` at 1 Hz. The ticker is re-decided when the
+  stream ends or the connection drops, not only on a snapshot: it once went on firing after the
+  daemon disconnected mid-recording, which the screen did not show and the idle wake-ups did.
 - **The UI never injects, and that is structural rather than remembered** (D28). Recovery is the
   clipboard, loaded from `final` and never from `recognised`, so a row that produced no `final` has
   **no copy button at all** rather than a disabled one — there is no branch that could point the
