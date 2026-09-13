@@ -165,4 +165,19 @@ struct MenuBundleTests {
         // that stops running.
         #expect(script.contains("swift build --product DictaMenu"))
     }
+
+    @Test("linkage.sh forbids the client and the menu posting keystrokes or reading accessibility")
+    func linkageForbidsPostingOutsideTheDaemon() throws {
+        let script = try BundleTests.text(at: "Scripts/linkage.sh")
+        // Invariant 14's "never by dictactl or the menu-bar UI" is a property of the linked
+        // binaries, so the script's row is the whole check; losing it loses the clause silently.
+        #expect(script.contains(
+            "POSTING='CGEventPost|CGEventPostToPid|CGEventKeyboardSetUnicodeString|"
+                + "AXUIElementCreateSystemWide|AXUIElementCopyAttributeValue'"
+        ))
+        #expect(script.contains("check_posting \"$BINARY\""))
+        #expect(script.contains("check_posting \"$MENU\""))
+        // Never on the daemon: it posts by design when the option is on.
+        #expect(!script.contains("check_posting \"$DAEMON\""))
+    }
 }

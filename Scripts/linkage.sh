@@ -246,6 +246,58 @@ check_keystrokes() {
     fi
 }
 
+# The other direction, invariant 14. With `--focused-fields` the daemon POSTS keystrokes into another
+# application and reads accessibility to find the field; that is the capability the user grants
+# Accessibility for, and it belongs to the daemon's bundle alone, exactly as the microphone does
+# (invariant 8). `dictactl` and `DictaMenu` must name none of the five C functions that capability is
+# spelled with. `Dicta` legitimately names four of them, which is the positive control: when this was
+# written (2026-09-13) `nm Dicta` showed `U _AXUIElementCopyAttributeValue`,
+# `U _AXUIElementCreateSystemWide`, `U _CGEventKeyboardSetUnicodeString` and `U _CGEventPostToPid`,
+# and the current `dictactl` and `DictaMenu` matched nothing.
+#
+# The names are matched EXACTLY — a leading underscore, the C name, end of line — rather than as
+# substrings. A substring `CGEventPost` would also match `CGEventPostToPid`, which is harmless, but a
+# substring `AXUIElement` is the kind of pattern SwiftUI's own accessibility machinery could one day
+# satisfy inside a mangled Swift name, and a gate that fails on a framework's internals gets relaxed
+# until it means nothing. A C function arrives in `nm` under its own name and nothing else.
+#
+# Probed on 2026-09-13 by adding `CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)?
+# .postToPid(0)` to `dictactl`'s `main.swift` (in a function nothing called — the debug link keeps
+# it). The gate exited 1, printing the symbol and then the failure line (checkout path elided):
+#                  U _CGEventPostToPid
+#   linkage: …/.build/arm64-apple-macosx/debug/dictactl can post keystrokes or read accessibility — only the daemon may, and only with --focused-fields (invariant 14)
+# and exited 0 again once the call was removed.
+POSTING='CGEventPost|CGEventPostToPid|CGEventKeyboardSetUnicodeString|AXUIElementCreateSystemWide|AXUIElementCopyAttributeValue'
+
+check_posting() {
+    local path="$1"
+    local symbols hits
+    if ! file "$path" | grep -q 'Mach-O'; then
+        echo "linkage: $path is not a Mach-O binary — the invariant 14 check did not run" >&2
+        exit 2
+    fi
+    if ! symbols="$(nm "$path" 2>&1)"; then
+        printf '%s\n' "$symbols" >&2
+        fail "nm could not read $path — the invariant 14 check did not run"
+        return
+    fi
+    hits="$(printf '%s\n' "$symbols" | grep -E "[[:space:]]_($POSTING)\$" || true)"
+    if [ -n "$hits" ]; then
+        head -20 <<< "$hits" >&2
+        fail "$path can post keystrokes or read accessibility — only the daemon may, and only with --focused-fields (invariant 14)"
+    fi
+}
+
+# 3b. The keypress client, against invariant 14. Run here rather than beside checks 1-3 only because
+# a shell function has to be defined before it is called.
+if [ -n "$BINARY" ]; then
+    before="$status"
+    check_posting "$BINARY"
+    if [ "$status" -eq "$before" ]; then
+        echo "linkage: clean — $(basename "$BINARY") posts no keystroke and reads no accessibility"
+    fi
+fi
+
 # 4. The daemon, against §8.11. A different question and a different binary: `Dicta` links
 # AVFoundation and CoreML by design, and what it must not contain is any way of reading a keystroke.
 if [ -n "$DAEMON" ]; then
@@ -300,8 +352,9 @@ if [ -n "$MENU" ]; then
         fail "$MENU carries DictaRuntime symbols — the UI is a socket client, not a second daemon"
     fi
     check_keystrokes "$MENU" "the UI"
+    check_posting "$MENU"
     if [ "$status" -eq "$before" ]; then
-        echo "linkage: clean — $(basename "$MENU") binds SwiftUI, no capture stack, no key stream"
+        echo "linkage: clean — $(basename "$MENU") binds SwiftUI, no capture stack, no key stream, no posting"
     fi
 fi
 

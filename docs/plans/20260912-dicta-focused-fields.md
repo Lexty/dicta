@@ -1283,18 +1283,29 @@ about `returned`.
 **Files:**
 - Modify: `Scripts/linkage.sh`
 
-- [ ] first run the new patterns against the **current** `dictactl` and `DictaMenu` binaries and
+- [x] first run the new patterns against the **current** `dictactl` and `DictaMenu` binaries and
   confirm they match nothing. SwiftUI's accessibility symbols must not trip an AX pattern; narrow it
   to exact C function names if they do.
-- [ ] extend the `dictactl` and `DictaMenu` checks to fail by name on `CGEventPost`,
+- [x] extend the `dictactl` and `DictaMenu` checks to fail by name on `CGEventPost`,
   `CGEventPostToPid`, `CGEventKeyboardSetUnicodeString`, `AXUIElementCreateSystemWide` and
   `AXUIElementCopyAttributeValue`.
-- [ ] probe the gate:
+- [x] probe the gate:
   - add a `CGEvent.postToPid` call to `dictactl` and watch `linkage.sh` fail by name;
   - remove the call and watch the gate pass;
   - quote the observed failure line in the script comment.
-- [ ] confirm invariant 11's four symbols are still absent from `Dicta`.
-- [ ] run `bash Scripts/test.sh` (it runs linkage first) — must pass before next task
+- [x] confirm invariant 11's four symbols are still absent from `Dicta`.
+- [x] run `bash Scripts/test.sh` (it runs linkage first) — must pass before next task
+  - Probe: the five names, anchored as exact C symbols, matched nothing in the current `dictactl`
+    and `DictaMenu` (no SwiftUI accessibility symbol tripped them) and four in `Dicta`
+    (`_AXUIElementCopyAttributeValue`, `_AXUIElementCreateSystemWide`,
+    `_CGEventKeyboardSetUnicodeString`, `_CGEventPostToPid`), the positive control. A `postToPid`
+    call added to `dictactl` failed the gate with exit 1 on `U _CGEventPostToPid`; reverted, it
+    passed. Invariant 11's four symbols are still absent from `Dicta`. ➕ Added
+    `test: linkage.sh forbids the client and the menu posting keystrokes or reading accessibility`
+    (mutation: dropping the menu's call fails it) and cited it with the gate in invariant 14's
+    checklist row, replacing the "not held by anything yet" gap. Tests: 713 in 43 suites green
+    under Xcode 26.6 (Swift 6.3.3), 1 new; lint clean (swiftlint not installed, built-in checks
+    only).
 
 ### Task 12: Verify acceptance criteria
 
