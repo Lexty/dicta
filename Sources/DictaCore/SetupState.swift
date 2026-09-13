@@ -120,6 +120,36 @@ public enum SetupLoadProblem: Error, Codable, Sendable, Equatable, CustomStringC
     }
 }
 
+/// What start-up decided about the choice, and everything the log needs to say about how.
+///
+/// Produced by `SetupStore.bootstrap` in DictaRuntime, and kept here as a plain value so that the
+/// log lines describing it are a pure decision too (`StartupLines`).
+public struct SetupBootstrap: Sendable, Equatable {
+    public enum Source: Sendable, Equatable {
+        /// Read from an existing `setup.json`.
+        case file
+        /// No file existed; decided by `SetupMigration` from these facts, and written.
+        case migrated(flag: Bool, record: SetupMigration.RecordFact)
+        /// The file exists and cannot be used; nothing was written.
+        case unreadable(SetupLoadProblem)
+    }
+
+    /// The state in force for this run. For an unreadable file, `SetupStore.whileUnreadable`.
+    public var state: SetupState
+    public var source: Source
+    /// `--focused-fields` was given, and an existing file — readable or not — decided instead.
+    public var flagIgnored: Bool
+    /// The migrated state could not be written. It still applies for this run.
+    public var saveError: String?
+
+    public init(state: SetupState, source: Source, flagIgnored: Bool, saveError: String?) {
+        self.state = state
+        self.source = source
+        self.flagIgnored = flagIgnored
+        self.saveError = saveError
+    }
+}
+
 /// What a daemon with no `setup.json` decides, and writes (D31). Used only while the file does not
 /// exist; afterwards the file decides and the flag is ignored.
 public enum SetupMigration {

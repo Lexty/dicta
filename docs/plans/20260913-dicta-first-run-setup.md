@@ -703,21 +703,30 @@ way.
 - Modify: `Sources/DictaTestRunner/DaemonOptionsTests.swift`, `SnapshotTests.swift`,
   `docs/manual-checklist.md`
 
-- [ ] write failing tests: `agtermAtStartup(found:)` is `.fatal` only for `--no-hold` without agterm,
+- [x] write failing tests: `agtermAtStartup(found:)` is `.fatal` only for `--no-hold` without agterm,
   whatever the scope; otherwise `.present` or `.optional`
-- [ ] write failing tests: a pure `StartupLines.describe(...)` for the log lines — the scope and its
+- [x] write failing tests: a pure `StartupLines.describe(...)` for the log lines — the scope and its
   origin (migrated, from file, flag ignored), "not configured: waiting for setup", a setup problem
-- [ ] update the usage text: `--focused-fields` is "the initial choice when setup has not been done";
+- [x] update the usage text: `--focused-fields` is "the initial choice when setup has not been done";
   update README's `Dicta --help` quotation if the documentation test covers it
-- [ ] write failing tests: a pure `HoldSnapshot.of(armHoldTrigger:keys:)` gives `.armed` with the
+- [x] write failing tests: a pure `HoldSnapshot.of(armHoldTrigger:keys:)` gives `.armed` with the
   default keys, `.armed` with custom keys, and `.disabled` under `--no-hold`
-- [ ] `main.swift`: `SetupStore(url: Paths.current.setup).bootstrap` with `SetupMigration.recordFact`
+- [x] `main.swift`: `SetupStore(url: Paths.current.setup).bootstrap` with `SetupMigration.recordFact`
   over a `FileHistory().entries()` read (the second start-up read, as stated in Technical Details);
   open the switch for `otherApps`; remove `requestTrust()`; hand the daemon its `HoldSnapshot`;
   log the lines
-- [ ] rename the citation of "a missing agtermctl is fatal with focused fields off, and survived with
+- [x] rename the citation of "a missing agtermctl is fatal with focused fields off, and survived with
   them on"
-- [ ] run tests — must pass before Task 10
+- [x] ➕ `SetupBootstrap` moved from `SetupStore.swift` to `DictaCore` (`SetupState.swift`) as the
+  plain value it already was, so `StartupLines` (`Sources/DictaCore/StartupLines.swift`) is pure
+  DictaCore; `HoldKey.defaultPair` is the one spelling of the default keys, used by
+  `HoldTrigger.Configuration` and `HoldSnapshot.of`. The daemon opens the switch itself (Task 7), so
+  `main.swift` only hands it the bootstrapped state. The citation is now "a missing agtermctl is
+  survived under every scope, and fatal only under --no-hold" (row 94, beside "a missing agtermctl
+  is fatal under --no-hold, whatever the flag"); row 96 cites the setup-problem start-up line test.
+  README's and AGENTS.md's sentences describing the start-up prompt are corrected here, as Task 8
+  did for its own removal; the rest of README waits for Task 14
+- [x] run tests — must pass before Task 10
 
 ### Task 10: the installer stops choosing, and does not lose an existing choice
 

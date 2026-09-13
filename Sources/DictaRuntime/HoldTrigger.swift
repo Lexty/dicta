@@ -198,7 +198,7 @@ public final class HoldTrigger: @unchecked Sendable {
         /// when `⌘` is released, so the switch lands just after the `up`.
         public var settleWindow: TimeInterval
 
-        public init(keys: [HoldKey] = [.rightControl, .rightCommand],
+        public init(keys: [HoldKey] = HoldKey.defaultPair,
                     floor: TimeInterval = HoldToTalk.defaultFloor,
                     pollInterval: TimeInterval = 0.016,
                     agtermBundleIdentifier: String = HoldTrigger.agtermBundleIdentifier,

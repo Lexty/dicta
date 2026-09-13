@@ -204,16 +204,17 @@ end it, and the text comes back unfiltered. Letting go afterwards is silent (D23
 
 ## Dictating into any app
 
-Run the daemon with `--focused-fields` (`bash Scripts/install.sh --focused-fields` writes it into the
-agent), and **holding the key in any application types into the text field that has focus there**.
+Choose other applications with `dictactl configure --scope other-apps` (`--focused-fields` in the
+agent makes that the initial choice, and is read only while `setup.json` does not exist yet), and
+**holding the key in any application types into the text field that has focus there**.
 agterm in front still takes the agterm path, exactly as without the option: it knows the session and
 the pane, it has the indicator, and it needs no permission (D31).
 
 **The Accessibility permission.** Posting keystrokes into another process needs it, and without it
-macOS discards them silently (F11). The daemon asks for it once at start-up, when it runs with the
-option and does not have it: the system dialog opens and `Dicta` is added to System Settings →
-Privacy & Security → Accessibility, where you turn it on (add `~/Applications/Dicta.app` with `+` if
-it is somehow not listed). Until then, every hold outside agterm that passes the floor does nothing,
+macOS discards them silently (F11). The daemon never asks for it at start-up; `dictactl
+accessibility --prompt` asks, and only once the choice is other applications: the system dialog
+opens and `Dicta` is added to System Settings → Privacy & Security → Accessibility, where you turn it
+on (add `~/Applications/Dicta.app` with `+` if it is somehow not listed). Until then, every hold outside agterm that passes the floor does nothing,
 silently, and the microphone never opens. The grant is picked up
 without a restart, and a rebuild does not revoke it, for the same signing reason as the
 microphone's. The daemon's log says which it is at start-up: `focused fields: on, accessibility:
@@ -368,8 +369,8 @@ options:
   --no-hold                do not arm push-to-talk; the keymap chords still work
   --hold-key <name>        arm push-to-talk on this key instead of the default pair
                            (rightControl|rightCommand|rightOption); repeat the flag to arm several
-  --focused-fields         also dictate into the focused text field of any other application;
-                           needs the Accessibility grant, and makes agterm optional
+  --focused-fields         the initial choice when setup has not been done: also dictate into
+                           the focused text field of any other application
   --help                   print this
 ```
 
@@ -479,8 +480,9 @@ attempt (D14). Losing an utterance costs one keypress.
   attempt fails and is recorded; it is never re-aimed at whatever has focus now, because that would
   put your prompt in somebody else's agent (D4). A focused field is the same: if another field or
   application has focus when the text is due, nothing is typed and the text is in `dictactl last`.
-- **A hold in another application does nothing, or says it was refused.** Silence means the daemon
-  runs without `--focused-fields` (`~/Library/Logs/dicta.log` says `focused fields: off`). A refusal
+- **A hold in another application does nothing, or says it was refused.** Silence means the choice
+  is not other applications (`~/Library/Logs/dicta.log` says `setup: agterm-only` or `undecided`,
+  and `focused fields: off`), or the Accessibility grant is missing. A refusal
   names the reason: the Accessibility grant, Secure Input, or a focused thing that is not a text
   field. A refused first dictation into a freshly launched VS Code or Slack is their accessibility
   tree not being ready yet; the next one works.

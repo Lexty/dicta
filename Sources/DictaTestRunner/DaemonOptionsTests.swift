@@ -90,37 +90,162 @@ struct DaemonOptionsTests {
         #expect(Self.parse(arguments) == .refused(line))
     }
 
-    // MARK: - agterm at start-up
-
-    @Test("a missing agtermctl is fatal with focused fields off, and survived with them on")
-    func agtermAtStartup() {
-        let off = DaemonOptions(controlSocket: Self.socket)
-        let on = DaemonOptions(controlSocket: Self.socket, focusedFields: true)
-        #expect(off.agtermAtStartup(found: true) == .present)
-        #expect(on.agtermAtStartup(found: true) == .present)
-        guard case let .fatal(fatal) = off.agtermAtStartup(found: false) else {
-            Issue.record("a missing agtermctl with the option off must stop the daemon")
-            return
-        }
-        #expect(fatal.contains("agtermctl"))
-        guard case let .optional(notice) = on.agtermAtStartup(found: false) else {
-            Issue.record("a missing agtermctl with the option on must not stop the daemon")
-            return
-        }
-        #expect(notice.contains("agtermctl"))
-        #expect(notice.contains("focused fields"))
+    @Test("--focused-fields is described as the initial choice, not as a switch")
+    func focusedFieldsUsage() {
+        #expect(DaemonOptions.usage.contains("the initial choice when setup has not been done"))
+        #expect(!DaemonOptions.usage.contains("makes agterm optional"))
     }
 
-    @Test("a missing agtermctl is fatal under --no-hold even with focused fields on")
-    func agtermAtStartupWithoutTrigger() {
-        let unarmed = DaemonOptions(controlSocket: Self.socket, armHoldTrigger: false,
-                                    focusedFields: true)
-        #expect(unarmed.agtermAtStartup(found: true) == .present)
-        guard case let .fatal(fatal) = unarmed.agtermAtStartup(found: false) else {
-            Issue.record("--no-hold without agterm must stop the daemon")
-            return
+    @Test("the trigger's default keys are the pair the hold snapshot names")
+    func defaultHoldKeys() {
+        #expect(HoldTrigger.Configuration().keys == HoldKey.defaultPair)
+    }
+
+    // MARK: - agterm at start-up
+
+    @Test("a missing agtermctl is survived under every scope, and fatal only under --no-hold")
+    func agtermAtStartup() {
+        // The scope is not an input: it is read after this decision, and a flag that only seeds it
+        // cannot change whether the daemon stays up.
+        for flag in [false, true] {
+            let armed = DaemonOptions(controlSocket: Self.socket, focusedFields: flag)
+            #expect(armed.agtermAtStartup(found: true) == .present)
+            guard case let .optional(notice) = armed.agtermAtStartup(found: false) else {
+                Issue.record("a missing agtermctl with a key armed must not stop (flag: \(flag))")
+                continue
+            }
+            #expect(notice.contains("agtermctl"))
+            #expect(!notice.contains("--focused-fields"))
         }
-        #expect(fatal.contains("agtermctl"))
-        #expect(fatal.contains("--no-hold"))
+    }
+
+    @Test("a missing agtermctl is fatal under --no-hold, whatever the flag")
+    func agtermAtStartupWithoutTrigger() {
+        for flag in [false, true] {
+            let unarmed = DaemonOptions(controlSocket: Self.socket, armHoldTrigger: false,
+                                        focusedFields: flag)
+            #expect(unarmed.agtermAtStartup(found: true) == .present)
+            guard case let .fatal(fatal) = unarmed.agtermAtStartup(found: false) else {
+                Issue.record("--no-hold without agterm must stop the daemon (flag: \(flag))")
+                continue
+            }
+            #expect(fatal.contains("agtermctl"))
+            #expect(fatal.contains("--no-hold"))
+        }
+    }
+
+    // MARK: - the start-up lines about the choice
+
+    static func bootstrap(_ scope: SetupScope, _ source: SetupBootstrap.Source,
+                          flagIgnored: Bool = false, saveError: String? = nil) -> SetupBootstrap {
+        SetupBootstrap(state: SetupState(scope: scope, offerSeen: scope == .otherApps),
+                       source: source, flagIgnored: flagIgnored, saveError: saveError)
+    }
+
+    static let written = "; written to setup.json"
+    static let origins: [(SetupBootstrap, String)] = [
+        (bootstrap(.otherApps, .file), "setup: other-apps, from setup.json"),
+        (bootstrap(.agtermOnly, .file), "setup: agterm-only, from setup.json"),
+        (bootstrap(.otherApps, .migrated(flag: true, record: .lines(0))),
+         "setup: other-apps, seeded from --focused-fields" + written),
+        (bootstrap(.agtermOnly, .migrated(flag: false, record: .lines(1))),
+         "setup: agterm-only, migrated: the record holds 1 entry, so this is an update"
+            + written),
+        (bootstrap(.agtermOnly, .migrated(flag: false, record: .lines(12))),
+         "setup: agterm-only, migrated: the record holds 12 entries, so this is an update"
+            + written),
+        (bootstrap(.agtermOnly, .migrated(flag: false, record: .unreadable)),
+         "setup: agterm-only, migrated: the record could not be read, so this is taken as an "
+            + "update" + written),
+        (bootstrap(.undecided, .migrated(flag: false, record: .lines(0))),
+         "setup: undecided, migrated: the record holds nothing, so this is a fresh install"
+            + written),
+    ]
+
+    @Test("the start-up lines name the scope and where it came from", arguments: origins)
+    func startupOrigin(bootstrap: SetupBootstrap, line: String) {
+        let lines = StartupLines.describe(bootstrap, agtermFound: true)
+        #expect(lines.first == line)
+        #expect(!lines.contains { $0.contains("ignored") })
+        #expect(!lines.contains { $0.contains("setup problem") })
+    }
+
+    @Test("the start-up lines say the flag was ignored only when a file decided")
+    func startupFlagIgnored() {
+        let ignored = "setup: --focused-fields was ignored, because setup.json exists and decides"
+        #expect(StartupLines.describe(Self.bootstrap(.agtermOnly, .file, flagIgnored: true),
+                                      agtermFound: true)
+            == ["setup: agterm-only, from setup.json", ignored])
+        let unreadable = StartupLines.describe(
+            Self.bootstrap(.agtermOnly, .unreadable(.newerSchema(found: 2)), flagIgnored: true),
+            agtermFound: true)
+        #expect(unreadable.last == ignored)
+        #expect(!StartupLines.describe(Self.bootstrap(.otherApps, .file), agtermFound: true)
+            .contains(ignored))
+    }
+
+    @Test("the start-up lines say a daemon without agterm and without a choice is not configured")
+    func startupNotConfigured() {
+        let fresh = Self.bootstrap(.undecided, .migrated(flag: false, record: .lines(0)))
+        let alone = StartupLines.describe(fresh, agtermFound: false)
+        #expect(alone.count == 2)
+        #expect(alone.last?.hasPrefix("not configured: waiting for setup") == true)
+        #expect(alone.last?.contains("dictactl configure") == true)
+        // With agterm, undecided still dictates into agterm: waiting, but not "not configured".
+        let beside = StartupLines.describe(fresh, agtermFound: true)
+        #expect(beside.last?.hasPrefix("setup: waiting for setup") == true)
+        #expect(!beside.contains { $0.contains("not configured") })
+        // A choice already made waits for nothing, with or without agterm.
+        for scope in [SetupScope.agtermOnly, .otherApps] {
+            for found in [false, true] {
+                #expect(!StartupLines.describe(Self.bootstrap(scope, .file), agtermFound: found)
+                    .contains { $0.contains("waiting for setup") })
+            }
+        }
+    }
+
+    @Test("the start-up lines name a setup problem: an unusable file, or a first write that failed")
+    func startupProblem() {
+        let problem = SetupLoadProblem.unreadable(reason: "not a setup file: invalid JSON")
+        let unreadable = StartupLines.describe(
+            SetupBootstrap(state: SetupStore.whileUnreadable, source: .unreadable(problem),
+                           flagIgnored: false, saveError: nil),
+            agtermFound: false)
+        #expect(unreadable == [
+            "setup problem: setup.json is unreadable: not a setup file: invalid JSON; dicta "
+                + "behaves as agterm-only and keeps the file as it is until a choice replaces it",
+        ])
+        let newer = StartupLines.describe(
+            Self.bootstrap(.agtermOnly, .unreadable(.newerSchema(found: 3))), agtermFound: true)
+        #expect(newer.first?.contains("schema 3") == true)
+
+        // The migrated state still applies for the run, and the log says it was not kept.
+        let unsaved = StartupLines.describe(
+            Self.bootstrap(.undecided, .migrated(flag: false, record: .lines(0)),
+                           saveError: "setup.json could not be saved: renaming over /x failed"),
+            agtermFound: false)
+        #expect(unsaved.count == 3)
+        #expect(unsaved[0].hasSuffix("; in force for this run only"))
+        #expect(unsaved[1]
+            == "setup problem: setup.json could not be saved: renaming over /x failed")
+        #expect(unsaved[2].hasPrefix("not configured"))
+    }
+
+    @Test("the start-up lines describe what bootstrap really returns")
+    func startupFromStore() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dicta startup \(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("setup.json")
+
+        let first = SetupStore(url: url).bootstrap(flag: true, record: .lines(0))
+        #expect(StartupLines.describe(first, agtermFound: false)
+            == ["setup: other-apps, seeded from --focused-fields; written to setup.json"])
+        let second = SetupStore(url: url).bootstrap(flag: true, record: .lines(0))
+        #expect(StartupLines.describe(second, agtermFound: false) == [
+            "setup: other-apps, from setup.json",
+            "setup: --focused-fields was ignored, because setup.json exists and decides",
+        ])
     }
 }

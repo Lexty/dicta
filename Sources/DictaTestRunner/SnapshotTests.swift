@@ -251,6 +251,20 @@ struct SnapshotTests {
         #expect(Readiness.accessibilityForFields.rawValue == "accessibility-for-fields")
     }
 
+    @Test("the hold snapshot names the default keys, custom keys, or none under --no-hold")
+    func holdSnapshotOf() {
+        #expect(HoldSnapshot.of(armHoldTrigger: true, keys: [])
+            == .armed(keys: ["the right Control key", "the right Command key"]))
+        #expect(HoldSnapshot.of(armHoldTrigger: true, keys: [])
+            == .armed(keys: HoldKey.defaultPair.map(\.describedName)))
+        #expect(HoldSnapshot.of(armHoldTrigger: true, keys: [.rightOption])
+            == .armed(keys: ["the right Option key"]))
+        #expect(HoldSnapshot.of(armHoldTrigger: true, keys: [.rightCommand, .rightControl])
+            == .armed(keys: ["the right Command key", "the right Control key"]))
+        #expect(HoldSnapshot.of(armHoldTrigger: false, keys: []) == .disabled)
+        #expect(HoldSnapshot.of(armHoldTrigger: false, keys: [.rightOption]) == .disabled)
+    }
+
     // MARK: - the glyph and the sentence
 
     @Test("readiness outranks the lifecycle when the daemon is idle")

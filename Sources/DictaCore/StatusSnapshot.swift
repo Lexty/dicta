@@ -201,6 +201,13 @@ public enum HoldSnapshot: Codable, Sendable, Equatable {
     case armed(keys: [String])
     /// `--no-hold`: no key starts anything.
     case disabled
+
+    /// What the command line arms: `--no-hold` is `.disabled` whatever keys were named, and no
+    /// `--hold-key` is the default pair, named in full rather than left for the reader to assume.
+    public static func of(armHoldTrigger: Bool, keys: [HoldKey]) -> HoldSnapshot {
+        guard armHoldTrigger else { return .disabled }
+        return .armed(keys: (keys.isEmpty ? HoldKey.defaultPair : keys).map(\.describedName))
+    }
 }
 
 /// The daemon's state as of one instant (D27).

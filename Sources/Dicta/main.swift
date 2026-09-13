@@ -69,9 +69,9 @@ if options.fetchModels {
     exit(0)
 }
 
-// Diagnosed here rather than on the first chord (§7): with `--focused-fields` off every chord is
-// dead until it is fixed, and discovering that by pressing one and getting nothing is the failure
-// this check exists to avoid. With the option on it is said and survived (D31).
+// Diagnosed here rather than on the first chord (§7). A missing agterm is said and survived
+// whatever the person has chosen, because the choice changes without a restart; only `--no-hold`
+// without agterm leaves nothing that could ever start a dictation, and that exits (D31).
 let agtermctl = Agterm.locate()
 switch options.agtermAtStartup(found: agtermctl != nil) {
 case .present:
@@ -101,11 +101,17 @@ let frontmost = SystemFrontmost()
 // opens it for `other-apps`, after telling it where the grant goes.
 let fieldSwitch = FocusedFieldSwitch(frontmost: frontmost, feedback: feedback)
 
-// The person's choice (D31). Until start-up bootstraps `setup.json`, the state in force is still
-// the flag's, and the store is only where `configure` writes.
+// The person's choice (D31), read from `setup.json`, or decided and written when there is none.
+// `--focused-fields` is only the seed of that decision; the record is the other half, telling a
+// fresh install from an update. It is a second full read of the record at start-up, beside the
+// daemon's own for the next attempt id, accepted rather than engineered away.
 let setupStore = SetupStore(url: Paths.current.setup)
-let initialSetup = SetupState(scope: options.focusedFields ? .otherApps : .agtermOnly,
-                              offerSeen: options.focusedFields)
+let setupBootstrap = setupStore.bootstrap(
+    flag: options.focusedFields,
+    record: SetupMigration.recordFact(Result { try FileHistory().entries() }))
+for line in StartupLines.describe(setupBootstrap, agtermFound: agtermctl != nil) {
+    log(line)
+}
 
 // The microphone. It belongs to this bundle's TCC grant and to nothing else (D11, invariant 8):
 // `dictactl` links none of this, and a second binary opening the device would fracture the grant.
@@ -140,7 +146,10 @@ let daemon = Daemon(
     // the whole loop -- no restart, and no chance of testing a rule against the previous file.
     dictionary: { dictionaryFile.load() },
     feedback: feedback,
-    setup: Daemon.Setup(fieldSwitch: fieldSwitch, store: setupStore, state: initialSetup),
+    // The daemon opens the switch itself for `other-apps`, after telling it where the grant goes.
+    setup: Daemon.Setup(fieldSwitch: fieldSwitch, store: setupStore, state: setupBootstrap.state),
+    // What the trigger below is armed with, for the setup window to name (H40).
+    hold: HoldSnapshot.of(armHoldTrigger: options.armHoldTrigger, keys: options.holdKeys),
     // One `Agterm` per attempt, addressed at the agterm the chord fired in ($AGT_SOCKET, F3). The
     // command line's `--agterm-socket` is the fallback for a keymap that does not pass it. `nil`
     // without `agtermctl`.
@@ -171,20 +180,16 @@ log("listening on \(controlSocket)")
 
 // The third of the three facts the UI's readiness is derived from (D27). Recorded rather than
 // defaulted, because `Faculties` distinguishes "known good" from "nobody has looked", and a daemon
-// that left this `nil` would sit at `starting` for ever. Without agterm it is `false`, which blocks
-// dictation only with `--focused-fields` off -- and that combination has already exited above.
-// The grant the opening checked already reached readiness through the switch.
+// that left this `nil` would sit at `starting` for ever. Without agterm it is `false`, and the
+// scope decides what that means: a fault under agterm only, a pending step while undecided, and a
+// notice under other apps. The grant the opening checked already reached readiness through the
+// switch.
 let foundAgterm = agtermctl != nil
 daemon.observe { $0.terminal = foundAgterm }
-let focusedFields = fieldSwitch.built
-let openingGrant = fieldSwitch.grant
 log(fieldSwitch.startupLine)
-// Asked for at startup, with the option on and only then (invariant 14), for the microphone's
-// reason below: the dialog is read at the user's pace, not in the middle of a hold. It is also what
-// lists Dicta under Accessibility at all (F11); the per-hold check picks the grant up live.
-if let focusedFields, openingGrant == false {
-    focusedFields.access.requestTrust()
-}
+// Nothing asks for the Accessibility grant here. The system dialog arrives with no explanation of
+// why, so it is requested only by `accessibility` with `prompt`, which the setup window sends after
+// it has said what the grant is for, and only while the scope is `other-apps` (invariant 14).
 
 // Push-to-talk (D5), armed after the socket is bound because the trigger reaches the daemon through
 // that socket exactly as `dictactl` does -- it is a keypress source, not a second door into the
@@ -194,9 +199,9 @@ if let focusedFields, openingGrant == false {
 // state of the modifier keys and no key code ever reaches this process (F6, invariant 11).
 var holdTrigger: HoldTrigger?
 if options.armHoldTrigger {
-    let configuration = options.holdKeys.isEmpty
-        ? HoldTrigger.Configuration(socketPath: controlSocket)
-        : HoldTrigger.Configuration(keys: options.holdKeys, socketPath: controlSocket)
+    let configuration = HoldTrigger.Configuration(
+        keys: options.holdKeys.isEmpty ? HoldKey.defaultPair : options.holdKeys,
+        socketPath: controlSocket)
     // Only as a notifier. The target is resolved inside the daemon, from one tree read, because the
     // trigger asks for it with `focus: true` rather than looking it up itself (§5). Without agterm,
     // the refusal of a hold in front of it is said through `feedback` instead.

@@ -4,9 +4,9 @@ import Foundation
 //
 // It used to be a `while` loop at the top of `Sources/Dicta/main.swift`, calling `exit(2)` from the
 // middle of a nested function -- correct, and unreachable from any test, because an executable
-// target cannot be imported. `--focused-fields` is the flag that decides whether the daemon may
-// touch accessibility at all (D5, D31, invariant 14), which is too much weight for a switch
-// statement nobody can assert on. So the parse lives here and `main.swift` only acts on its answer.
+// target cannot be imported. Which start-up exits and which only logs is too much weight for a
+// switch statement nobody can assert on. So the parse lives here and `main.swift` only acts on its
+// answer.
 
 /// What `Dicta` was asked to do.
 public struct DaemonOptions: Sendable, Equatable {
@@ -22,9 +22,10 @@ public struct DaemonOptions: Sendable, Equatable {
     /// default: the first `--hold-key` has to REPLACE the pair rather than join it, and a list that
     /// starts out full cannot tell the two apart.
     public var holdKeys: [HoldKey]
-    /// `--focused-fields` (D31). Off by default, and off means no accessibility call and no posted
-    /// event anywhere in the process -- which is how D5 still promises no permission prompt to
-    /// anybody who did not ask for this.
+    /// `--focused-fields` (D31): a seed, not a switch. It is read only while `setup.json` does not
+    /// exist, where it makes the initial choice `other-apps`; afterwards the file decides and the
+    /// flag is logged as ignored. The LaunchAgent carried it before the setup window existed, and a
+    /// user who installed with it keeps the mode across the upgrade.
     public var focusedFields: Bool
 
     public init(controlSocket: String = Paths.current.socket.path,
@@ -61,8 +62,8 @@ public struct DaemonOptions: Sendable, Equatable {
       --no-hold                do not arm push-to-talk; the keymap chords still work
       --hold-key <name>        arm push-to-talk on this key instead of the default pair
                                (\(HoldKey.everyName)); repeat the flag to arm several
-      --focused-fields         also dictate into the focused text field of any other application;
-                               needs the Accessibility grant, and makes agterm optional
+      --focused-fields         the initial choice when setup has not been done: also dictate into
+                               the focused text field of any other application
       --help                   print this
     """
 
@@ -133,29 +134,30 @@ public struct DaemonOptions: Sendable, Equatable {
     public enum AgtermAtStartup: Sendable, Equatable {
         /// Found: the agterm path works as it always has.
         case present
-        /// Not found, and nothing else could deliver a word: log the line and exit non-zero.
+        /// Not found, and nothing could ever start a dictation: log the line and exit non-zero.
         case fatal(String)
-        /// Not found, and focused fields still can: log the line and carry on (D31).
+        /// Not found: log the line and carry on, whatever the scope (D31).
         case optional(String)
     }
 
-    /// Diagnosed at start-up rather than on the first chord (§7). With `--focused-fields` off a
-    /// daemon without agterm has nowhere to put text, so starting it would only move the discovery
-    /// to a chord that loses an utterance; with the option on, every other application's field is
-    /// still a target. Only the hold trigger ever starts a focused-field attempt -- no chord and no
-    /// `dictactl` command names a field -- so under `--no-hold` the option delivers nothing either,
-    /// and a daemon reporting "ready without agterm" would be the same silent dead end.
+    /// Diagnosed at start-up rather than on the first chord (§7), and fatal in one case only.
+    ///
+    /// A daemon without agterm stays up whatever the person has chosen, because the choice changes
+    /// without a restart: under `undecided` it waits for setup, under `other-apps` every other
+    /// application's field is a target, and under `agterm-only` readiness tells whoever looks that
+    /// agterm is missing. Only the hold trigger ever starts a focused-field attempt -- no chord and
+    /// no `dictactl` command names a field -- so under `--no-hold` nothing could start a dictation
+    /// without agterm, and staying up would be a silent dead end. That exit does not depend on the
+    /// scope, which is why it is decided before `setup.json` is read.
     public func agtermAtStartup(found: Bool) -> AgtermAtStartup {
         if found { return .present }
-        guard focusedFields else {
-            return .fatal("agtermctl is not installed -- dicta cannot reach agterm, so nothing "
-                          + "would be delivered")
-        }
         guard armHoldTrigger else {
-            return .fatal("agtermctl is not installed and --no-hold leaves nothing to start a "
-                          + "focused-field dictation, so nothing would be delivered")
+            return .fatal("agtermctl is not installed and --no-hold arms no key, so nothing could "
+                          + "start a dictation: agterm's chords need agtermctl, and only the hold "
+                          + "key starts one in another application")
         }
         return .optional("agtermctl is not installed -- agterm chords and a hold in front of "
-                         + "agterm will be refused; focused fields still work")
+                         + "agterm will be refused; a hold in another application dictates once "
+                         + "setup has chosen other apps")
     }
 }

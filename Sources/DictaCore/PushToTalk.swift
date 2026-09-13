@@ -58,6 +58,11 @@ public enum HoldKey: String, Codable, Sendable, CaseIterable {
     public static var everyName: String {
         allCases.map(\.rawValue).joined(separator: "|")
     }
+
+    /// The pair armed when no `--hold-key` is given, in the order a tie between them is broken.
+    /// `HoldTrigger.Configuration` defaults to it, and the snapshot names it, so the two cannot
+    /// disagree about which keys are armed.
+    public static let defaultPair: [HoldKey] = [.rightControl, .rightCommand]
 }
 
 /// Turns a stream of modifier-state samples into the two edges that matter.

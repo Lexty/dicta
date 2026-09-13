@@ -989,8 +989,9 @@ The rules, each of which is either a measurement or a mistake a first draft made
 - **Only `AXIsProcessTrusted` is a usable grant check** (F11). `CGPreflightPostEventAccess` stayed
   stale in both directions within one process, and without the grant posting is silently discarded
   with no error to observe. It neither asks nor lists Dicta under Accessibility; only
-  `AXIsProcessTrustedWithOptions` with the prompt option does, so the daemon calls that once at
-  start-up (`SystemFocusedFieldAccess.requestTrust()`), with the option on and the grant missing.
+  `AXIsProcessTrustedWithOptions` with the prompt option does, so the daemon calls that
+  (`SystemFocusedFieldAccess.requestTrust()`) only when `accessibility` asks with `prompt` while the
+  scope is `other-apps` — never at start-up, where the dialog would arrive with no explanation.
 - **Setting `AXManualAccessibility` is a side effect on another application, and it is stated.**
   Electron (VS Code, Slack) exposes no focused element until it is set; dicta sets it once, when the
   application answers `noValue`, re-reads once after a settle, and refuses as unknown if the element
