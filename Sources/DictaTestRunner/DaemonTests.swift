@@ -327,6 +327,59 @@ struct DaemonTests {
         #expect(harness.notifier.signals.isEmpty)
     }
 
+    /// The two notifiers a daemon can announce through: agterm's indicator, and the sounds used
+    /// where there is no indicator (D13, D31).
+    enum Announcer: String, CaseIterable, CustomTestStringConvertible, Sendable {
+        case agterm
+        case system
+
+        var testDescription: String { rawValue }
+    }
+
+    @Test("no Pop is heard before capture confirms it is running, through either notifier",
+          arguments: Announcer.allCases)
+    func noPopBeforeCaptureConfirms(_ announcer: Announcer) {
+        // D13's rule is about the SOUND as much as the light, and each notifier makes it in its own
+        // way: agterm carries `Pop` on `session status active`, system feedback plays it itself.
+        // The fake notifier the rest of this suite uses sees neither, so each real one is counted
+        // at the point where the sound would leave the process.
+        let runner = AgtermTests.StubRunner { _ in
+            CommandOutput(status: 0, standardOutput: #"{"ok":true}"#)
+        }
+        let sounds = FakeSoundPlayer()
+        let notifier: any Notifier = switch announcer {
+        case .agterm: Agterm(executable: "/opt/homebrew/bin/agtermctl", runner: runner)
+        case .system: SystemFeedback(sounds: sounds, runner: runner)
+        }
+        let pops = {
+            runner.invocations.filter { $0.arguments.contains("Pop") }.count
+                + sounds.played.filter { $0 == "Pop" }.count
+        }
+        let capture = FakeCapture()
+        let daemon = Daemon(
+            configuration: Daemon.Configuration(
+                socketPath: "/tmp/unused-\(UUID().uuidString).sock",
+                activeTargetFile: Self.scratchTargetFile()),
+            capture: capture,
+            transcriber: FakeTranscriber(),
+            history: FakeHistory(),
+            clock: FakeClock(),
+            resolver: FakeTargetResolver(),
+            injector: FakeInjector(),
+            notifier: notifier
+        )
+        defer { try? FileManager.default.removeItem(at: daemon.configuration.activeTargetFile) }
+
+        let response = daemon.handle(.request(Request(cmd: .toggle, sessionID: "S1")))
+
+        #expect(response.kind == .accepted)
+        #expect(capture.callLog == [.begin(1)])
+        #expect(pops() == 0)
+
+        capture.reportReady(1)
+        #expect(pops() == 1)
+    }
+
     // MARK: - §6's table, at the daemon level
 
     @Test("a second start chord while recording is refused, and opens no second device")
@@ -873,6 +926,7 @@ struct DaemonTests {
             transcriber: FakeTranscriber(),
             history: FakeHistory(),
             clock: FakeClock(),
+            feedback: FakeNotifier(),
             terminal: { socket in
                 asked.set(asked.value + [socket])
                 return Daemon.Terminal(resolver: resolver, injector: injector,
@@ -915,6 +969,7 @@ struct DaemonTests {
             transcriber: FakeTranscriber(),
             history: FakeHistory(),
             clock: FakeClock(),
+            feedback: FakeNotifier(),
             terminal: { socket in
                 asked.set(asked.value + [socket])
                 return Daemon.Terminal(resolver: resolver, injector: FakeInjector(),
@@ -960,6 +1015,7 @@ struct DaemonTests {
             transcriber: FakeTranscriber(),
             history: FakeHistory(),
             clock: FakeClock(),
+            feedback: FakeNotifier(),
             terminal: { socket in
                 asked.set(asked.value + [socket])
                 return Daemon.Terminal(resolver: resolver, injector: FakeInjector(),
@@ -1965,6 +2021,67 @@ struct DaemonTests {
         #expect(response.state == .idle)
         let message = try #require(harness.notifier.messages.first)
         #expect(message.contains("not a command this build knows"))
+    }
+
+    // MARK: - no agterm (D31)
+
+    /// A daemon whose provider finds no agterm, as one started without `agtermctl` does.
+    static func daemonWithoutAgterm(feedback: any Notifier,
+                                    capture: FakeCapture = FakeCapture()) -> Daemon {
+        Daemon(
+            configuration: Daemon.Configuration(
+                socketPath: "/tmp/unused-\(UUID().uuidString).sock",
+                activeTargetFile: Self.scratchTargetFile()),
+            capture: capture,
+            transcriber: FakeTranscriber(),
+            history: FakeHistory(),
+            clock: FakeClock(),
+            feedback: feedback,
+            terminal: { _ in nil }
+        )
+    }
+
+    @Test("with no agterm, a chord and a focus start are refused with a reason naming agtermctl")
+    func noAgtermRefusesAgtermStarts() throws {
+        let feedback = FakeNotifier()
+        let capture = FakeCapture()
+        let daemon = Self.daemonWithoutAgterm(feedback: feedback, capture: capture)
+
+        let chord = daemon.handle(.request(Request(cmd: .toggle, sessionID: "S1")))
+        let hold = daemon.handle(.request(Request(cmd: .start, focus: true)))
+
+        for response in [chord, hold] {
+            #expect(response.kind == .rejected)
+            #expect(response.message?.contains("agtermctl") == true)
+        }
+        // Refused before anything was opened: there is no pane to aim at, and guessing one is D4.
+        #expect(capture.callLog.isEmpty)
+        #expect(daemon.state == .idle)
+        #expect(daemon.currentAttempt == nil)
+        // Said out loud through the feedback that works without agterm, and aimed at no target.
+        #expect(feedback.signals == [
+            .notify(try #require(chord.message), nil),
+            .notify(try #require(hold.message), nil),
+        ])
+    }
+
+    @Test("with no agterm, untargeted refusals notify through system feedback")
+    func noAgtermNotifiesThroughSystemFeedback() throws {
+        let runner = AgtermTests.StubRunner { _ in CommandOutput(status: 0) }
+        let sounds = FakeSoundPlayer()
+        let daemon = Self.daemonWithoutAgterm(
+            feedback: SystemFeedback(sounds: sounds, runner: runner))
+
+        _ = daemon.handle(.undecodable("not a command this build knows"))
+        let refused = daemon.handle(.request(Request(cmd: .toggle, sessionID: "S1")))
+
+        // No `agtermctl` anywhere: the only process started is the notification.
+        #expect(runner.invocations.map(\.executable)
+            == ["/usr/bin/osascript", "/usr/bin/osascript"])
+        let scripts = runner.invocations.compactMap(\.arguments.last)
+        #expect(scripts.first?.contains("not a command this build knows") == true)
+        #expect(scripts.last?.contains(try #require(refused.message)) == true)
+        #expect(sounds.played.isEmpty)
     }
 
     // MARK: - the stale indicator (§7)

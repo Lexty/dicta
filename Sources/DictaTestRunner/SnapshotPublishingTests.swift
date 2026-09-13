@@ -42,6 +42,7 @@ struct SnapshotPublishingTests {
             transcriber: FakeTranscriber(),
             history: FakeHistory(),
             clock: FakeClock(),
+            feedback: FakeNotifier(),
             terminal: { _ in
                 Daemon.Terminal(resolver: resolver, injector: FakeInjector(),
                                 notifier: FakeNotifier())

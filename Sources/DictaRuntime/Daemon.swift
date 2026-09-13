@@ -82,7 +82,11 @@ public final class Daemon: @unchecked Sendable {
     }
 
     /// Builds the trio for the agterm socket the chord carried; `nil` means agterm's default.
-    public typealias TerminalProvider = @Sendable (String?) -> Terminal
+    ///
+    /// Answers `nil` when there is no agterm to build it for -- `agtermctl` is not installed, which
+    /// `--focused-fields` makes survivable (D31). Every agterm chord is then refused with a reason
+    /// naming `agtermctl`, and feedback that belongs to no pane goes through `feedback` instead.
+    public typealias TerminalProvider = @Sendable (String?) -> Terminal?
 
     /// The Tier 0 dictionary for the attempt about to be processed (D9a).
     ///
@@ -179,6 +183,8 @@ public final class Daemon: @unchecked Sendable {
     private let history: any History
     private let clock: any Clock
     private let provider: TerminalProvider
+    /// Where a notification goes when there is no agterm to show it (D13, D31).
+    private let feedback: any Notifier
     private let dictionary: DictionaryProvider
 
     /// Guards the machine and the small amount of per-attempt state that travels with it. Held for
@@ -221,7 +227,8 @@ public final class Daemon: @unchecked Sendable {
     /// **Guarded by `readinessLock`.** The newest transition already sent to watchers, so a stale
     /// one that lost a race is dropped rather than rewriting the UI backwards.
     private var lastPublishedSequence: UInt64 = 0
-    private var terminal: Terminal
+    /// `nil` when the provider found no agterm; see `TerminalProvider`.
+    private var terminal: Terminal?
     /// The `$AGT_SOCKET` `terminal` was built from, kept so the parked target can name the agterm
     /// instance the attempt belongs to (§7's stale-indicator row).
     private var adoptedSocket: String?
@@ -269,6 +276,9 @@ public final class Daemon: @unchecked Sendable {
     /// dictated, while a forgotten dictionary only means no rule fires, and a default that read the
     /// real file would make every test's output depend on what the user happens to have written in
     /// it. The daemon executable passes `FileDictionary` explicitly.
+    ///
+    /// `feedback` has no default either, for `history`'s reason in a quieter key: the obvious
+    /// one -- `SystemFeedback()` -- plays real sounds and posts real notifications from a test run.
     public init(
         configuration: Configuration,
         capture: any Capture,
@@ -277,6 +287,7 @@ public final class Daemon: @unchecked Sendable {
         history: any History,
         clock: any Clock = SystemClock(),
         dictionary: @escaping DictionaryProvider = { .none },
+        feedback: any Notifier,
         terminal provider: @escaping TerminalProvider
     ) {
         self.configuration = configuration
@@ -287,6 +298,7 @@ public final class Daemon: @unchecked Sendable {
         self.clock = clock
         self.dictionary = dictionary
         self.provider = provider
+        self.feedback = feedback
         terminal = provider(nil)
         machine = StateMachine(nextID: Self.firstUnusedID(in: history))
     }
@@ -327,7 +339,7 @@ public final class Daemon: @unchecked Sendable {
         let fixed = Terminal(resolver: resolver, injector: injector, notifier: notifier)
         self.init(configuration: configuration, capture: capture, transcriber: transcriber,
                   filter: filter, history: history, clock: clock, dictionary: dictionary,
-                  terminal: { _ in fixed })
+                  feedback: notifier, terminal: { _ in fixed })
     }
 
     // MARK: - lifecycle
@@ -380,7 +392,8 @@ public final class Daemon: @unchecked Sendable {
         // instance answers the default socket. Clearing there after a crash in a second agterm
         // instance reports success and leaves the red "listening" light burning on a session that
         // is not recording, which is the very row this exists to close.
-        provider(parked.agtermSocket).notifier.clearIndicator(for: parked.target)
+        // With no agterm there is no light to put out, and nothing to ask.
+        provider(parked.agtermSocket)?.notifier.clearIndicator(for: parked.target)
         try? FileManager.default.removeItem(at: configuration.activeTargetFile)
     }
 
@@ -506,6 +519,12 @@ public final class Daemon: @unchecked Sendable {
         // the user is looking at is the whole of its value. Safe here for the same reason it was
         // safe below: `adoptTerminal` refuses to rebind while an attempt is live.
         adoptTerminal(agtermSocket: request.agtermSocket)
+        guard let terminal = currentTerminal else {
+            // Both roads here -- a session chord and the hold key in front of agterm -- need a
+            // pane, and without `agtermctl` there is none to resolve (D31). Refused rather than
+            // guessed, and through `feedback`, since the agterm that would have shown it is absent.
+            return reject("\(request.cmd.rawValue) needs agterm: \(Self.agtermMissing)")
+        }
         let target: Target
         do {
             if request.focus == true {
@@ -517,13 +536,13 @@ public final class Daemon: @unchecked Sendable {
                 // behind it. With a caller waiting, it has somewhere: the caller (D29). The target
                 // is still resolved, because §6's indicator belongs in the session the user is
                 // looking at either way.
-                target = try currentTerminal.resolver
+                target = try terminal.resolver
                     .resolveFocusedTarget(allowingPicker: hasClaim)
             } else {
                 guard let sessionID = request.sessionID, !sessionID.isEmpty else {
                     return reject("\(request.cmd.rawValue) needs the session the chord fired in")
                 }
-                target = try currentTerminal.resolver.resolveTarget(sessionID: sessionID)
+                target = try terminal.resolver.resolveTarget(sessionID: sessionID)
             }
         } catch {
             // Fail closed (D6). A pane this build cannot name exactly is not one it guesses at:
@@ -980,7 +999,12 @@ public final class Daemon: @unchecked Sendable {
             ?? .injected)
         do {
             // Re-validates both halves of the target itself (D4, §8.3) and never retries (§7).
-            try currentTerminal.injector.inject(final, into: target)
+            guard let injector = currentTerminal?.injector else {
+                // Unreachable while an attempt holds its agterm (`adoptTerminal` refuses to rebind
+                // one), and classified honestly anyway: nothing was typed.
+                throw DeliveryFailure.notStarted(target, reason: Self.agtermMissing)
+            }
+            try injector.inject(final, into: target)
             apply(.injectionFinished(id, .delivered))
         } catch let failure as DeliveryFailure {
             // The file is append-only, so the line above cannot be corrected in place: this writes
@@ -1255,15 +1279,18 @@ public final class Daemon: @unchecked Sendable {
         }
     }
 
-    /// The notifier of the agterm this attempt belongs to.
-    private var notifier: any Notifier { stateLock.withLock { terminal.notifier } }
+    /// The notifier of the agterm this attempt belongs to, or `feedback` when there is no agterm.
+    private var notifier: any Notifier { stateLock.withLock { terminal?.notifier ?? feedback } }
+
+    /// The reason every agterm chord is refused with when the provider found no agterm.
+    static let agtermMissing = "agtermctl is not installed, so dicta cannot reach agterm"
 
     /// The whole three-existential struct, read under the lock that writes it.
     ///
     /// Reading `terminal` unlocked was a torn multi-word read, not a benign stale value: `begin`
     /// runs on the socket thread while `deliver` can be on capture's, since recognition and
     /// injection re-enter through `drainCapture`. Every use goes through here or `notifier`.
-    private var currentTerminal: Terminal { stateLock.withLock { terminal } }
+    private var currentTerminal: Terminal? { stateLock.withLock { terminal } }
 
     private func adoptTerminal(agtermSocket: String?) {
         stateLock.withLock {

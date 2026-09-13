@@ -693,3 +693,17 @@ public final class FakePacer: Pacer, @unchecked Sendable {
         clock?.advance(by: seconds)
     }
 }
+
+/// The sounds `SystemFeedback` would have played, in order, with no speaker involved.
+public final class FakeSoundPlayer: SoundPlayer, @unchecked Sendable {
+    private let lock = NSLock()
+    private var log: [String] = []
+
+    public init() {}
+
+    public var played: [String] { lock.withLock { log } }
+
+    public func play(_ name: String) {
+        lock.withLock { log.append(name) }
+    }
+}

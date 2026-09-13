@@ -390,8 +390,7 @@ public struct Agterm: Injector, Notifier, Sendable {
         if let session = target?.sessionID { arguments += ["--target", session] }
         arguments += ["--", message]
         if let output = try? invoke("notify", arguments), output.succeeded { return }
-        let script = "display notification \(Self.quoted(message)) with title \"dicta\""
-        _ = try? runner.run("/usr/bin/osascript", ["-e", script])
+        _ = try? runner.run(ScriptNotification.executable, ScriptNotification.arguments(message))
     }
 
     public func clearIndicator(for target: Target) {
@@ -477,16 +476,6 @@ public struct Agterm: Injector, Notifier, Sendable {
 
     static func reason(_ error: any Error) -> String {
         (error as? AgtermError)?.description ?? "\(error)"
-    }
-
-    /// An AppleScript string literal. The line breaks matter: a raw newline inside one is a syntax
-    /// error, so a multi-line reason -- agtermctl's stderr, most of the time -- would lose the
-    /// notification on the very path that exists because agterm is already broken.
-    static func quoted(_ text: String) -> String {
-        "\"" + text.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-            .replacingOccurrences(of: "\r", with: "\\r")
-            .replacingOccurrences(of: "\n", with: "\\n") + "\""
     }
 
     // MARK: - the tree

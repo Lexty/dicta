@@ -917,18 +917,47 @@ about `returned`.
 - Modify: `Sources/DictaTestRunner/DaemonTests.swift`
 - Modify: `docs/manual-checklist.md` (citations)
 
-- [ ] write the red tests first:
+- [x] write the red tests first:
   - listening plays `Pop`, done plays `Tink`, a failure plays `Basso` and notifies, through the
     `CommandRunner` fake or a sound seam depending on F11;
   - `clearIndicator` is a no-op;
   - the notification text is escaped for F11's mechanism (quotes, backslashes, a multi-line reason);
   - a daemon whose provider returns `nil` refuses a session chord and a `focus` start with a reason
     naming `agtermctl`, and its untargeted refusals notify through `SystemFeedback`.
-- [ ] implement `SystemFeedback: Notifier`, extract the shared notification builder from
+- [x] implement `SystemFeedback: Notifier`, extract the shared notification builder from
   `Agterm.notify`, make `TerminalProvider` optional, and have `init` tolerate `nil`.
-- [ ] parameterise the D13 ordering test over both notifiers: no `Pop` before capture confirms it is
+- [x] parameterise the D13 ordering test over both notifiers: no `Pop` before capture confirms it is
   running.
-- [ ] add citations, then run tests — must pass before next task
+- [x] add citations, then run tests — must pass before next task
+
+- ➕ **Outcome (2026-09-13).** `SystemFeedback` is in `Sources/DictaRuntime/SystemFeedback.swift`;
+  nothing routes a field target to it yet (Task 8), and `main.swift` hands it to the daemon while
+  `agtermctl` is still required (Task 10 makes it optional).
+  - **Sound seam.** F11 chose `NSSound`, so the seam is `SoundPlayer` (`SystemSoundPlayer` in
+    production, `FakeSoundPlayer` in the fakes) rather than the `CommandRunner`. Notifications go
+    through the runner to `osascript`. `working` is silent, as it is in agterm.
+  - **Target-agnostic.** `SystemFeedback` plays and notifies for any target, since which attempts
+    reach it is the daemon's routing; that is also what lets the D13 test drive it with an agterm
+    target.
+  - **Shared builder.** `ScriptNotification` holds the `osascript` arguments and the escaping that
+    `Agterm.quoted` used to; `Agterm.notify`'s fallback calls it, and a test asserts both notifiers
+    post identical arguments.
+  - **Daemon.** `TerminalProvider` returns `Terminal?`; the designated `init` takes `feedback: any
+    Notifier` with no default (a default would play real sounds from tests), and the fixed-terminal
+    convenience init passes its notifier. With no terminal, `begin` refuses before resolving with
+    "`<verb>` needs agterm: agtermctl is not installed, so dicta cannot reach agterm", opening
+    nothing, and every untargeted notification falls back to `feedback`. `deliver` classifies a
+    missing injector as `notStarted` (unreachable while an attempt holds its agterm);
+    `clearStaleIndicator` does nothing without an agterm.
+  - **D13 over both notifiers** is `test: no Pop is heard before capture confirms it is running,
+    through either notifier`, counting `Pop` in `agtermctl session status` arguments and in the
+    sound player.
+  - **Citations:** invariant 4, the "agtermctl is absent" §7 row, and the no-grant row (the sound
+    and notification pair).
+  - Mutation check: announcing `listening` before `capture.begin`, `done` → `Pop`, dropping the
+    `\n` escape and a refusal reason not naming `agtermctl` each failed a new test. Tests: 637 in
+    38 suites green under Xcode 26.6 (Swift 6.3.3), nine new; lint clean (swiftlint not installed,
+    built-in checks only); linkage clean.
 
 ### Task 7: `HoldRoute`, the threshold edge, and the trigger's field path
 

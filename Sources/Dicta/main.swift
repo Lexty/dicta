@@ -175,6 +175,9 @@ let daemon = Daemon(
     // The Tier 0 dictionary (D9a), re-read per attempt so that editing a rule and dictating once is
     // the whole loop -- no restart, and no chance of testing a rule against the previous file.
     dictionary: { dictionaryFile.load() },
+    // Where feedback goes when no agterm can show it (D13). Unreachable while `agtermctl` is
+    // required above, and wired anyway so that making agterm optional changes only the provider.
+    feedback: SystemFeedback(),
     // One `Agterm` per attempt, addressed at the agterm the chord fired in ($AGT_SOCKET, F3). The
     // command line's `--agterm-socket` is the fallback for a keymap that does not pass it.
     terminal: { requested in
