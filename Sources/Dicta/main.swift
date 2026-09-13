@@ -164,6 +164,12 @@ log("listening on \(controlSocket)")
 let foundAgterm = agtermctl != nil
 daemon.observe { $0.terminal = foundAgterm }
 log(FocusedFieldWiring.startupLine(focusedFields))
+// Asked for at startup, with the option on and only then (invariant 14), for the microphone's
+// reason below: the dialog is read at the user's pace, not in the middle of a hold. It is also what
+// lists Dicta under Accessibility at all (F11); the per-hold check picks the grant up live.
+if let focusedFields, !focusedFields.access.isTrusted {
+    SystemFocusedFieldAccess.requestTrust()
+}
 
 // Push-to-talk (D5), armed after the socket is bound because the trigger reaches the daemon through
 // that socket exactly as `dictactl` does -- it is a keypress source, not a second door into the

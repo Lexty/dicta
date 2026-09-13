@@ -173,7 +173,9 @@ struct MenuBundleTests {
         // binaries, so the script's row is the whole check; losing it loses the clause silently.
         #expect(script.contains(
             "POSTING='CGEventPost|CGEventPostToPid|CGEventKeyboardSetUnicodeString|"
-                + "AXUIElementCreateSystemWide|AXUIElementCopyAttributeValue'"
+                + "AXUIElementCreateSystemWide|AXUIElementCreateApplication|"
+                + "AXUIElementCopyAttributeValue|AXUIElementSetAttributeValue|AXIsProcessTrusted|"
+                + "AXIsProcessTrustedWithOptions|IsSecureEventInputEnabled'"
         ))
         #expect(script.contains("check_posting \"$BINARY\""))
         #expect(script.contains("check_posting \"$MENU\""))

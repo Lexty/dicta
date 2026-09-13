@@ -356,6 +356,10 @@ public struct Request: Codable, Sendable, Equatable {
     /// another application has outlasted the floor, and by nothing else; the daemon reads the
     /// element itself and refuses before capture when it is not an eligible field of this pid.
     public var field: FieldTarget?
+    /// End a focused-field attempt with no sound and no notification: the hold trigger's `abort`
+    /// of a hold whose release switched the application (D31), which is a gesture that meant
+    /// nothing, like D21's floor. The attempt still ends and is still recorded as `aborted`.
+    public var silent: Bool?
 
     public init(
         cmd: Command,
@@ -366,7 +370,8 @@ public struct Request: Codable, Sendable, Equatable {
         focus: Bool? = nil,
         timeout: Double? = nil,
         verbatim: Bool? = nil,
-        field: FieldTarget? = nil
+        field: FieldTarget? = nil,
+        silent: Bool? = nil
     ) {
         self.cmd = cmd
         self.focus = focus
@@ -377,6 +382,7 @@ public struct Request: Codable, Sendable, Equatable {
         self.attempt = attempt
         self.verbatim = verbatim
         self.field = field
+        self.silent = silent
     }
 
     /// Why this request names two targets at once, or `nil` when it names at most one.

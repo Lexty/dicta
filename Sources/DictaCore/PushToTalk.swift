@@ -162,6 +162,11 @@ public struct HoldWatch: Sendable, Equatable {
     private var ownedSince: Date?
     /// Whether the hold in flight still has a threshold edge to emit.
     private var thresholdArmed = false
+    /// A key that went down in the same sample its owner came up in. That sample can report only
+    /// one edge, and it must be the `up`: overwriting it with the new `down` would lose the release
+    /// of an attempt that is still recording. The press is claimed on the next sample instead, if
+    /// the key is still down by then.
+    private var deferredClaim: Int?
 
     public init(keys: [HoldKey], floor: TimeInterval = HoldToTalk.defaultFloor) {
         self.keys = keys
@@ -180,32 +185,36 @@ public struct HoldWatch: Sendable, Equatable {
 
     /// One sample of the whole modifier word; the one edge it is allowed to produce.
     public mutating func sample(_ flags: UInt64) -> HoldEdge? {
-        var reported: HoldEdge?
-        for index in watches.indices {
-            let edge = watches[index].sample(flags)
-            guard let edge else { continue }
-            if let owning {
-                // Only the owner may end the gesture. Anything else that moved is swallowed --
-                // including its `down`, which is what stops a second attempt being started over
-                // the top of the first.
-                guard index == owning, edge == .up else { continue }
-                reported = HoldEdge(key: keys[index], edge: .up)
-                self.owning = nil
-                ownedSince = nil
-                thresholdArmed = false
-                continue
-            }
-            // No gesture in flight. A `down` claims it; an `up` with no owner belongs to a gesture
-            // that never was -- the key was already held when the watch was primed -- and saying
-            // so would ask the daemon to end an attempt nobody started.
-            guard edge == .down else { continue }
-            owning = index
-            generation &+= 1
+        let edges = watches.indices.map { watches[$0].sample(flags) }
+        if let owning {
+            // Only the owner may end the gesture. Anything else that moved is swallowed --
+            // including its `down`, which is what stops a second attempt being started over the
+            // top of the first.
+            guard edges[owning] == .up else { return nil }
+            self.owning = nil
             ownedSince = nil
             thresholdArmed = false
-            reported = HoldEdge(key: keys[index], edge: .down)
+            // Unless it went down in this very sample: it is claimed on the next one.
+            deferredClaim = edges.firstIndex(of: .down)
+            return HoldEdge(key: keys[owning], edge: .up)
         }
-        return reported
+        if let deferred = deferredClaim {
+            deferredClaim = nil
+            if edges[deferred] == nil, watches[deferred].isHeld { return claim(deferred) }
+        }
+        // No gesture in flight. A `down` claims it; an `up` with no owner belongs to a gesture
+        // that never was -- the key was already held when the watch was primed -- and saying so
+        // would ask the daemon to end an attempt nobody started.
+        guard let index = edges.firstIndex(of: .down) else { return nil }
+        return claim(index)
+    }
+
+    private mutating func claim(_ index: Int) -> HoldEdge {
+        owning = index
+        generation &+= 1
+        ownedSince = nil
+        thresholdArmed = false
+        return HoldEdge(key: keys[index], edge: .down)
     }
 
     /// One sample, timed: the edge `sample(_:)` would report, or else the armed hold's threshold.

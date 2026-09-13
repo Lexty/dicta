@@ -445,6 +445,19 @@ struct FocusedFieldDeliveryTests {
         #expect(rig.poster.posts.allSatisfy { $0.pid == Self.field.pid })
     }
 
+    @Test("nothing frontmost after chunk k stops as may-be-partial with exactly k chunks")
+    func nothingFrontmostMidDeliveryIsPartial() {
+        // Not a definite switch, but posting on into an unknown frontmost is D4's substitution.
+        let rig = Rig()
+        let frontmost = rig.frontmost
+        rig.poster.afterPost { if $0 == 1 { frontmost.activate(nil) } }
+
+        let failure = rig.deliver()
+
+        #expect(Self.kind(failure) == "mayBePartial")
+        #expect(rig.poster.posts.count == 1)
+    }
+
     @Test("the deadline passing after chunk k stops as may-be-partial with exactly k chunks",
           arguments: [1, 2])
     func aDeadlineMidDeliveryIsPartial(_ k: Int) {

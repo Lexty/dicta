@@ -175,6 +175,37 @@ struct StateMachineTests {
         #expect(!result.injects)
     }
 
+    @Test("a silent abort of a focused-field attempt cancels with no blocked and no notification")
+    func silentFieldAbort() {
+        // D31: the hold whose release switched the application. The attempt still ends and its
+        // audio is still kept for the record; only the sound and the notification are dropped.
+        let field = Target.focusedField(FieldTarget(bundleID: "com.microsoft.VSCode",
+                                                    appName: "Code", pid: 4_242))
+        var machine = StateMachine()
+        let id = machine.start(target: field, at: Self.t0).attempt!
+        _ = machine.captureReady(id)
+        let result = machine.abort(attempt: id, silent: true)
+
+        #expect(result.outcome == .accepted)
+        #expect(result.state == .idle)
+        #expect(result.effects == [.retainCapture(id)])
+
+        // Without the flag, the same abort is as loud as any other.
+        var loud = StateMachine()
+        let other = loud.start(target: field, at: Self.t0).attempt!
+        #expect(loud.abort(attempt: other).effects.contains(.announce(.blocked)))
+    }
+
+    @Test("a silent abort of an agterm attempt is still blocked, so no indicator is left lit")
+    func silentAbortNeverSilencesAgterm() {
+        var machine = Self.machine(in: .recording)
+        let id = machine.currentAttempt!.id
+        let result = machine.abort(attempt: id, silent: true)
+
+        #expect(result.effects.contains(.announce(.blocked)))
+        #expect(result.effects.contains(.notify("aborted")))
+    }
+
     // MARK: - recording, stop requested, capture not yet drained (§8.9)
 
     @Test("draining + start: rejected, not queued behind the attempt that is still stopping")

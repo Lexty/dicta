@@ -172,6 +172,30 @@ struct HoldWatchTests {
         #expect(watch.sample(0) == HoldEdge(key: .rightCommand, edge: .up))
     }
 
+    @Test("a release and another key's press in one sample report the release, then the press")
+    func aReleaseIsNeverOverwrittenByTheNextPress() {
+        // One sample reports one edge. Reporting the new `down` would lose the owner's `up`, and
+        // the attempt that release should have ended would go on recording until D15's cap.
+        for owner in Self.watched {
+            let other = Self.watched.first { $0 != owner }!
+            var watch = HoldWatch(keys: Self.watched)
+            #expect(watch.sample(0) == nil)
+            #expect(watch.sample(owner.bit) == HoldEdge(key: owner, edge: .down))
+            let generation = watch.generation
+            #expect(watch.sample(other.bit) == HoldEdge(key: owner, edge: .up))
+            #expect(watch.sample(other.bit) == HoldEdge(key: other, edge: .down))
+            #expect(watch.generation == generation + 1)
+            #expect(watch.sample(0) == HoldEdge(key: other, edge: .up))
+        }
+        // A press let go again before the next sample claims nothing.
+        var watch = HoldWatch(keys: Self.watched)
+        #expect(watch.sample(0) == nil)
+        #expect(watch.sample(Self.rightControl) == HoldEdge(key: .rightControl, edge: .down))
+        #expect(watch.sample(Self.rightCommand) == HoldEdge(key: .rightControl, edge: .up))
+        #expect(watch.sample(0) == nil)
+        #expect(watch.owner == nil)
+    }
+
     @Test("two keys going down inside one sample produce one gesture, not two")
     func aTieIsBrokenByOrder() {
         // 16 ms is long enough for both to arrive in one poll (F7's interval), and two `down`s out
@@ -675,7 +699,7 @@ struct HoldTriggerTests {
         rig.modifiers.press(.rightControl)
         let down = rig.trigger.sample()
         #expect(down?.frontmost == agterm)
-        #expect(down?.wasFrontmost == true)
+        #expect(down?.route == .agterm)
         #expect(rig.frontmost.reads == 1)
     }
 
@@ -824,15 +848,21 @@ struct FocusedFieldTriggerTests {
         let modifiers = FakeModifiers()
         let frontmost = FakeFrontmost()
         let notifier = FakeNotifier()
-        let feedback = FakeNotifier()
+        let feedback: FakeNotifier
         let access: FakeFocusedFieldAccess
         let daemon = FakeDaemonDoor()
         let clock = FakeClock()
         let pacer: FakePacer
 
-        init(enabled: Bool = true, trusted: Bool = true) {
+        /// `send` replaces the fake door -- a real `Daemon`, when what is asserted is what the two
+        /// halves say together -- and `feedback` is then that daemon's own. `wired: false` hands
+        /// the trigger no `FocusedFields` at all.
+        init(enabled: Bool = true, trusted: Bool = true, wired: Bool = true,
+             feedback: FakeNotifier = FakeNotifier(),
+             send: HoldTrigger.Sender? = nil) {
             access = FakeFocusedFieldAccess(trusted: trusted)
             pacer = FakePacer(clock: clock)
+            self.feedback = feedback
             frontmost.activate(FocusedFieldTriggerTests.code)
             let daemon = daemon
             trigger = HoldTrigger(
@@ -843,8 +873,10 @@ struct FocusedFieldTriggerTests {
                 frontmost: frontmost,
                 notifier: notifier,
                 clock: clock,
-                fields: HoldTrigger.FocusedFields(access: access, feedback: feedback, pacer: pacer),
-                send: { try daemon.send($0) }
+                fields: wired
+                    ? HoldTrigger.FocusedFields(access: access, feedback: feedback, pacer: pacer)
+                    : nil,
+                send: send ?? { try daemon.send($0) }
             )
             _ = trigger.sample()
         }
@@ -1010,6 +1042,8 @@ struct FocusedFieldTriggerTests {
         rig.perform([rig.release()])
         #expect(rig.daemon.verbs == [.start, .abort])
         #expect(rig.daemon.requests[1].attempt == 1)
+        // Silent is asked for, since the daemon is the one that would otherwise play `Basso`.
+        #expect(rig.daemon.requests[1].silent == true)
         // Already switched at the release: nothing to wait for.
         #expect(rig.pacer.pauses.isEmpty)
         #expect(rig.silent)
@@ -1074,16 +1108,90 @@ struct FocusedFieldTriggerTests {
         #expect(rig.silent)
     }
 
-    @Test("a refused field start is said through system feedback and the release is silent")
+    @Test("a refused field start is left to the daemon to say, and the release is silent")
     func aRefusedFieldStart() {
+        // The daemon said it when it refused; the trigger repeating it was every refusal twice.
         let rig = Rig()
         rig.daemon.queue(Response(kind: .rejected, state: .idle,
                                   message: "Secure Input is on, so dicta will not type"))
         rig.hold(for: 2)
         #expect(rig.daemon.verbs == [.start])
-        #expect(rig.feedback.announcements == [.blocked])
-        #expect(rig.feedback.messages == ["Secure Input is on, so dicta will not type"])
+        #expect(rig.silent)
+    }
+
+    @Test("a refused field start is said exactly once when the trigger meets the real daemon")
+    func aRefusalThroughTheRealDaemonIsSaidOnce() throws {
+        let harness = DaemonTests.Harness(focusedFields: true)
+        harness.access.setSecureInput(true)
+        let daemon = harness.daemon
+        let rig = Rig(feedback: harness.feedback, send: { daemon.handle(.request($0)) })
+
+        rig.hold(for: 2)
+
+        #expect(harness.feedback.announcements == [.blocked])
+        #expect(harness.feedback.messages.count == 1)
+        #expect(harness.feedback.messages.first?.contains("Secure Input") == true)
+        #expect(harness.capture.callLog.isEmpty)
         #expect(rig.notifier.signals.isEmpty)
+    }
+
+    @Test("a hold that switched the application ends the real daemon's attempt with no sound")
+    func aSwitchThroughTheRealDaemonIsSilent() throws {
+        // What H32 (b) scores: a right-hand `⌘Tab` held past the floor opens the microphone, and
+        // then must cost no `Basso` and no "aborted" notification -- only the record's line.
+        let harness = DaemonTests.Harness(focusedFields: true)
+        let daemon = harness.daemon
+        let rig = Rig(feedback: harness.feedback, send: { daemon.handle(.request($0)) })
+
+        rig.perform([rig.press(.rightCommand), rig.wait(0.35)])
+        let id = try #require(harness.daemon.currentAttempt?.id)
+        harness.capture.reportReady(id)
+        rig.frontmost.activate(Self.safari)
+        rig.clock.advance(by: 1)
+        rig.perform([rig.release(.rightCommand)])
+
+        #expect(harness.daemon.state == .idle)
+        #expect(harness.feedback.announcements == [.listening])
+        #expect(harness.feedback.messages.isEmpty)
+        #expect(harness.fieldInjector.delivered.isEmpty)
+        #expect(harness.history.appended.last?.outcome == .aborted)
+    }
+
+    @Test("a start that cannot reach the daemon is said once, and its release is silent")
+    func aSendErrorAtTheThreshold() {
+        struct Unreachable: Error, CustomStringConvertible {
+            var description: String { "no socket" }
+        }
+        let rig = Rig()
+        rig.daemon.setError(Unreachable())
+        rig.hold(for: 2)
+        #expect(rig.daemon.verbs == [.start])
+        #expect(rig.feedback.announcements == [.blocked])
+        #expect(rig.feedback.messages.count == 1)
+        #expect(rig.notifier.signals.isEmpty)
+    }
+
+    @Test("a refused stop of a field attempt is said through system feedback")
+    func aRefusedFieldStop() {
+        let rig = Rig()
+        rig.perform([rig.press(), rig.wait(0.35)])
+        rig.daemon.queue(Response(kind: .rejected, state: .idle, message: "nothing to stop"))
+        rig.clock.advance(by: 1)
+        rig.perform([rig.release()])
+        #expect(rig.daemon.verbs == [.start, .stop])
+        #expect(rig.feedback.messages == ["nothing to stop"])
+        #expect(rig.notifier.signals.isEmpty)
+    }
+
+    @Test("the option on with no focused-field wiring routes nothing into the field path")
+    func theOptionWithoutWiringIsIgnored() throws {
+        let rig = Rig(wired: false)
+        let down = try #require(rig.press())
+        #expect(down.route == .ignore)
+        rig.perform([down, rig.wait(2), rig.release()])
+        #expect(rig.daemon.requests.isEmpty)
+        #expect(rig.access.callLog.isEmpty)
+        #expect(rig.silent)
     }
 
     @Test("agterm frontmost with focused fields on still starts on key-down")

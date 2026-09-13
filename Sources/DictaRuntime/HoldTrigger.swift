@@ -256,12 +256,10 @@ public final class HoldTrigger: @unchecked Sendable {
         /// make "first key wins" a rule assertable only through its consequences.
         public var key: HoldKey
         public var at: Date
-        /// Captured in the poll loop rather than read by the sender, so D22 asks "was agterm
-        /// frontmost when the key went down" and not "is it frontmost now that we got round to it".
-        public var wasFrontmost: Bool
-        /// The whole frontmost application at a `down`, from the same single read `wasFrontmost`
-        /// was decided on; `nil` on an `up`, and when nothing was frontmost. The focused-field
-        /// route (D31) builds its target from it.
+        /// The whole frontmost application at a `down`, from one read in the poll loop; `nil` on an
+        /// `up`, and when nothing was frontmost. Captured there rather than read by the sender, so
+        /// D22 asks "was agterm frontmost when the key went down" and not "is it frontmost now that
+        /// we got round to it". `route` is decided from it, and the field route's target built.
         public var frontmost: FrontmostFacts?
         /// Which hold this edge belongs to (`HoldWatch.generation`).
         public var generation: UInt64
@@ -397,16 +395,15 @@ public final class HoldTrigger: @unchecked Sendable {
             if case .focusedFieldAfterFloor = route { watch.armThreshold() }
             // Liveness before the edge is queued: no sender sees an edge the snapshot has not.
             liveness.pressed(held.key, generation: generation)
-            return Pending(edge: .down, key: held.key, at: now,
-                           wasFrontmost: facts?.bundleID == configuration.agtermBundleIdentifier,
-                           frontmost: facts, generation: generation, route: route)
+            return Pending(edge: .down, key: held.key, at: now, frontmost: facts,
+                           generation: generation, route: route)
         case .up:
             liveness.released(generation: generation)
-            return Pending(edge: .up, key: held.key, at: now, wasFrontmost: false, frontmost: nil,
+            return Pending(edge: .up, key: held.key, at: now, frontmost: nil,
                            generation: generation, route: nil)
         case .threshold:
-            return Pending(edge: .threshold, key: held.key, at: now, wasFrontmost: false,
-                           frontmost: nil, generation: generation, route: nil)
+            return Pending(edge: .threshold, key: held.key, at: now, frontmost: nil,
+                           generation: generation, route: nil)
         }
     }
 
@@ -461,7 +458,6 @@ public final class HoldTrigger: @unchecked Sendable {
     }
 
     private func begin(_ pending: Pending) {
-        guard pending.wasFrontmost else { return }
         guard case .start = gesture.down(at: pending.at) else { return }
 
         do {
@@ -553,11 +549,10 @@ public final class HoldTrigger: @unchecked Sendable {
         do {
             let response = try send(Request(cmd: .start, field: hold.target))
             guard response.kind == .accepted, let attempt = response.attempt else {
+                // A refusal is the daemon's to say, and it already has: its own refusals of a field
+                // start play `Basso` and notify through the same feedback, and "already recording"
+                // is the machine's `blocked`. Saying it again here was every refusal twice.
                 abandonField()
-                if response.kind == .rejected, let message = response.message {
-                    fields.feedback.announce(.blocked, for: target)
-                    fields.feedback.notify(message, for: target)
-                }
                 return
             }
             // `HoldToTalk` is not consulted: the floor was passed by sampled time before this
@@ -587,7 +582,7 @@ public final class HoldTrigger: @unchecked Sendable {
             // The user's decision, 2026-09-13: like D21's floor, no text, no sound and no
             // notification -- and the answer is not reported either, since a refusal here would be
             // a sound for a gesture that meant nothing.
-            _ = try? send(Request(cmd: .abort, attempt: attempt))
+            _ = try? send(Request(cmd: .abort, attempt: attempt, silent: true))
             return
         }
         do {

@@ -68,6 +68,14 @@ struct WireTests {
         #expect(decoded.target == .agterm(AgtermTarget(sessionID: "session:7", pane: .right)))
     }
 
+    @Test("a silent abort round-trips, and an ordinary abort does not carry the key")
+    func silentAbortRoundTrips() throws {
+        let silent = Request(cmd: .abort, attempt: 4, silent: true)
+        #expect(try Wire.decode(Request.self, from: Wire.encode(silent)) == silent)
+        let ordinary = Request(cmd: .abort, attempt: 4)
+        #expect(!String(decoding: try Wire.encode(ordinary), as: UTF8.self).contains("silent"))
+    }
+
     // MARK: - the target's two shapes (D31)
 
     static func sortedJSON(_ target: Target) throws -> String {

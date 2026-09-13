@@ -167,9 +167,9 @@ Plans stay in `docs/plans/` when they finish, as the record of the run that buil
   push-to-talk and a permission prompt. `--daemon <path>` scores that check alone; it was probed by
   adding a `CGEvent.tapCreate` call and watching it fail on `U _CGEventTapCreate`. For
   `dictactl` and `DictaMenu` it also fails by name on `_CGEventPost`, `_CGEventPostToPid`,
-  `_CGEventKeyboardSetUnicodeString`, `_AXUIElementCreateSystemWide` and
-  `_AXUIElementCopyAttributeValue`, matched as exact C names: only the daemon may post keystrokes or
-  touch accessibility (invariant 14).
+  `_CGEventKeyboardSetUnicodeString`, `_AXUIElementCreateSystemWide`, `_AXUIElementCopyAttributeValue`
+  and every other accessibility, trust and Secure Input call the daemon's field path makes, matched
+  as exact C names: only the daemon may post keystrokes or touch accessibility (invariant 14).
 
 ## Why the test runner exists (D18) — measured, not assumed
 
@@ -853,9 +853,11 @@ More rules that are not obvious from the code:
   somebody else.
 - **Frontmost is read at the press, not in the sender.** `NSWorkspace.frontmostApplication` matched
   against `com.umputun.agterm` (D22), captured in the poll loop, because the sender thread can be
-  seconds behind the keypress and D4 forbids re-deciding a target mid-attempt. Not frontmost is
-  **silent** — a notification there would fire on every right-Control combination typed in a
-  browser. A session that cannot be resolved is loud, because the key did mean something and
+  seconds behind the keypress and D4 forbids re-deciding a target mid-attempt. With
+  `--focused-fields` off, not frontmost is **silent** — a notification there would fire on every
+  right-Control combination typed in a browser. With it on, another application frontmost takes the
+  focused-field path once the hold outlasts the floor (see "Focused fields, and why the permission
+  is opt-in"). A session that cannot be resolved is loud, because the key did mean something and
   produced nothing.
 
 - **`dictate` blocks, and must be served concurrently or it deadlocks** (D29). `dictactl dictate`
@@ -879,8 +881,10 @@ More rules that are not obvious from the code:
   user's own `claude-ask.sh` opens exactly such a picker on ⌃⌥C, so this is their daily path and not
   a corner. Typing INTO the picker needs an agterm verb that does not exist: `pick --query` sets the
   query only at open, and nothing sets it on an open one.
-- **The trigger resolves nothing itself.** It sends `start` with `focus: true` and no session, and
-  the daemon reads BOTH halves of the target out of one `agtermctl tree --json`. An earlier draft
+- **The trigger resolves nothing itself.** On the agterm path it sends `start` with `focus: true`
+  and no session, and the daemon reads BOTH halves of the target out of one `agtermctl tree --json`.
+  (On the focused-field path it sends `start` with `field` and never `focus` or a session; the
+  daemon refuses a request naming both, `Request.conflict`.) An earlier draft
   had the trigger look up the session and let the daemon resolve the pane afterwards: two
   subprocesses on the hot path, and a target assembled from two moments that can disagree. The flag
   is explicit and a missing session never implies it — `$AGT_SESSION_ID` expands to an empty string
@@ -955,6 +959,14 @@ The rules, each of which is either a measurement or a mistake a first draft made
   already ended; the interleaving test only caught that once its hook waited for the contender
   thread to be running. A refused start drops its local; release is by id, so a late teardown of
   attempt N cannot remove N+1's handle.
+- **A field refusal is said once, by the daemon, and a switch is said by nobody.** The daemon's
+  refusal of a field start plays `Basso` and notifies through `SystemFeedback` (a Focus mode
+  suppresses the notification, F11), so the trigger says nothing more for a `rejected` start; it
+  speaks only for what the daemon never heard — the missing grant it checks first, and a send that
+  failed. The abort of a hold whose release switched the application carries `silent`, which drops
+  the machine's `blocked` and notification for a focused-field attempt only (an agterm indicator
+  must still be put out); the record keeps its `aborted` line. Tests pairing the trigger with a real
+  `Daemon` hold both, because each half faked alone passed while every refusal was said twice.
 - **Flags are zeroed on every posted event.** Each chunk is a key-down and key-up with keycode 0,
   the Unicode string, `flags = []` and a `.privateState` source. Without the empty flags a right
   Command the user is still holding combines with the text, and the dictation fires shortcuts. F11
@@ -975,7 +987,9 @@ The rules, each of which is either a measurement or a mistake a first draft made
   D20 refuses an abort mid-delivery, so the deadline is the only thing that stops a long one.
 - **Only `AXIsProcessTrusted` is a usable grant check** (F11). `CGPreflightPostEventAccess` stayed
   stale in both directions within one process, and without the grant posting is silently discarded
-  with no error to observe.
+  with no error to observe. It neither asks nor lists Dicta under Accessibility; only
+  `AXIsProcessTrustedWithOptions` with the prompt option does, so the daemon calls that once at
+  start-up (`SystemFocusedFieldAccess.requestTrust()`), with the option on and the grant missing.
 - **Setting `AXManualAccessibility` is a side effect on another application, and it is stated.**
   Electron (VS Code, Slack) exposes no focused element until it is set; dicta sets it once, when the
   application answers `noValue`, re-reads once after a settle, and refuses as unknown if the element

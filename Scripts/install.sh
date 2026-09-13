@@ -241,8 +241,8 @@ if [ -n "$AGTERMCTL" ]; then
 fi
 if [ "$FOCUSED_FIELDS" -eq 1 ]; then
     # Posting keystrokes into another process needs the grant, and without it every hold outside
-    # agterm is refused with a notification naming it. Nothing here asks: TCC adds the entry the
-    # first time the daemon checks, and the switch is the user's to turn on.
+    # agterm is refused with a notification naming it. Nothing here asks: the daemon does, once at
+    # start-up, which shows the system dialog and lists Dicta (F11), and the switch is the user's.
     echo "  $STEP. grant Accessibility to $APP_DEST in System Settings > Privacy & Security >"
     echo "     Accessibility, then relaunch any Electron app (VS Code, Slack) you dictate into"
 fi

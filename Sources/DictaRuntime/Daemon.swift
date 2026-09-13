@@ -512,7 +512,8 @@ public final class Daemon: @unchecked Sendable {
         case .stop:
             return respond(to: apply(.stop(mode: request.mode ?? .clean, attempt: request.attempt)))
         case .abort:
-            return respond(to: apply(.abort(attempt: request.attempt)))
+            return respond(to: apply(.abort(attempt: request.attempt,
+                                            silent: request.silent == true)))
         case .dictate:
             return awaitDictation(request)
         case .start, .toggle:
@@ -727,9 +728,13 @@ public final class Daemon: @unchecked Sendable {
     /// named, and lighting the previous attempt's pane would be D4's substitution wearing a colour.
     ///
     /// A field start names its target in the request itself, so its refusal goes where a field is
-    /// told things -- `feedback` -- rather than to agterm, which has nothing to show it on.
+    /// told things -- `feedback` -- rather than to agterm, which has nothing to show it on. There
+    /// it is `Basso` as well as the notification, because a Focus mode suppresses the notification
+    /// (F11), and it is said here once: the trigger that sent the start says nothing more.
     private func reject(_ message: String, for target: Target? = nil) -> Response {
-        notifier(for: target).notify(message, for: target)
+        let notifier = notifier(for: target)
+        if let target, case .focusedField = target { notifier.announce(.blocked, for: target) }
+        notifier.notify(message, for: target)
         return response(.rejected, message: message)
     }
 

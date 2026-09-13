@@ -267,7 +267,10 @@ check_keystrokes() {
 #                  U _CGEventPostToPid
 #   linkage: …/.build/arm64-apple-macosx/debug/dictactl can post keystrokes or read accessibility — only the daemon may, and only with --focused-fields (invariant 14)
 # and exited 0 again once the call was removed.
-POSTING='CGEventPost|CGEventPostToPid|CGEventKeyboardSetUnicodeString|AXUIElementCreateSystemWide|AXUIElementCopyAttributeValue'
+# Every accessibility, Secure Input and posting entry point the daemon's focused-field path calls,
+# so a client or menu that reached any of them -- the trust check or a settable attribute included,
+# not only the element read -- fails by name.
+POSTING='CGEventPost|CGEventPostToPid|CGEventKeyboardSetUnicodeString|AXUIElementCreateSystemWide|AXUIElementCreateApplication|AXUIElementCopyAttributeValue|AXUIElementSetAttributeValue|AXIsProcessTrusted|AXIsProcessTrustedWithOptions|IsSecureEventInputEnabled'
 
 check_posting() {
     local path="$1"

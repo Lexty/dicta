@@ -158,7 +158,8 @@ public struct Transition: Equatable, Sendable {
 public enum Event: Equatable, Sendable {
     case start(target: Target, at: Date)
     case stop(mode: Mode, attempt: AttemptID?)
-    case abort(attempt: AttemptID?)
+    /// `silent` ends a focused-field attempt with no announcement and no notification (D31).
+    case abort(attempt: AttemptID?, silent: Bool = false)
     /// Start-or-stop, resolved INSIDE the machine. The chords call this and nothing else.
     case toggle(mode: Mode, target: Target, at: Date, attempt: AttemptID?)
     case captureReady(AttemptID)
@@ -194,9 +195,9 @@ public struct StateMachine: Equatable, Sendable {
         case let .stop(mode, attempt):
             if let spent = spentAttempt(attempt) { return spent }
             return performStop(mode: mode)
-        case let .abort(attempt):
+        case let .abort(attempt, silent):
             if let spent = spentAttempt(attempt) { return spent }
-            return performAbort()
+            return performAbort(silent: silent)
         case let .toggle(mode, target, now, attempt):
             // D7: `status | grep idle && start || stop` is two round trips with a window between
             // them in which the duration cap can fire or a second chord can land, so one keypress
@@ -229,8 +230,8 @@ public struct StateMachine: Equatable, Sendable {
         apply(.stop(mode: mode, attempt: attempt))
     }
 
-    public mutating func abort(attempt: AttemptID? = nil) -> Transition {
-        apply(.abort(attempt: attempt))
+    public mutating func abort(attempt: AttemptID? = nil, silent: Bool = false) -> Transition {
+        apply(.abort(attempt: attempt, silent: silent))
     }
 
     public mutating func toggle(mode: Mode, target: Target, at now: Date,
@@ -307,23 +308,23 @@ public struct StateMachine: Equatable, Sendable {
         }
     }
 
-    private mutating func performAbort() -> Transition {
+    private mutating func performAbort(silent: Bool) -> Transition {
         switch phase {
         case .idle:
             return noop("nothing to abort")
         case let .warming(attempt):
             // The device never confirmed, so there is no buffer -- an abort here journals nothing
             // because there is nothing, not because it was refused (D26).
-            return cancel(attempt, reason: "aborted", capture: .nothingToKeep)
+            return cancel(attempt, reason: "aborted", capture: .nothingToKeep, silent: silent)
         case let .recording(attempt):
-            return cancel(attempt, reason: "aborted", capture: .keepForRecord)
+            return cancel(attempt, reason: "aborted", capture: .keepForRecord, silent: silent)
         case let .draining(attempt, _):
-            return cancel(attempt, reason: "aborted", capture: .alreadyDraining)
+            return cancel(attempt, reason: "aborted", capture: .alreadyDraining, silent: silent)
         case let .processing(attempt, _):
             // Capture is already over; there is only the text, and nothing is injected. The text
             // still reaches the record (D26): the user cancelled the DELIVERY, not the fact that
             // they spoke into a microphone that was open.
-            return cancel(attempt, reason: "aborted", capture: .over)
+            return cancel(attempt, reason: "aborted", capture: .over, silent: silent)
         case let .injecting(attempt, _):
             // D20: keystrokes already in the terminal cannot be recalled, so a cancellation the
             // user then watches being contradicted on screen is worse than the refusal.
@@ -467,7 +468,7 @@ public struct StateMachine: Equatable, Sendable {
     }
 
     private mutating func cancel(_ attempt: Attempt, reason: String,
-                                 capture: CaptureEnding) -> Transition {
+                                 capture: CaptureEnding, silent: Bool = false) -> Transition {
         phase = .idle
         var effects: [Effect] = []
         switch capture {
@@ -478,6 +479,13 @@ public struct StateMachine: Equatable, Sendable {
         }
         // Visible, even though the user asked for it: the indicator must not be left claiming a
         // recording that is not happening (§7), and property 2 says nothing disappears quietly.
+        // The one exception is a focused field's silent abort (D31): a field has no indicator to
+        // leave lit, the record still gets its `aborted` line, and the gesture -- a `⌘Tab` held
+        // past the floor -- was never a dictation. An agterm target is never silenced, because
+        // `blocked` is what puts out a `listening` indicator that may already be on.
+        if silent, case .focusedField = attempt.target {
+            return accepted(attempt: attempt.id, message: reason, effects: effects)
+        }
         effects += blocked(reason)
         return accepted(attempt: attempt.id, message: reason, effects: effects)
     }

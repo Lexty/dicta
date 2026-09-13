@@ -1380,6 +1380,9 @@ about `returned`.
     first time the daemon checks") and H28 (a) ("`Dicta` is now listed") both assume otherwise. The
     README tells the user to add `~/Applications/Dicta.app` with `+` if it is not listed, which holds
     either way; H28 (a) will settle it, and a prompting check is the likely fix.
+    ➕ Fixed in review: `main.swift` calls `SystemFocusedFieldAccess.requestTrust()`
+    (`AXIsProcessTrustedWithOptions` with the prompt option) once at start-up, with the option on and
+    the grant missing; the installer comment and README now say so. H28 (a) still scores it.
   - Tests: 714 in 43 suites green under Xcode 26.6 (Swift 6.3.3), none new (documentation only;
     `DocumentationTests` still pass); lint clean (swiftlint not installed, built-in checks only).
 

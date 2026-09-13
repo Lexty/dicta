@@ -205,7 +205,6 @@ public final class SystemFocusedFieldAccess: FocusedFieldAccess, @unchecked Send
     private let lock = NSLock()
     private let trustProbe: @Sendable () -> Bool
     private let secureInputProbe: @Sendable () -> Bool
-    private let settle: TimeInterval
 
     /// Sets the messaging timeout once, process-globally, on the system-wide element: its
     /// focused-element read fails in every application (F11), so the timeout is the only thing it
@@ -214,18 +213,25 @@ public final class SystemFocusedFieldAccess: FocusedFieldAccess, @unchecked Send
     ///
     /// The probes stand in for the trust and Secure Input calls in tests, which is how the lock is
     /// asserted without a second thread reaching Carbon.
-    public init(messagingTimeout: Float = SystemFocusedFieldAccess.messagingTimeout,
-                manualAccessibilitySettle: TimeInterval
-                    = SystemFocusedFieldAccess.manualAccessibilitySettle,
-                isTrusted: @escaping @Sendable () -> Bool = { AXIsProcessTrusted() },
+    public init(isTrusted: @escaping @Sendable () -> Bool = { AXIsProcessTrusted() },
                 isSecureInputOn: @escaping @Sendable () -> Bool = { IsSecureEventInputEnabled() }) {
         trustProbe = isTrusted
         secureInputProbe = isSecureInputOn
-        settle = manualAccessibilitySettle
-        AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), messagingTimeout)
+        // The constants and nothing else: `worstCaseReadSeconds` is built from them, and the
+        // client's timeout ceiling is checked against that.
+        AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), Self.messagingTimeout)
     }
 
     public var isTrusted: Bool { lock.withLock { trustProbe() } }
+
+    /// Shows the system's Accessibility dialog and adds this bundle to the list, when the grant is
+    /// not already held. F11 found this the only call that does either: `AXIsProcessTrusted`, the
+    /// check every hold makes, neither asks nor lists, so without this the user would have to find
+    /// the bundle and add it by hand. The key is spelled out rather than read from
+    /// `kAXTrustedCheckOptionPrompt`, a C global Swift 6 will not read outside the main actor.
+    public static func requestTrust() {
+        _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
+    }
 
     public var isSecureInputOn: Bool { lock.withLock { secureInputProbe() } }
 
@@ -255,7 +261,7 @@ public final class SystemFocusedFieldAccess: FocusedFieldAccess, @unchecked Send
             guard switchOnManualAccessibility(application) else {
                 throw FocusedFieldError.noElement
             }
-            if settle > 0 { Thread.sleep(forTimeInterval: settle) }
+            Thread.sleep(forTimeInterval: Self.manualAccessibilitySettle)
             element = try focused(in: application)
         }
 
@@ -576,8 +582,8 @@ public struct FocusedFieldInjector: FieldInjector {
         }
         guard current.pid == field.pid else {
             throw DeliveryFailure.targetGone(
-                target, reason: "\(current.name ?? current.bundleID ?? "pid \(current.pid)") is "
-                    + "frontmost, not \(field.appName)")
+                target, reason: "\(HoldRoute.appName(of: current)) is frontmost, not "
+                    + "\(field.appName)")
         }
     }
 

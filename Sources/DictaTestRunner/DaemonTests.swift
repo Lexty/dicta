@@ -2176,8 +2176,11 @@ struct DaemonTests {
         #expect(harness.access.callLog == refusal.calls)
         let message = try #require(response.message)
         #expect(message.contains(refusal.reasonMentions), "\(message)")
-        // Said once, and never as an indicator on some agterm pane the request did not name.
+        // Said once, and never as an indicator on some agterm pane the request did not name. A
+        // refusal naming the field is `Basso` as well (F11); a conflict names no one target.
         #expect((harness.feedback.messages + harness.notifier.messages) == [message])
+        #expect(harness.feedback.announcements
+            == (refusal.request.conflict == nil ? [.blocked] : []))
         #expect(harness.notifier.announcements.isEmpty)
         #expect(harness.resolver.requested.isEmpty)
     }
@@ -2564,6 +2567,43 @@ struct DaemonTests {
             .notify(try #require(chord.message), nil),
             .notify(try #require(hold.message), nil),
         ])
+    }
+
+    @Test("with no agterm, a field attempt dictates end to end and a chord is still refused")
+    func noAgtermDictatesIntoAField() throws {
+        // The setup the option exists for: no `agtermctl` anywhere, and a hold in VS Code.
+        let feedback = FakeNotifier()
+        let capture = FakeCapture()
+        let injector = FakeFieldInjector()
+        let history = FakeHistory()
+        let daemon = Daemon(
+            configuration: Daemon.Configuration(
+                socketPath: "/tmp/unused-\(UUID().uuidString).sock",
+                activeTargetFile: Self.scratchTargetFile()),
+            capture: capture,
+            transcriber: FakeTranscriber(),
+            history: history,
+            clock: FakeClock(),
+            feedback: feedback,
+            fields: Daemon.FocusedFields(access: FakeFocusedFieldAccess(), injector: injector),
+            terminal: { _ in nil }
+        )
+
+        let id = try #require(daemon.handle(.request(Request(cmd: .start, field: Self.field)))
+            .attempt)
+        capture.reportReady(id)
+        _ = daemon.handle(.request(Request(cmd: .stop, mode: .clean, attempt: id)))
+        capture.reportDrained(id)
+
+        #expect(daemon.state == .idle)
+        #expect(injector.delivered.map(\.target) == [Self.field])
+        #expect(history.appended.last?.outcome == .injected)
+        #expect(feedback.announcements == [.listening, .working, .done])
+        #expect(feedback.messages.isEmpty)
+
+        let chord = daemon.handle(.request(Request(cmd: .toggle, sessionID: "S1")))
+        #expect(chord.kind == .rejected)
+        #expect(chord.message?.contains("agtermctl") == true)
     }
 
     @Test("with no agterm, untargeted refusals notify through system feedback")

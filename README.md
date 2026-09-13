@@ -210,9 +210,10 @@ agterm in front still takes the agterm path, exactly as without the option: it k
 the pane, it has the indicator, and it needs no permission (D31).
 
 **The Accessibility permission.** Posting keystrokes into another process needs it, and without it
-macOS discards them silently (F11). dicta shows no permission dialog of its own: turn on `Dicta` in
-System Settings → Privacy & Security → Accessibility, adding `~/Applications/Dicta.app` with `+` if
-it is not listed. Until then, every hold outside agterm that passes the floor is refused with
+macOS discards them silently (F11). The daemon asks for it once at start-up, when it runs with the
+option and does not have it: the system dialog opens and `Dicta` is added to System Settings →
+Privacy & Security → Accessibility, where you turn it on (add `~/Applications/Dicta.app` with `+` if
+it is somehow not listed). Until then, every hold outside agterm that passes the floor is refused with
 `Basso` and a notification naming the grant, and the microphone never opens. The grant is picked up
 without a restart, and a rebuild does not revoke it, for the same signing reason as the
 microphone's. The daemon's log says which it is at start-up: `focused fields: on, accessibility:
@@ -289,6 +290,10 @@ is data, so a timeout or a refusal goes to stderr and shows up as an exit code (
 While a caller is waiting like this, holding the key **does** work in front of an open picker —
 which it otherwise refuses to do, because the text would land in the terminal behind the dialog
 (D24). With somewhere for the words to go, that refusal has nothing to protect.
+
+With `--focused-fields`, a hold in another application also feeds a waiting `dictactl dictate`, and
+nothing is typed there. The refusals still apply as if it were typing: the grant, Secure Input, and
+a focused element that has to be a text field.
 
 Each chord is one `toggle`, because start-or-stop is resolved inside the daemon atomically —
 writing it in the shell as `status | grep idle && start || stop` leaves a window in which one
