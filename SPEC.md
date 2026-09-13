@@ -2,7 +2,8 @@
 
 Voice dictation into **agterm**'s input line: hold a key, speak, let go, the text appears where you
 were typing. Its first purpose is dictating prompts to Claude Code and instructions to agents
-running inside agterm.
+running inside agterm. When asked for with `--focused-fields`, it also types into the focused text
+field of any other application (D31).
 
 **English only, across the whole project, with no exceptions** — code, comments, documentation,
 commit messages, notifications, client output, test names, and `NSMicrophoneUsageDescription`, which
@@ -47,6 +48,14 @@ The third is not a nicety. `agtermctl session type` injects real keystrokes with
 paste**, so any newline in the text is a Return that submits the input line. A prompt dictated in
 two sentences would fire off half-written.
 
+**agterm is the first target, not the only one (D31).** With `--focused-fields` on, a hold in any
+other application types into that application's focused text field — the VS Code editor, its
+integrated terminal, a browser's text area. The third property holds there unchanged and for the
+same reason: those keystrokes are posted one character string at a time with no bracketed paste
+either (D32), so a newline would be a Return in the VS Code terminal exactly as it is in agterm. What
+dicta still is not, outside agterm, is voice control: text goes only into a field that classifies
+as a text field, never into a button, a list or a page (D31).
+
 ---
 
 ## 2. Terminology
@@ -58,8 +67,17 @@ draft of this spec existed because these words carried several.
 under D5's hold trigger, press-to-press under its toggle one. An attempt exists from the moment
 recording starts, whether or not it ever produces text.
 
-**Target** — the destination of an attempt's text: an agterm **session id** plus a **pane**. See §5
-for how each half is determined and how they differ in accuracy.
+**Target** — the destination of an attempt's text, and one of exactly two kinds:
+- an **agterm pane**: a **session id** plus a **pane**. See §5 for how each half is determined and
+  how they differ in accuracy;
+- a **focused field** (D31): the focused text field of another application, named by that
+  application's **bundle identifier** (an application may have none), its **name** and its **pid**.
+  The accessibility element itself is held by the daemon beside the attempt and never leaves it —
+  not onto the wire, not into the record.
+
+Either kind is captured at the start of an attempt, re-validated before delivery, and never re-aimed
+at whatever has focus instead (D4). What that guarantees for a field is narrower than for a pane,
+and §5 says exactly how.
 
 ### The text pipeline
 
@@ -90,9 +108,9 @@ filter failed or timed out, the dictionary would not load. Some processing failu
 by falling back to an earlier stage (a failed filter falls back to **replaced**); others end the
 attempt without injection.
 
-**Delivery failure** — **final** existed and injection did not complete: the target was gone, or
-`session type` failed. Text is preserved (D17); it is never re-aimed (D4) and never retried
-automatically.
+**Delivery failure** — **final** existed and injection did not complete: the target was gone,
+`session type` failed, or posting keystrokes into a focused field was refused or stopped part-way
+(D32). Text is preserved (D17); it is never re-aimed (D4) and never retried automatically.
 
 "Fault" alone always means capture fault. A failing filter is not a fault.
 
@@ -133,6 +151,15 @@ Wandering to another session mid-sentence must not redirect the text. If the tar
 text is ready, that is a delivery failure: notify, preserve the text, and do **not** aim at whatever
 has focus now, because that is somebody else's agent.
 
+**For a focused-field target (D31) the guarantee is narrower, and it is stated rather than
+over-claimed.** Delivery posts keystrokes to the captured **process** (D32), which pins the
+application and not the element inside it: focus can move from the VS Code editor to its terminal
+between the last check and the moment the application handles an event. So for a field D4 promises
+three things and no fourth: text never goes to **another application**; it never goes to a field
+that **failed re-validation** immediately before the first keystroke (§5); and a move of focus
+**inside the same application during delivery is not detected**. The last is a limit of the
+mechanism, not a decision to accept a substitution, and §7 carries it as a row of its own.
+
 **D5 — Two triggers: keymap chords that toggle, and one held key that dictates while it is down.**
 The chords are `keymap.conf`'s `command "<name>" <chord> <shell...>`, which needs **no Accessibility
 grant and no global event monitor**. What that mechanism cannot express is press-and-hold: it fires
@@ -160,7 +187,17 @@ stop and **deliver** a dictation they are still speaking, into a pane they had n
 Right Command is not free of collisions and was chosen with them in view. `⌘V`, `⌘K` and `⌘T` are
 ordinary presses that D21's floor discards; `⌘Tab` is the one gesture that holds it past the floor,
 and held with the right hand inside agterm it costs an attempt with no text in it — never an
-injection somewhere else, because D22 read frontmost at the press.
+injection somewhere else, because D22 read frontmost at the press. Outside agterm, with
+`--focused-fields` on, the same `⌘Tab` starts an attempt at the floor and is then cancelled silently
+because the hold switched the application (D31).
+
+**"No permission" became "no permission unless you ask for this" (D31).** Everything above still
+holds for the chords and for the hold key in agterm. Posting keystrokes into **another** process is
+different in kind: macOS silently discards them without the Accessibility grant (F11). That grant is
+asked for only by `--focused-fields`. **Without the option the daemon calls no accessibility API and
+no event-posting API at all**, so no permission prompt can ever appear; with it, the daemon asks for
+Accessibility beside the microphone, and never for Input Monitoring, because it still reads no key
+stream (invariant 11).
 
 **D6 — Session identity comes from the keypress; the pane is resolved from live focus.**
 The installed agterm build does not export `$AGT_PANE` (F3), so the pane cannot come from the
@@ -217,6 +254,15 @@ microphone dot is independent confirmation that capture is real. **The sound and
 after capture confirms it is running** — announcing at keypress trains the user to speak before
 audio flows and lose the first syllable every time.
 
+**A focused-field target has no indicator (D31), so its feedback is sounds and notifications.** The
+daemon plays `Pop`, `Tink` and `Basso` through `NSSound`, which plays from the LaunchAgent with no
+`NSApplication` (F11), and notifies through `osascript`, which is shown from the LaunchAgent — and
+**not while a Focus mode is on** (F11). Under a Focus mode the sound is therefore the only signal
+that reaches the user outside agterm, and every refusal row of §7 for a field is heard rather than
+read. The ordering rule is the same rule: `Pop` fires after capture confirms, never at the press,
+and on this path the press is already the floor later (D21). The menu-bar strip (D27) is unchanged
+and stays optional; it names the application instead of a session.
+
 **D14 — Audio lives in memory. None of `acta`'s crash-safety machinery is reused.**
 Ten minutes at 16 kHz mono float is ~38 MB. Losing an utterance costs one keypress, not a meeting,
 so there is no segmentation, no disk journal and no recovery pass for *audio*. Recovery of *text* is
@@ -266,7 +312,18 @@ attempt dies with no text, no injection and no sound. The floor is **not** a del
 begins: waiting it out would spend 300 ms of F4's budget on every real dictation in order to defend
 against a case that produces no text anyway.
 
-**D22 — The hold key does nothing unless agterm is the frontmost application.**
+**Except on one path, where it is (D31).** On the focused-field path nothing is sent until the hold
+has outlasted the floor. In agterm a short combination costs a microphone opened for a moment and an
+`aborted` line; in every other application, with the option on, the same shortcut would also read
+accessibility under the handler lock and — untrusted or in front of a password field — post a
+refusal notification, on every right-hand `⌘C`, `⌘V` and `⌘S` the user types all day. So there the
+floor is a delay before recording, and its price is paid knowingly: `Pop` arrives later by the
+floor, and speech is not lost because D13 already makes the user wait for `Pop`. The agterm path
+keeps its key-down start.
+
+**D22 — The hold key does nothing unless agterm is the frontmost application.** *(Amended by D31:
+with `--focused-fields` on, the prohibition becomes a routing table, and "another application" is
+a place a hold can go. With the option off, every word below stands.)*
 A chord carries `$AGT_SESSION_ID` because agterm expanded it at the keypress; a global key carries
 nothing, so the session has to come from live focus — and live focus only means something while the
 user is looking at agterm. Holding the key in a browser would otherwise aim a dictation at whichever
@@ -409,7 +466,8 @@ a TCC anchor; it never covered a second bundle that opens no microphone, which i
 preference.** Invariant 11 is enforced by reading the built `Dicta` binary for `CGEventTapCreate`,
 `CGEventTapEnable`, `IOHIDManager` and `_OBJC_CLASS_$_NSEvent`, and a SwiftUI status item drags the
 last of those in unavoidably — the gate exists so macOS never starts demanding Input Monitoring for
-a tool that asks for no permission at all, and a menu is a bad reason to weaken it. F6 and F8a were
+a tool that asks for no permission at all (none unless `--focused-fields` asks for Accessibility,
+D31), and a menu is a bad reason to weaken it. F6 and F8a were
 measured in a process with **no `NSApplication`**, and D22's frontmost check rests on both;
 introducing one changes the shape those measurements describe. And the smallest daemon is the one
 whose grant is easiest to reason about.
@@ -423,6 +481,12 @@ There is no "send this again" anywhere in it. Recovery of text that did not land
 and the user pastes where they meant to. A target is captured by a trigger and by nothing else
 (D4, D6): a click carries no `$AGT_SESSION_ID`, so a UI that aimed text somewhere would be
 performing exactly the substitution D4 forbids, with a friendlier button on it.
+
+**Nor does it post an event or touch accessibility (D31, invariant 14).** Keystrokes into another
+application are the daemon's alone, under the daemon's grant. A menu-bar bundle that could post them
+would be a second process asking for Accessibility — the grant fractured the way D11 refuses to
+fracture the microphone's — and a button that typed into "the focused field" would be aiming at
+whatever the click left in front, which is D4's substitution again.
 
 **The structural half, which is what makes this hold without vigilance:** the UI acts on `final` and
 only ever displays `recognised`. A row whose `final` is empty has nothing to give, so a cancelled
@@ -479,13 +543,191 @@ A live attempt already owns a target, captured by the trigger that began it and 
 (D4), so ending it from a window decides nothing about where the words go. Starting one from a
 window would decide exactly that, and has nothing to decide it with.
 
-D22 makes the same point from the other side: the hold key does nothing unless agterm is frontmost,
-and a focused dicta panel is not agterm. So the panel is silent ground by construction — **the UI is
-where you go between dictations, not during one.** That is accepted rather than worked around; the
-menu-bar glyph, which needs no focus, is what carries the during.
+**The panel is silent ground — nothing is ever delivered into it — and the reason is F11, not a
+routing rule.** This paragraph used to derive it from D22: "a focused dicta panel is not agterm".
+F11 measured the premise and it is false: opening the panel does **not** make DictaMenu frontmost,
+and the application under it stays frontmost. So a hold with the panel open goes where it would have
+gone with the panel closed — to agterm's pane over agterm, and, with `--focused-fields` on, to the
+focused field of the application under the panel — and never into the panel itself. D31 therefore
+gives dicta's own bundles no row, and no other application (acta included) an exemption either way.
+**The UI is still where you go between dictations, not during one**; the menu-bar glyph, which needs
+no focus, is what carries the during.
 
 The glyph obeys D13 in full: it lights when capture confirms it is running, never at the keypress.
 It is driven by the same transitions as the agterm indicator, so the two cannot disagree.
+
+**D31 — The focused text field of any application is a second kind of target, and it is opt-in.**
+A user outside this project asked to dictate into VS Code — its editor and its integrated terminal —
+which D22 and §13 both refused. The user decided on 2026-09-12: **any focused field in any
+application**, not a VS Code extension and not an allow-list; **agterm optional**, so the daemon
+starts and dictates on a machine without it; **opt-in**, behind `--focused-fields`; and **agterm
+frontmost always takes the agterm path**, because it is more precise (session plus pane), it has the
+indicator, and it needs no grant.
+
+**Opt-in, and what off means.** The option is off by default. Off, the daemon calls no accessibility
+and no event-posting API — not a check that answers "no", no call at all — so no permission prompt
+can appear, a missing `agtermctl` stays fatal at start-up because nothing could be delivered, and
+every agterm behaviour is exactly what it was. On, the daemon needs the Accessibility grant (D5,
+F11), starts without `agtermctl` (logging the fact), and refuses a chord, or the hold key in front of
+agterm, with a reason naming `agtermctl` when it is absent.
+
+**Routing at the press.** D22's prohibition becomes a table. The facts are read at the key-down
+edge, from the one observer-backed frontmost source F8a requires: bundle identifier, pid and name, as
+one value from one activation.
+
+| frontmost at the press | `--focused-fields` off | `--focused-fields` on |
+|---|---|---|
+| agterm | agterm path, start on key-down (unchanged) | agterm path, start on key-down (unchanged) |
+| any other application | silent no-op (D22, unchanged) | focused-field path, evaluated only once the hold outlasts the floor |
+
+There is **no row for dicta's own bundles**. F11 measured that the menu-bar panel never becomes
+frontmost, so a hold with it open routes to whatever is under it (D30), and a rule naming dicta's
+bundle would be a rule about a state that does not occur. No other application — acta included —
+is exempted either way.
+
+**The start waits for the floor, and the reason was confirmed by the user on 2026-09-13 with F11's
+durations in hand.** The default keys are right Control and right Command, and a source that sees
+modifier state cannot tell a dictation from a shortcut until the floor has passed (D21). Starting on
+key-down outside agterm would open the microphone, read accessibility, write an `aborted` line and —
+untrusted or in front of a password field — post a notification for every right-hand `⌘C` and `⌘V` in
+every application. So on this path **nothing is sent and nothing is refused until the hold has
+outlasted the floor**:
+- a combination **released before the floor costs nothing at all** — no accessibility call, no
+  microphone, no record line, no sound, no notification. F11 measured right-hand `⌘C`, `⌘V`, `⌘Z`
+  and `⌘S` at 138–162 ms, all under the floor;
+- a combination **held past the floor still starts an attempt**, because nothing else can tell them
+  apart. F11 measured `⌘Tab` with a window being chosen at 490–675 ms, never under it;
+- the floor is an **edge from the poll loop, never a sleep in the sender**. The sender handles edges
+  serially and can be seconds behind; sleeping there could not see a release already queued behind
+  it, and timing the hold when the edge is finally handled would turn a short, queued shortcut into a
+  long hold. The poll loop emits a threshold edge from **sampled** time while the owning key is still
+  down, every edge carries its hold's generation, and the sender starts only if the poll loop's own
+  record says that generation is **still held right now** — queue order is history, not liveness;
+- the floor is applied once: an attempt started at the threshold has already passed it.
+
+**An attempt whose hold switched the application is cancelled silently** (the user's decision,
+2026-09-13). `⌘Tab` activates the chosen application when `⌘` is released, so the check is made at the
+release: if the frontmost pid differs from the one captured at the press — changed during the hold,
+or within a short settle window after the release — the attempt ends in `abort`, with no text, no
+sound and no notification, like D21's floor, rather than `stop`. The settle window is added to the
+release on this path only. Its length is not yet measured: F11 did not time the activation
+notification after a `⌘Tab` release.
+
+**At the threshold, in order.** The trigger checks the grant (missing: a refusal with a
+notification) and whether the frontmost pid is still the one captured at the press (not: a silent
+no-op, because the user switched away), then asks the daemon to start with the field target. The
+daemon refuses **before capture**, so the microphone never opens, when Secure Input is enabled by
+**any** process, when the focused element cannot be read, when the element's pid is not the
+request's pid, or when the element is not eligible. `IsSecureEventInputEnabled` is system-wide: it is
+a reason to refuse, not a password-field detector, and nothing here promises that every password
+field is refused by it — the eligibility rule is what names the password field.
+
+**Eligibility: a focused element is not necessarily a text field.** Plain characters posted to a
+focused button, list or page can act as commands or type-to-select, and §1 excludes voice control. So
+admission is a content-free classification of accessibility **metadata**, from F11's table:
+- **eligible**: role `AXTextArea` or `AXTextField`, **and** a settable value, **and** a subrole other
+  than `AXSecureTextField`;
+- **ineligible**: any other role, a value that is not settable, or the secure subrole — which covers
+  F11's `AXGroup` tree, its `AXWebArea` page, and the password field named without reading it;
+- **unknown**: the role or the settability could not be read. **Unknown is refused**, never promoted
+  to eligible.
+
+`AXSelectedTextRange` is not an input: F11 found Chromium puts it on a tree, so it discriminates
+nothing. Other text roles (`AXComboBox`, `AXSearchField`) were not measured and stay ineligible until
+a human item shows them. **The daemon reads identity, never content**: never a field's value, never
+its selected text (invariant 14).
+
+**Where focus is read, and what dicta does to another application to read it.** The focused element
+is read through the application element of the frontmost pid, never the system-wide element, whose
+focused-element read failed in every application at every timeout (F11). Electron applications —
+VS Code and Slack — expose no focused element until `AXManualAccessibility` is set on the
+application (F11). **Decided by the user on 2026-09-13:** when the application answers with no
+element, dicta sets `AXManualAccessibility` on that application once, re-reads once, and refuses as
+unknown if the element is still absent. **That is a side effect on another application, and it is
+stated rather than hidden**: the attribute stays set for the life of that process, whether or not the
+dictation went ahead. F11 saw no visible change in VS Code in a short check; its performance cost,
+and how long Electron takes to build its tree after it is set, were not measured.
+
+A hung application can block an accessibility call for seconds, so the messaging timeout is set
+once, process-globally, at 0.25 s — F11's slowest successful read was 44 ms. The calls are
+serialised inside the daemon, never made on the poll thread and never hopped to the main run loop.
+
+**Identity and accuracy.** The target carries the bundle identifier, the application name and the
+pid, on the wire and in the record (§9); the element stays in the daemon. Its accuracy is focus read
+shortly after the floor, looser than §5's pane, and D4's guarantee for it is the narrower one D4
+states.
+
+**Chords stay agterm-only, and raw is unreachable outside agterm.** The chords fire through agterm's
+keymap and nowhere else. Outside agterm the hold key is the whole interface; it always stops in
+clean (D3), so `raw` cannot be reached there. Accepted for v1.
+
+**Feedback outside agterm is sounds and notifications (D13)**, and under a Focus mode the
+notification is suppressed and the sound is the only signal (F11). That limit reaches every refusal
+row of §7 for a field: under a Focus mode, "notify" means `Basso` and the record.
+
+**D32 — Delivery into a focused field is Unicode keystrokes posted to the captured pid.**
+Each chunk of **final** is a key-down and a key-up carrying the string
+(`CGEventKeyboardSetUnicodeString`), with keycode 0, with the event flags explicitly empty so a
+modifier the user is still holding cannot combine with them, from a private-state event source,
+posted with `postToPid` to the pid captured at the start (F11: identical text in the VS Code editor,
+its terminal, Safari and Telegram; Slack's own rewrites only; keycode 0 not reinterpreted under the
+Russian layout; a physically held Shift or right Command changed nothing).
+
+**Not the pasteboard with a synthetic `⌘V`.** The pasteboard is the user's own recovery channel (D28):
+writing a dictation there destroys whatever they had copied, restoring it afterwards races every
+clipboard manager, and while it sits there the text is readable by every process on the machine and
+captured by every clipboard history. `⌘V` is also a command and not text — the application decides
+what a paste means, and a terminal may warn about or bracket it. **dicta never touches the
+pasteboard on this path.**
+
+**Not `kAXSelectedTextAttribute`.** Writing text through accessibility bypasses the application's
+input handling, and the case asked for is a terminal: the VS Code integrated terminal running Claude
+Code consumes **keystrokes** through a raw-mode reader, not the value of an accessibility attribute.
+Whether any given application routes an accessibility write through its own input path was not
+measured, and a mechanism that works in some fields and silently does nothing in others is the
+failure §1's second property forbids. It would also need write access to another application's
+element, where posting needs only its pid.
+
+**Not the HID tap.** An event posted at the HID level is delivered to whatever is frontmost when the
+event is **processed**, so a per-chunk check could narrow D4's substitution race without ever
+closing it. `postToPid` pins the process. F11 found it sufficient in every application tried, so
+the HID tap was not needed.
+
+**Bounded before anything is posted.** **final** is not bounded upstream — the dictionary can expand
+recognised text and the filter can return anything — and delivery runs inline under the handler
+lock. So **final** is planned into chunks first, packing whole graphemes up to a soft target of 20
+UTF-16 units (F11: no gap and no loss in all six applications), never splitting a grapheme, under two
+hard limits: a maximum number of chunks, and a maximum payload per event of 200 UTF-16 units (F11:
+accepted whole by VS Code; confirmed elsewhere only by a human item). A plan over either limit —
+including a single grapheme longer than one event may carry — is refused **before any event is
+posted**, as a delivery failure that says nothing was inserted, with **final** in the record. The
+planner's own work is bounded too: it counts at most one unit past the limit and stops at the first
+limit exceeded.
+
+**Re-validated immediately before the first event, with nothing slow after it.** The final
+validation checks, in order: a monotonic delivery deadline has not passed; the captured pid is still
+frontmost; the focused element is the same element as at the start (`CFEqual`); its eligibility,
+re-classified from fresh metadata, because a field can stop being editable while the user was
+speaking; Secure Input is off; the grant is still present. Then, because an accessibility call can
+return after the deadline or after the foreground has changed, the deadline and the frontmost pid are
+checked again. Only **definite** answers are called gone — a different element or a different
+frontmost pid is `target-gone`; an accessibility timeout or error, a lost grant, Secure Input, or
+ineligible or unknown metadata says nothing about the field and is a delivery failure that says
+nothing was inserted.
+
+**Stopped part-way, never retried.** Before every chunk after the first, the frontmost pid and the
+deadline are checked again, and either failing ends the delivery as **may be partial**, never
+retried (§7). D20 refuses an abort once delivery has begun, so the deadline is the only thing that
+can stop a delivery that runs long, and it is set below the client's ceiling so the daemon stops
+itself before the client gives up. Pacing between chunks is not needed for correctness (F11) and goes
+through a synchronous seam rather than a thread per chunk.
+
+**What this mechanism cannot see, stated rather than hidden.** `CGEventPost` has no error channel,
+and an accessibility read-back is not in v1: an application that drops or rewrites posted events does
+so silently (Slack's curly quotes, F11). A move of focus inside the same application during delivery
+is not detected (D4). A delivery that ends mid-word can leave the VS Code editor's autocomplete open,
+so the user's next Return accepts a suggestion, and a long line in a VS Code JavaScript editor stalls
+VS Code for several seconds while it catches up — neither changes the text that arrives (F11).
 
 ---
 
@@ -860,6 +1102,30 @@ Requirements that follow:
   not start (D6).
 - Both halves are re-validated before injection. A target that no longer resolves is a delivery
   failure (§2), never a re-aim (D4).
+- The pane target is parked on disk while an attempt is live, so a daemon that crashed can put out
+  the indicator it left lit. That cleanup applies to agterm targets only: a focused field has no
+  indicator to put out.
+
+### A focused-field target (D31)
+
+A focused field has one half, not two, and it is **not** keypress-accurate either.
+
+- **Captured by the daemon shortly after the floor.** Nothing is read at the press on this path
+  (D21, D31). When the hold outlasts the floor, the trigger sends the frontmost application's pid,
+  bundle identifier and name — captured at the press from the observer-backed frontmost source (F8a),
+  and confirmed unchanged at the threshold — and the daemon reads that application's focused element
+  through its application element (F11). The element must belong to the request's pid and classify
+  as eligible, or nothing starts.
+- **Re-validated immediately before the first keystroke** (D32): the same pid frontmost, the same
+  element (`CFEqual`), still eligible on fresh metadata, Secure Input off, the grant present, and the
+  deadline not passed — then the deadline and the frontmost pid once more after every accessibility
+  call has returned. A field that fails a definite check is `target-gone`; one that cannot be checked
+  is a delivery failure that says nothing was inserted. Neither is ever re-aimed.
+- **During delivery only the application is watched.** Before each chunk after the first, the
+  frontmost pid and the deadline are checked. Keystrokes are posted to the pid, which pins the
+  application and not the element, so **a move of focus inside the same application during delivery
+  is not detected**, and neither is the operating system's own dispatch race inside one application.
+  That is D4's narrower guarantee for a field, and §7 carries it as a row.
 
 ---
 
@@ -868,14 +1134,18 @@ Requirements that follow:
 | trigger | idle | during an attempt |
 |---|---|---|
 | **right Control or right Command, held** | start, and record while it is down | release → clean → inject |
+| **the same key, held in another application, with `--focused-fields` on** (D31) | start once the hold outlasts the floor, into that application's focused field | release → clean → type into the field; a release that switched the application aborts silently |
 | `⌃⌥D` | start | stop → clean → inject |
 | `⌃⌥⇧D` | start | stop → raw → inject |
 | `⌃⌥X` | — | abort |
 
 The three chords are keymap lines passing `$AGT_SESSION_ID` and `$AGT_SOCKET` to a single toggle
 verb (D7). The held key is a loop inside the daemon (D5): it resolves its own target from live focus
-(§5), refuses to start unless agterm is frontmost (D22), and names its own attempt on the way out
-(D23). Every start path is otherwise identical, and the mode belongs to whatever stops (D3).
+(§5), refuses to start unless agterm is frontmost (D22) — or, with `--focused-fields` on, routes a
+hold in any other application to its focused field once the floor has passed (D31) — and names its
+own attempt on the way out (D23). The chords exist only inside agterm, so outside it the held key is
+the whole interface and `raw` is unreachable. Every start path is otherwise identical, and the mode
+belongs to whatever stops (D3).
 
 ### States and what each command does in each
 
@@ -907,12 +1177,12 @@ Rules that fall out of the table and must hold regardless of how it is read:
 
 ### Feedback
 
-| state | indicator | sound | menu bar (D27) |
-|---|---|---|---|
-| listening | `active --blink`, red | `Pop` | red glyph **and a running clock**, amber inside D15's last minute |
-| working | `active`, amber | — | amber glyph, no clock |
-| done | `completed --auto-reset` | `Tink` | back to the quiet glyph |
-| empty, faulted or refused | `blocked` + notification with the reason | `Basso` | back to the quiet glyph; the reason is in the panel and in the record, not in the strip |
+| state | indicator | sound | focused field (D31) | menu bar (D27) |
+|---|---|---|---|---|
+| listening | `active --blink`, red | `Pop` | no indicator; `Pop` only | red glyph **and a running clock**, amber inside D15's last minute |
+| working | `active`, amber | — | nothing | amber glyph, no clock |
+| done | `completed --auto-reset` | `Tink` | `Tink` | back to the quiet glyph |
+| empty, faulted or refused | `blocked` + notification with the reason | `Basso` | `Basso` + a notification, which a Focus mode suppresses (F11) | back to the quiet glyph; the reason is in the panel and in the record, not in the strip |
 
 **The menu-bar item cannot disagree with the indicator, and that is structural rather than
 careful.** Both are driven by the same transition in the same daemon: the indicator by the effects
@@ -968,12 +1238,26 @@ Every row states: no injection unless said otherwise, a visible reason, and what
 | daemon crashed leaving a stale indicator | — | reset the known target's status when the daemon next starts |
 | second daemon instance attempted | — | refuse to start; a live socket means a live daemon |
 | abort during injection | — | refused (D20) |
-| hold key pressed while agterm is not frontmost | — | silent no-op; no attempt starts, no indicator, no sound (D22) |
+| hold key pressed while agterm is not frontmost, with `--focused-fields` off | — | silent no-op; no attempt starts, no indicator, no sound (D22) |
 | hold shorter than the floor | — | the attempt is aborted rather than stopped: no text, no injection, no sound (D21) |
 | a caller waits for a dictation and nobody speaks | — | no text on stdout, the reason on stderr, and an exit code of its own; nothing is typed and no attempt is invented (D29) |
 | a second caller asks for the next dictation while one is already waiting | — | refused; the first keeps its claim and the second is told why, rather than being handed somebody else's sentence (D29) |
 | hold key pressed while agterm's own picker is open | — | refused **before** capture, so the microphone never opens; the reason names the picker (D24) |
 | hold key released after a chord already ended the attempt | — | no-op naming a spent attempt (D23); silent |
+| a hold on the focused-field path released before the floor | — | nothing is sent at all: no accessibility call, no microphone, no record line, no sound, no notification (D21, D31) |
+| a hold on the focused-field path whose release switched the application | — | the attempt is aborted rather than stopped, silently: no text, no injection, no sound, no notification (D31). `⌘Tab` is the case, and the frontmost pid is compared at the release and after a short settle window |
+| a hold outlasts the floor with `--focused-fields` on and no Accessibility grant | — | refused before anything is sent to the daemon, so the microphone never opens; notify, naming the grant. Under a Focus mode the notification is suppressed and `Basso` is the signal (F11) |
+| a hold outlasts the floor while Secure Input is enabled by any process | — | refused **before** capture, with the reason, so no attempt starts. The check is system-wide, so this is not a password-field detector (D31) |
+| the focused element cannot be read when the hold passes the floor | — | refused **before** capture; notify. An application answering with no element first gets `AXManualAccessibility` set once and one re-read (D31), and is refused if it still answers nothing |
+| the focused element is not eligible, or its eligibility is unknown | — | refused **before** capture; notify. Unknown is refused, never treated as eligible, because plain characters posted into a button, a list or a page can act as commands (D31) |
+| final text exceeds the delivery bound | delivery failure | nothing is posted; notify that nothing was inserted; **final** stays in the record for recovery (D32) |
+| the delivery deadline passes mid-delivery | delivery failure | stop posting; notify that the insertion **may be partial**; text preserved; **never retry** (D32) |
+| the focused field is gone before delivery | delivery failure | a different element or a different frontmost pid, answered definitely: `target-gone`; no keystroke; notify; text preserved; never re-aimed (D4) |
+| accessibility cannot answer when the focused field is re-validated | delivery failure | a timeout or an error, a lost grant, Secure Input, or metadata now ineligible or unknown: nothing is posted; notify that nothing was inserted; text preserved. Not `target-gone`, because nothing established that the field is gone |
+| focus moves to another application mid-delivery | delivery failure | stop before the next chunk; notify that the insertion **may be partial**; text preserved; **never retry** |
+| focus moves inside the same application mid-delivery | — | **not detected, and that is stated rather than hidden**: keystrokes are posted to the process, not the element, so the rest of the text lands wherever focus moved inside that application (D4, D32) |
+| the receiving application silently drops or rewrites posted keystrokes | — | **silent by construction**: `CGEventPost` has no error channel and an accessibility read-back is not in v1. The record holds **final** exactly as it was sent, which is what a person compares against |
+| a chord, or the hold key in front of agterm, while `agtermctl` is absent and `--focused-fields` is on | — | refused, with a reason naming `agtermctl`; the focused-field path is unaffected (D31) |
 | the active session cannot be read from the tree when the hold key goes down | — | nothing starts; notify, because the key did mean something and produced nothing |
 | the hold trigger is not armed, or its source reads nothing | — | the chords are unaffected and remain the whole interface. **This failure is silent by construction and that is stated rather than hidden**: `CGEventSource.flagsState` returns a word of flags and has no error channel, so "no modifier is down" and "this is not working" are the same answer. What exists instead is a startup line naming the armed key, and `--no-hold` to turn it off deliberately |
 | the user aborts after speaking | — | nothing is injected and nothing is announced as delivered; the words reach the record and only the record (D26) |
@@ -995,7 +1279,10 @@ Each must hold on **every** path, and each is worth a test that fails if it stop
    to **replaced** after a filter failure. It is the last stage, so no later stage can reintroduce a
    newline. *(It does not apply to reading text back out of the record, which is not injection.)*
 2. **final is a single line**, containing no `\n`, `\r`, `U+0085`, `U+2028` or `U+2029`.
-3. **No injection into an unvalidated or substituted target** (D4, §5).
+3. **No injection into an unvalidated or substituted target** (D4, §5). For a focused-field target
+   the guarantee is D4's narrower one, and no more: never another application, never a field that
+   failed re-validation, and a move of focus inside the same application during delivery is not
+   detected.
 4. **Nothing is announced to the user before capture confirms it is running** (D13).
 5. **A duplicated stop never delivers twice.**
 6. **A capture fault never injects** (D16) — including the duration cap (D15).
@@ -1019,7 +1306,11 @@ Each must hold on **every** path, and each is worth a test that fails if it stop
     `Scripts/linkage.sh` is the only thing that can fail on it — by name, on `CGEventTapCreate`,
     `CGEventTapEnable`, `IOHIDManager` and `_OBJC_CLASS_$_NSEvent`.
 12. **A hold under D21's floor never injects.**
-13. **The hold trigger never starts an attempt while another application is frontmost** (D22).
+13. **The hold trigger never starts an attempt while another application is frontmost, unless `--focused-fields` routes the hold to that application's focused field** (D22, D31).
+14. **Keystrokes are posted into another application only when `--focused-fields` is on, only into a focused-field target that re-validated immediately before delivery, never by `dictactl` or the menu-bar UI; and the daemon never reads a field's value or selected text**
+    (D31, D32). Posting is the one thing the option switches on that a person cannot see being
+    refused, and reading a field would make dicta a reader of every password manager and chat it was
+    pointed at.
 
 ---
 
@@ -1036,7 +1327,7 @@ One append-only local file, one entry per attempt, written before injection is a
 | `recognised` | verbatim recogniser output; empty if recognition never happened |
 | `final` | what was injected, or would have been; empty if none was produced |
 | `rules` | ids of replacement rules that fired, and the dictionary's version or mtime |
-| `target` | session id and pane |
+| `target` | one of two shapes (§2). An agterm pane is `{"pane": …, "sessionID": …}`, exactly the flat object it has always been, so every existing line still decodes. A focused field (D31) is `{"field": {"appName": …, "bundleID": …, "pid": …}}`, with `bundleID` absent for an application that has none. An object carrying neither shape is not a target, and is never guessed at |
 | `error` | the reason shown to the user, when there was one |
 | `recognised` on a cancelled attempt | present, and `final` empty: the words were spoken but never delivered (D26) |
 | `speechStartedAt`, `speechEndedAt` | when the microphone actually began and stopped collecting — absent for an attempt that never had audio (D25) |
@@ -1044,6 +1335,11 @@ One append-only local file, one entry per attempt, written before injection is a
 
 Reading an entry back is not injection, so invariant 1 does not apply to it: the client prints
 `final` by default and `recognised` verbatim on request.
+
+**Compatibility of the target shape is one-way.** A daemon that knows both shapes reads every line an
+older one wrote. An older daemon reading a newer record skips the focused-field lines it cannot
+decode, so after a rollback it can reuse a field attempt's id. That is accepted: a rollback is a
+deliberate act, and nothing a newer daemon wrote is lost from the file.
 
 **`recognised` is the recogniser's output byte for byte — before the dictionary, before the filter,
 before any tidying — and TWO separate things depend on that.** Both are written down because a rule
@@ -1142,6 +1438,11 @@ Each with the observation that counts as a pass:
   a glyph checked on purpose cannot be told from one that is failing, since both end up red. The
   pass is noticing it change while working on something else, including while another application
   holds the microphone and the system's own indicator is lit for a reason of its own.
+- **Dictation into other applications** (D31, D32). The VS Code editor and integrated terminal,
+  Slack and Safari each receive exactly the text the record calls `final`; the grant is asked for
+  once and its revocation stops delivery; a password field, a button or a tree receives nothing; a
+  right-hand `⌘` shortcut released before the floor leaves no trace at all; and a machine with no
+  agterm dictates.
 - **The panel is a recovery path and not only a display** (D28). After a dictation that went
   nowhere, the words are on the clipboard without a terminal; after one that was cancelled, they are
   legible and there is nothing to copy, which is the same rule seen from its other side.
@@ -1168,8 +1469,9 @@ provided the behaviour and budgets still hold.
   here, since client and daemon ship together and are always in lockstep.
 - The keymap invokes the client by absolute path and not through a login shell, which would add tens
   of milliseconds of profile loading to every keypress.
-- The injection seam is one method. A second injection backend may arrive; generalising before it
-  exists buys configuration surface and nothing else.
+- The injection seam is one method. The second backend arrived with D32 and the seam stayed one
+  method: the target's kind decides which adapter receives the text, and neither adapter accepts the
+  other's target.
 
 ---
 
@@ -1177,8 +1479,8 @@ provided the behaviour and budgets still hold.
 
 Streaming recognition and live partial text (D1, D13). Silence-based auto-stop (D2). Multi-line
 injection (D8). A settings window or a dock TILE — the daemon has neither, and neither does the
-menu-bar bundle (D11, D27). Any injection target other than agterm, and any injection at all from
-the UI (D28). Cloud recognition. `acta`'s crash-safety machinery for audio (D14). Automatic retry of
+menu-bar bundle (D11, D27). Any injection at all from the UI (D28). Chords and `raw` outside agterm
+(D31). An accessibility read-back of delivered text (D32). Cloud recognition. `acta`'s crash-safety machinery for audio (D14). Automatic retry of
 a failed injection (§7).
 
 **"A dock icon" on this list means a dock TILE, and both bundles now carry ARTWORK.** The two were

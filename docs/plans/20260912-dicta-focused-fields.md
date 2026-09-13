@@ -682,9 +682,9 @@ about `returned`.
 - Modify: `docs/manual-checklist.md`
 - Modify: `Sources/DictaTestRunner/ChecklistTests.swift`
 
-- [ ] write the red test first: `theInvariantsAreStillTen` becomes `theInvariantsAreStillFourteen`,
+- [x] write the red test first: `theInvariantsAreStillTen` becomes `theInvariantsAreStillFourteen`,
   with its name updated and `Array(1...14)`. Watch it fail.
-- [ ] add D31 (the focused field as a second target kind), covering:
+- [x] add D31 (the focused field as a second target kind), covering:
   - opt-in;
   - the routing table (no row for dicta's own bundles: F11 shows the panel never becomes frontmost);
   - the silent cancel when the hold switched the application;
@@ -695,12 +695,12 @@ about `returned`.
     user on 2026-09-13), and its side effect on other applications;
   - F11's feedback limit: under a Focus mode the notification is suppressed and the sound is the only
     signal outside agterm (D13 and the §7 refusal rows say so).
-- [ ] add D32 (Unicode keystrokes to the pid), covering:
+- [x] add D32 (Unicode keystrokes to the pid), covering:
   - why not the pasteboard with ⌘V;
   - why not `kAXSelectedTextAttribute`;
   - why not the HID tap;
   - the delivery bound and deadline.
-- [ ] amend:
+- [x] amend:
   - D4 and invariant 3 (the focused-field limitation);
   - D5 (the permission promise becomes conditional);
   - D13 (feedback without an indicator);
@@ -713,8 +713,8 @@ about `returned`.
   - §6 (interaction and feedback columns);
   - §13 (remove "any injection target other than agterm", keep "any injection from the UI");
   - invariant 13 and its §7 row, reworded verbatim as in Technical Details.
-- [ ] add invariant 14 and every new §7 row from Technical Details.
-- [ ] in `docs/manual-checklist.md`, write the H items now, numbered H24 onwards:
+- [x] add invariant 14 and every new §7 row from Technical Details.
+- [x] in `docs/manual-checklist.md`, write the H items now, numbered H24 onwards:
   - the VS Code editor;
   - the VS Code integrated terminal;
   - Slack;
@@ -725,13 +725,27 @@ about `returned`.
   - switching apps mid-delivery;
   - a right-hand ⌘ combination released before the floor costing nothing;
   - a machine without agterm.
-- [ ] add the audit lines for:
+- [x] add the audit lines for:
   - invariants 3, 13 and 14;
   - every new or reworded §7 row;
   - H19.
 
   Each cites **only H items or tests that already exist**. Later tasks add their own test citations.
-- [ ] run tests. The audit and invariant tests must be green before Task 3.
+- [x] run tests. The audit and invariant tests must be green before Task 3.
+
+- ➕ **Outcome (2026-09-13).** D31 and D32 are in SPEC.md, with every amendment listed above,
+  invariant 14 and fourteen new §7 rows (plus the reworded D22 row). The checklist gained H24–H34.
+  - **H items beyond the ten listed:** H34 (the delivery bound), because the bound's §7 row needed
+    something to cite before Task 9's test exists; Telegram is folded into H27, and the 200-unit
+    event check into H25–H27.
+  - **H19 was rewritten, not just cited.** It expected an open panel to silence the hold key, which
+    F11 contradicts (the panel never becomes frontmost). D30's reasoning was corrected the same way.
+  - **Rows no person can reach:** "the delivery deadline passes mid-delivery" cites H31 (b), the
+    other road to `mayBePartial`, and says so; Task 9 adds the real test.
+  - **Stated gaps in invariant 14's audit line:** nothing holds "never by `dictactl` or the menu bar"
+    until Task 11, and nothing holds "never reads a value" yet.
+  - Tests: 583 in 34 suites green under Xcode 26.6; lint clean. The audit was probed by renaming
+    a new §7 line and invariant 14 in the checklist: 3 issues, then restored.
 
 ### Task 3: `Target` becomes a sum, and old records still decode
 

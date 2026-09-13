@@ -28,7 +28,7 @@ Each invariant must hold on **every** path. "Checked by" names the assertion tha
 |---|---|---|
 | 1 | The sanitiser runs immediately before injection, on every path | `test: the result never contains a line break of any kind`, `test: the clean path delivers exactly the sanitised canned transcript`, `test: raw mode skips the filter and nothing else`, `test: a failing filter falls back to replaced rather than costing the user their words`, `test: the dictionary runs before the filter and before the sanitiser`, `test: a replacement containing a line break survives here and is caught by the sanitiser` |
 | 2 | final is a single line | `test: every line break is removed`, `test: the result never contains a line break of any kind`, `test: isInjectable rejects exactly what the sanitiser removes`, `test: the canned hostile transcript arrives as one line with single spaces` |
-| 3 | No injection into an unvalidated or substituted target | `test: the pane is re-validated before the first keystroke, not after`, `test: a closed split is a delivery failure, never a fallback to the surviving pane`, `test: focus having moved is not a reason to follow it`, `test: a target gone at injection time is reported and never re-aimed`, `test: the target captured at start is the one carried to injection` |
+| 3 | No injection into an unvalidated or substituted target | `test: the pane is re-validated before the first keystroke, not after`, `test: a closed split is a delivery failure, never a fallback to the surviving pane`, `test: focus having moved is not a reason to follow it`, `test: a target gone at injection time is reported and never re-aimed`, `test: the target captured at start is the one carried to injection`. For a focused-field target, where D4's guarantee is the narrower one the invariant now states: **H31** (a), a field that changed before delivery is `target-gone` and never re-aimed, and (b), no character ever reaches the application switched to. The injector's own tests are cited here as they are written |
 | 4 | Nothing is announced to the user before capture confirms it is running | `test: nothing is announced before capture confirms it is running`, `test: the start chord announces nothing at all until capture confirms`, `test: a warming attempt that is never confirmed announces nothing, ever`, `test: capture confirming after an abort never announces listening` |
 | 5 | A duplicated stop never delivers twice. | `test: a duplicated stop is silent and never delivers twice`, `test: draining + stop: quiet no-op, never a second delivery`, `test: processing + stop: quiet no-op`, `test: injecting + stop: quiet no-op`, `test: a stop naming a spent attempt is a silent no-op` |
 | 6 | A capture fault never injects | `test: a capture fault discards and never injects, in every state it can reach`, `test: a fault while recording discards, injects nothing, and is worded as hardware`, `test: ten minutes of recording ends the attempt, injects nothing, and says why`, `test: a cap firing while the text is being processed still records the text it produced`, `test: a cap firing while the recogniser is still running does not lose the text it returns` |
@@ -38,7 +38,8 @@ Each invariant must hold on **every** path. "Checked by" names the assertion tha
 | 10 | Recognised text, once produced, always reaches the record | `test: the entry is on disk before the first keystroke is attempted`, `test: a delivery failure supersedes the saved line rather than adding an attempt`, `test: a failing append still delivers the text, then says recovery is unavailable`, `test: every attempt leaves exactly one entry, whatever ended it`, `test: a cap firing while the recogniser is still running does not lose the text it returns`, `test: an abort while the recogniser is running keeps the text but never delivers it` |
 | 11 | The hold trigger reads modifier state, and no bundle dicta ships reads a key stream | **`Scripts/linkage.sh`**, run first by `Scripts/test.sh`, plus `test: linkage.sh scores the menu, and forbids it the capture stack`. The second invariant no assertion can reach, and for the same reason as 8: it is a property of WHICH API the built binary calls, not of what it does. `nm` on `Dicta` **and on `DictaMenu`** must name no `CGEventTapCreate`, no `CGEventTapEnable`, no `IOHIDManager` and no `_OBJC_CLASS_$_NSEvent` — the four shapes of "read a keystroke", every one of which would make macOS demand Input Monitoring or Accessibility (D5, F6). The menu is the binary where this would be lost by accident, since a status item watching for a shortcut is an ordinary thing to write; the check was probed there against a deliberately-monitoring build, which shows `U _OBJC_CLASS_$_NSEvent` and the selector `addGlobalMonitorForEventsMatchingMask:handler:`, and on the daemon by adding a `CGEvent.tapCreate` call to `SystemModifiers.flags()` and watching the check fail on `U _CGEventTapCreate`, then reverting both. |
 | 12 | A hold under D21's floor never injects | `test: a hold under the floor discards rather than delivering`, `test: a hold under the floor aborts and never stops`, `test: the floor separates the two populations it was measured against, and only those`, `test: a gesture that never received an attempt id can never end one` |
-| 13 | The hold trigger never starts an attempt while another application is frontmost | `test: the hold key does nothing at all while another application is frontmost`, `test: focus moving to another application mid-hold does not stop the delivery` |
+| 13 | The hold trigger never starts an attempt while another application is frontmost, unless `--focused-fields` routes the hold to that application's focused field | `test: the hold key does nothing at all while another application is frontmost`, which is the option-off half, and `test: focus moving to another application mid-hold does not stop the delivery`. End to end with the option off, **H11** (c). With it on, the route is the only exception: **H32** (a) shows a combination released before the floor starting nothing, and (b) shows a hold that switched the application delivering nothing. **H19** is the panel, which routes nowhere of its own because it never becomes frontmost (F11, D30). The routing table's tests are cited here as they are written |
+| 14 | Keystrokes are posted into another application only when `--focused-fields` is on, only into a focused-field target that re-validated immediately before delivery, never by `dictactl` or the menu-bar UI; and the daemon never reads a field's value or selected text | Only human items yet, and each clause separately. **Only when on**: **H11** (c), with the option off, a hold in Safari does nothing at all. **Only into a target that re-validated**: **H28** (a) and (d), where a missing or revoked grant posts nothing, **H29** for Secure Input, **H30** for a thing that is not a text field, **H31** for a field that changed, and **H34** for a text over the bound. **Never by the client or the menu bar**: not held by anything yet. The linkage gate checks neither binary for event posting or accessibility symbols until the plan's Task 11 adds them. **Never reads a value**: no person can see an attribute read, and no test holds it yet. Both gaps are stated here so that they are closed rather than forgotten |
 
 **No invariant is unaccounted for.** Invariant 8 was the only one with no automated check before
 Task 12; `Scripts/linkage.sh` is what closed it.
@@ -73,10 +74,24 @@ external filter, which this plan deliberately does not build (D9c): the `Filter`
 | abort during injection | `test: injecting + abort: refused (D20)`, `test: abort during injection is refused, because keystrokes cannot be recalled` |
 | a caller waits for a dictation and nobody speaks | `test: a dictate nobody answers gives up with no text rather than waiting for ever`. That the empty result reaches the caller as an exit code rather than as a line of prose on stdout — which would become the user's prompt — is `ClientCommand.writesDataToStdout` and human item **H13** end to end |
 | a second caller asks for the next dictation while one is already waiting | `test: a second caller is refused rather than handed somebody else's sentence`, which asserts both halves: the second is refused, and the first still gets the words |
-| hold key pressed while agterm is not frontmost | `test: the hold key does nothing at all while another application is frontmost`. The assertion is **silence**, not merely "no dictation": the trigger sends nothing and the notifier logs nothing, because a notification here would fire on every right-Control combination typed in a browser. Its opposite number, so that the two are not confused, is `test: a session that cannot be resolved starts nothing and is said out loud` |
+| hold key pressed while agterm is not frontmost, with `--focused-fields` off | `test: the hold key does nothing at all while another application is frontmost`. The assertion is **silence**, not merely "no dictation": the trigger sends nothing and the notifier logs nothing, because a notification here would fire on every right-Control combination typed in a browser. Its opposite number, so that the two are not confused, is `test: a session that cannot be resolved starts nothing and is said out loud` |
 | hold shorter than the floor | `test: a hold under the floor aborts and never stops`, `test: a hold under the floor discards rather than delivering`, `test: the floor separates the two populations it was measured against, and only those`. That the ordinary press this defends against does not even reach the gesture, when it is a combination on the other Control key: `test: a left-Control combination never reaches the daemon` |
 | hold key pressed while agterm's own picker is open | `test: a picker open in the window refuses the dictation rather than typing behind it`, `test: a dictation refused because the picker is open never opens the microphone`. The second is the one that matters: refusing after capture had begun would leave a lit microphone recording for a pane nobody can see. End to end, in the user's own `claude-ask.sh` picker, is **H11** criterion (e) |
 | hold key released after a chord already ended the attempt | `test: the command that ends a hold names the attempt the start returned` is the mechanism (D23); `test: a stop naming a spent attempt is a silent no-op` is the daemon honouring it, and it predates this trigger — which is the point, since the rule was already there and only needed the id carried to it. The mixed gesture end to end is human item **H11** |
+| a hold on the focused-field path released before the floor | **H32** (a): minutes of right-hand shortcuts in VS Code and Safari, scored by `record.jsonl` keeping its line count, with no sound, no notification and no microphone dot |
+| a hold on the focused-field path whose release switched the application | **H32** (b): a right-hand app switch leaves no text anywhere, no sound and no notification. **H31** (b) meets the same rule from the other side, when a switch lands inside the settle window |
+| a hold outlasts the floor with `--focused-fields` on and no Accessibility grant | **H28** (a) for the refusal with the microphone never lit, (b) for the grant picked up without a restart, and (e) for `Basso` being the only signal under a Focus mode |
+| a hold outlasts the floor while Secure Input is enabled by any process | **H29** (a) with a password field focused, and (b) with Secure Input held by another process, which may honestly be scored "not reproduced" |
+| the focused element cannot be read when the hold passes the floor | **H24** (a), where the first dictation after VS Code launches must land, because it is the one that sets `AXManualAccessibility` and re-reads, and **H26** for Slack. **H30** (d) is the refusal itself, where an application can be found that answers with nothing |
+| the focused element is not eligible, or its eligibility is unknown | **H30** (a)–(c): a tree, a page and a file list each refused before the microphone opens, with no type-to-select side effect. **H29** (a) is the password field, which the subrole names |
+| final text exceeds the delivery bound | **H34** (a) for a text over the bound, and (b) for a single grapheme longer than one event, each with nothing typed and the whole text in `dictactl last` |
+| the delivery deadline passes mid-delivery | Not reachable by hand: a delivery lasts tens of milliseconds (F11), and the deadline exists to stop one that runs long. **H31** (b) scores the other road to the same ending, stopped part-way, may be partial, never retried. The test that drives the deadline itself is cited here when the injector is written |
+| the focused field is gone before delivery | **H31** (a): focus moved from the editor to the terminal while the key was held, so nothing is typed in either and the outcome is `target-gone` |
+| accessibility cannot answer when the focused field is re-validated | **H28** (d): the grant revoked mid-dictation is a delivery failure that says nothing was inserted, and not a claim that the field is gone |
+| focus moves to another application mid-delivery | **H31** (b), scored by its result: in ten runs no character ever reaches the application switched to |
+| focus moves inside the same application mid-delivery | **H31** (c). The row is a stated limit rather than a behaviour, so the item records the split when it is seen rather than failing on it |
+| the receiving application silently drops or rewrites posted keystrokes | **H24**, **H25**, **H26** and **H27**, each comparing what arrived with `dictactl last` character for character. That comparison is the only instrument, because nothing in the mechanism reports a drop. Slack's rewrites are expected (F11) |
+| a chord, or the hold key in front of agterm, while `agtermctl` is absent and `--focused-fields` is on | **H33** (c): both refused with a reason naming `agtermctl`, while a hold in VS Code still dictates |
 | the active session cannot be read from the tree when the hold key goes down | `test: a session that cannot be resolved starts nothing and is said out loud`; that the lookup happens once, in the daemon, and only when asked for: `test: a start asking for focus resolves both halves itself, out of one lookup`, `test: only an explicit focus flag resolves from focus, never a missing session`, `test: the focused target carries the active session's own active pane, from one read`, `test: a focused target whose pane cannot be named is refused, exactly as a chord's would be`. The readings that produce the refusal: `test: a tree with no active workspace refuses rather than picking one`, `test: a workspace whose sessions are all inactive refuses rather than picking one`, `test: two sessions claiming to be active is a refusal, never a choice`, `test: the active session is read from the active workspace and not from every workspace`, `test: a refusal from agterm is a refusal here, not an empty tree` |
 | the hold trigger is not armed, or its source reads nothing | Nothing automatic, and the row itself says why: `CGEventSource.flagsState` has no error channel, so "no modifier is down" and "this is not working" are one answer. Human item **H12** scores that the trigger is armed at all on the installed daemon; `test: a daemon that cannot be reached is reported rather than swallowed` covers the half that does have an error channel |
 | the user aborts after speaking | `test: an abort while recording is written down and typed nowhere` is the whole of D26 in one place: the words reach the record, `final` stays empty, nothing is injected and the indicator ends blocked. The other end of the same rule, when the cancel lands while the recogniser is already running: `test: an abort while the recogniser is running keeps the text but never delivers it`. That no later reader treats those words as deliverable: `test: dictactl last does not offer a cancelled dictation as text to deliver`. That the buffer is kept rather than thrown away, and that no second drain races the first: `test: abort while recording keeps the audio for the record and injects nothing`, `test: abort while draining does not issue a second drain for the same buffer`, `test: recording + abort: cancels, and the audio is kept for the record`, `test: draining + abort: cancels, and does not race the drain already in flight`. That an attempt which never had audio journals nothing: `test: an attempt abandoned before audio existed carries no speech window, and that is honest` |
@@ -87,6 +102,13 @@ external filter, which this plan deliberately does not build (D9c): the `Filter`
 
 Two rows are the honest gaps, and both are named above rather than papered over: the OS wiring of the
 capture faults (**H3**) and the client's own desktop notification (**H1**).
+
+**The focused-field rows (D31, D32) cite human items only, and that is a stage rather than a gap.**
+They were written before any of their code, from `docs/plans/20260912-dicta-focused-fields.md`,
+because this file may cite only tests that exist. Each task of that plan adds its tests' citations
+beside the human item that stood in for them. Two rows stay human by nature: a delivery that
+something outside dicta rewrites (**H24**–**H27**), and a move of focus inside one application during
+delivery (**H31**).
 
 ### How the two abort rows are reached from a chord, and why that took a rule of its own
 
@@ -305,11 +327,17 @@ counts as a pass, so two people scoring it agree.
   the panel and do not dictate, since either would hide the failure by causing the event that was
   missing. Pass: the glyph returns to grey by itself within about a second (measured 534–608 ms
   over four cycles). Fail: it returns only after you dictate, or only after you open the panel.
-- **H19 — the panel silences the hold trigger while it is open, and only while it is open.** Open
-  the panel, hold right Control. Pass: nothing happens — the panel has focus, so agterm is not
-  frontmost and D22 refuses. Close it, hold again. Pass: it dictates normally. This is **expected
-  behaviour, not a defect** (D30): the UI is where you go between dictations. Fail: the trigger
-  stays dead after the panel closes, which would mean D22's frontmost check has been left stale.
+- **H19 — the panel is silent ground, and a hold with it open goes where it would have gone
+  without it.** **This item used to expect the opposite**: that an open panel had focus, so agterm
+  stopped being frontmost and D22 silenced the key. F11 measured the premise on 2026-09-13 and it is
+  false, because opening the panel does not make DictaMenu frontmost. It is reworded as an
+  observation for that reason (D30). (a) Over an agterm pane, open the panel and hold right
+  Control. Pass: it dictates into that pane exactly as with the panel closed, and **nothing is typed
+  into the panel**. (b) Close the panel and hold again. Pass: the same. (c) With `--focused-fields`
+  on, open the panel over the VS Code editor and hold. Pass: the text lands in the editor, and never
+  in the panel. Fail in any of them: text in the panel, or a hold that does nothing while the panel
+  is open over a place it would otherwise dictate into, which would mean something has started
+  treating dicta's own bundle as frontmost.
 - **H20 — a dictation that went nowhere is recoverable from the panel, with no terminal.** This is
   the whole of job 2 and the only reason the drawer exists. Make one fail on purpose: start a
   dictation in a session, speak a sentence, close that session's pane while still speaking, then
@@ -378,3 +406,106 @@ counts as a pass, so two people scoring it agree.
   the dock. Pass: nothing appeared there. §13 rules out a dock TILE, not artwork, and `LSUIElement`
   is what enforces it — an icon in the dock would mean the flag was lost, and a stray click on that
   tile takes focus from the terminal dicta is about to type into.
+- **H24 — the VS Code editor receives exactly what the record says was sent (D31, D32).** Install
+  with `bash Scripts/install.sh --focused-fields`, grant Accessibility, and quit and relaunch VS
+  Code so the first dictation is the one that sets `AXManualAccessibility`. (a) Open a plain-text
+  file, click into the editor, hold right Command, wait for `Pop`, speak a sentence of Russian with
+  English terms and some punctuation in it, and let go. Pass: `Tink`, and the text appears at the
+  cursor. Copy it back out and compare it with `dictactl last` character for character. Fail: a
+  character missing, doubled or reordered, a closing bracket or quote VS Code added, a suggestion
+  accepted in the middle of the text, or `Basso` on this very first dictation — which means the
+  element was still absent after `AXManualAccessibility` was set and the re-read came too early.
+  (b) Repeat in a JavaScript file with a long dictation. Expected, and not a failure: VS Code stops
+  responding for several seconds while it catches up, and the text is still identical (F11). Time
+  the stall; F11 did not. (c) The side effect D31 states: over a working day after (a), watch for VS
+  Code announcing a screen-reader mode, or being visibly slower in a large file. F11 checked this
+  briefly and saw nothing, so write down what you saw either way. (d) End a dictation on a
+  half-typed word and look before pressing anything. Expected: an autocomplete popup may be open,
+  and Return would accept it (F11). Not a failure of dicta, but it is the one to know about before
+  pressing Return by reflex.
+- **H25 — the VS Code integrated terminal, with Claude Code running in it.** Click into the terminal
+  pane, hold right Command, speak two sentences, and let go. Pass: both sentences arrive on Claude
+  Code's input line as **one unsubmitted line**, identical to `dictactl last`. Fail, in the way that
+  matters most: the prompt submits by itself, which is invariant 1 broken on the new path. (b) The
+  per-event limit: F11 measured events of 200 UTF-16 units accepted whole in the VS Code editor only.
+  Add a dictionary rule whose replacement is one grapheme longer than 20 UTF-16 units, such as a
+  family emoji with skin tones, which `KeystrokeChunks` sends as a single event, and dictate its
+  pattern. Pass: the emoji arrives whole. This exercises an event over the soft target and not the
+  full 200. Repeat (b) in H26 and H27 before the hard limit is relied on anywhere but the editor.
+- **H26 — Slack.** The first dictation after Slack launches, into a message field. Pass: the text
+  arrives, and **nothing is sent**, because Return was never pressed. Expected, and not a failure:
+  Slack's own rewrites, which are straight quotes turned curly, emoji shown as shortcodes when
+  copied out, and a combining accent normalised (F11). Fail: a missing word, or a message posted.
+- **H27 — Safari.** Dictate into a text area on any page. Pass: identical to `dictactl last`. If
+  Telegram is installed, repeat in its message field, where F11 saw the same.
+- **H28 — the grant is asked for once, is picked up live, and its loss stops delivery.** Score it
+  with no Focus mode on, then (e) with one. (a) `tccutil reset Accessibility dev.personal.dicta`,
+  make sure the daemon runs with `--focused-fields`, and hold right Command in VS Code past the
+  floor. Pass: `Basso` and a notification naming the Accessibility grant; the orange microphone dot
+  never lights; nothing is typed; and `Dicta` is now listed under System Settings → Privacy &
+  Security → Accessibility. (b) Turn the grant on **without restarting anything** and hold again.
+  Pass: it dictates. (c) Edit any source file, run `bash Scripts/install.sh --focused-fields` again,
+  and dictate. Pass: no new prompt, and it still dictates. (d) Start a dictation in VS Code, turn the
+  grant off while still speaking, then let go. Pass: nothing is typed, a notification says nothing
+  was inserted, and `dictactl last` has the text. Fail: part of the text typed, or a notification
+  saying the target is gone, which would be claiming something nobody established. (e) With a Focus
+  mode on, repeat (a). Pass: `Basso` is heard. The notification is expected to be missing (F11), and
+  that is the limit D31 states.
+- **H29 — Secure Input refuses before the microphone opens.** (a) Click into a Safari password
+  field, hold right Command past the floor, and speak. Pass: no orange microphone dot, `Basso`, a
+  notification with the reason, and not one character in the field. (b) Secure Input held by
+  **another** process while an ordinary field is focused. `ioreg -l -w 0 | grep
+  kCGSSessionSecureInputPID` names the holder. Find something that leaves it on after losing focus,
+  confirm with that command, then hold in a VS Code editor. Pass: refused with the same reason. F11
+  could not reproduce a stuck holder, so if none can be found, write "not reproduced" rather than
+  scoring (b) as passed.
+- **H30 — a focused thing that is not a text field receives nothing.** Hold past the floor and speak
+  with focus on each of: (a) the VS Code Explorer tree, after clicking a file in the sidebar; (b) a
+  Safari page after clicking a button on it, so that focus stays on the page; (c) a Finder file list.
+  Pass in every one: no orange microphone dot, `Basso` and a notification, and **no side effect of
+  typing**. That means no file selected by type-to-select, nothing renamed and no page shortcut
+  fired. Fail: any of those, which would be dicta acting as voice control (§1). (d) If an application
+  can be found whose focused element cannot be read at all, even after the first dictation set
+  `AXManualAccessibility`, repeat there. Pass: refused the same way. F11 found none, so "none found"
+  is an honest result.
+- **H31 — focus moving around a delivery never takes the text to another application.** (a) Before
+  delivery, inside one application. With an external keyboard, hold right **Control** in the VS Code
+  editor, speak, then press the backtick key while still holding it, which is VS Code's toggle-
+  terminal shortcut and moves focus to the terminal. Then let go. Pass: nothing is typed in the
+  editor or the terminal, a notification says the target is gone, and `dictactl last` shows the text
+  with outcome `target-gone`. (b) Another application, around delivery. A delivery takes tens of
+  milliseconds (F11), so a hand cannot aim at the inside of one, and this item is scored by its
+  result instead. Ten times over: dictate a long sentence into the VS Code editor, let go, and switch
+  to TextEdit with the **left** hand as the text is about to land. Pass: **no character ever appears
+  in TextEdit**. Each run ends in one of three ways, so record which: arrived whole in VS Code before
+  the switch; aborted silently, because the switch landed inside the settle window (D31); or stopped
+  part-way, with a notification that the insertion may be partial and nothing retried. (c) Inside
+  one application during delivery. Repeat (b) with the toggle-terminal shortcut instead of switching
+  applications. If a run ever splits the text between the editor and the terminal, that is §7's
+  stated limit observed, not a failure. Record it, because nobody has seen it yet.
+- **H32 — right-hand combinations released before the floor cost nothing, and a switch costs no
+  text.** With `--focused-fields` on, note `wc -l` of `record.jsonl`. (a) For a few minutes in VS
+  Code and in Safari, use right-hand `⌘C`, `⌘V`, `⌘Z` and `⌘S` at ordinary speed. Pass: no sound, no
+  notification, no orange microphone dot at any moment, and `record.jsonl` has exactly as many lines
+  as before. Fail: a single new line, which means something was sent before the floor. (b) Hold
+  right Command, press Tab, choose another application at ordinary speed, and let go. Pass: no text
+  anywhere, no sound, no notification. The microphone opening for the length of the switch, and an
+  `aborted` line in the record, are expected, because the hold passed the floor (D31). Fail: a
+  `Tink`, or text in either application. (c) Over an ordinary day, count the held-past-the-floor
+  combinations that did start an attempt, which are the `aborted` lines with no speech in them. That
+  number is what decides whether the floor-deferred start was the right price.
+- **H33 — a machine without agterm.** (a) On a user account where `agtermctl` is not on `PATH`,
+  install with `bash Scripts/install.sh --focused-fields` and run `Dicta --fetch-models`. Pass: the
+  daemon runs, its log says agterm is absent, the menu-bar panel shows that as a notice and not as a
+  fault, and a hold in the VS Code editor dictates. (b) Reinstall without the flag. Pass: the daemon
+  refuses to start and says `agtermctl` is missing, because nothing could be delivered. (c) With
+  agterm itself installed, the option on, and `agtermctl` moved off `PATH` before restarting the
+  daemon: press a chord, then hold the key with agterm frontmost. Pass: both are refused, with a
+  reason naming `agtermctl`, and a hold in VS Code still dictates. Put `agtermctl` back afterwards.
+- **H34 — the delivery bound refuses before the first keystroke.** (a) Add a dictionary rule whose
+  replacement is longer than the bound, meaning more UTF-16 units than the chunk limit times the
+  per-event limit, both constants in `KeystrokeChunks`. Dictate its pattern into a VS Code editor.
+  Pass: not one character is typed, a notification says nothing was inserted, and `dictactl last`
+  prints the whole expanded text. Fail: a prefix of the text typed, which means the bound was
+  checked after posting began. (b) The same with a replacement that is a single grapheme longer than
+  one event may carry: one letter followed by a few hundred combining accents. Pass: the same.
