@@ -1309,19 +1309,37 @@ about `returned`.
 
 ### Task 12: Verify acceptance criteria
 
-- [ ] verify every Overview decision is implemented:
+- [x] verify every Overview decision is implemented:
   - any focused field;
   - agterm optional;
   - opt-in, with zero AX calls when off;
   - Unicode keystrokes to the pid;
   - agterm-first routing;
   - right-hand combinations released before the floor costing nothing.
-- [ ] verify every new or reworded §7 row and invariants 1, 13 and 14 cite a test or an H item
+- [x] verify every new or reworded §7 row and invariants 1, 13 and 14 cite a test or an H item
   (`ChecklistTests` enforces this).
-- [ ] run the full suite with `bash Scripts/test.sh`, and report the test count and the toolchain it
+- [x] run the full suite with `bash Scripts/test.sh`, and report the test count and the toolchain it
   ran under.
-- [ ] run `bash Scripts/lint.sh`.
-- [ ] run `bash Scripts/coverage.sh`: `DictaCore` stays above its 80% floor.
+- [x] run `bash Scripts/lint.sh`.
+- [x] run `bash Scripts/coverage.sh`: `DictaCore` stays above its 80% floor.
+  - Verified against the code: `HoldRoute.decide` routes agterm first with the option on or off, any
+    other application to its field only with the option on; `DaemonOptions.agtermAtStartup` keeps a
+    missing `agtermctl` fatal only with the option off, and `main.swift` builds the terminal as
+    optional; `FocusedFieldWiring.make` returns `nil` before calling any adapter with the option off;
+    `SystemEventPoster` posts keycode-0 events carrying the Unicode string, flags empty, through
+    `postToPid`; `HoldTriggerTests` holds that a press sends nothing and calls no accessibility
+    until the threshold, and that a short or queued combination costs nothing. Every Audit 2 row and
+    invariants 1, 13 and 14 cite a test or an H item, and `ChecklistTests` passes.
+  - ➕ Invariant 14's last clause, "never reads a field's value or selected text", was the one
+    clause the checklist still named as held by nothing. Closed: `SystemFocusedFieldAccess` now copies
+    attributes only through `copy(_:of:into:)`, typed by the closed `ReadAttribute` list (focused
+    element, `AXManualAccessibility`, role, subrole), and `test: the adapter can copy only identity
+    attributes, never a field's value or selected text` holds the list and that `Sources/` has exactly
+    one `AXUIElementCopyAttributeValue(` and no multiple or parameterized copy. Mutation check: an
+    `AXValue` case and a copy around the funnel each failed it. The checklist row's stale "Only human
+    items yet" opening went with the gap.
+  - Tests: 714 in 43 suites green under Xcode 26.6 (Swift 6.3.3), 1 new; linkage clean; lint clean
+    (swiftlint not installed, built-in checks only); coverage: DictaCore at 98.69% lines, floor 80%.
 
 ### Task 13: [Final] Update documentation
 

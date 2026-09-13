@@ -184,9 +184,23 @@ public final class SystemFocusedFieldAccess: FocusedFieldAccess, @unchecked Send
         Double(worstCaseMessagesPerRead) * Double(messagingTimeout) + manualAccessibilitySettle
     }
 
-    /// The attribute Chromium watches to switch its accessibility tree on for a client that is not
-    /// a screen reader.
-    static let manualAccessibility = "AXManualAccessibility"
+    /// Every attribute whose value this adapter copies, and there is no other way for it to copy
+    /// one: `copy(_:of:into:)` takes this type and is the process's only
+    /// `AXUIElementCopyAttributeValue`.
+    /// Invariant 14's "never reads a field's value or selected text" is therefore a list that has
+    /// no such case in it, which a test can hold, rather than a promise about every call site.
+    /// Settability and the attribute names are metadata calls of their own and return no content.
+    public enum ReadAttribute: String, CaseIterable, Sendable {
+        /// `kAXFocusedUIElementAttribute`, read from the application element.
+        case focusedElement = "AXFocusedUIElement"
+        /// The attribute Chromium watches to switch its accessibility tree on for a client that is
+        /// not a screen reader.
+        case manualAccessibility = "AXManualAccessibility"
+        /// `kAXRoleAttribute`.
+        case role = "AXRole"
+        /// `kAXSubroleAttribute`.
+        case subrole = "AXSubrole"
+    }
 
     private let lock = NSLock()
     private let trustProbe: @Sendable () -> Bool
@@ -258,8 +272,7 @@ public final class SystemFocusedFieldAccess: FocusedFieldAccess, @unchecked Send
 
     private func focused(in application: AXUIElement) throws -> AXUIElement {
         var value: CFTypeRef?
-        let status = AXUIElementCopyAttributeValue(
-            application, kAXFocusedUIElementAttribute as CFString, &value)
+        let status = copy(.focusedElement, of: application, into: &value)
         if let failure = FocusedFieldError.from(status) { throw failure }
         guard let value, CFGetTypeID(value) == AXUIElementGetTypeID() else {
             throw FocusedFieldError.cannotTell(reason: "the focused element is not an element")
@@ -274,14 +287,14 @@ public final class SystemFocusedFieldAccess: FocusedFieldAccess, @unchecked Send
     /// for a pid the system has since reused.
     private func switchOnManualAccessibility(_ application: AXUIElement) -> Bool {
         var current: CFTypeRef?
-        if AXUIElementCopyAttributeValue(application, Self.manualAccessibility as CFString,
-                                         &current) == .success,
+        if copy(.manualAccessibility, of: application, into: &current) == .success,
            let current, CFGetTypeID(current) == CFBooleanGetTypeID(),
            CFBooleanGetValue(unsafeDowncast(current, to: CFBoolean.self)) {
             return false
         }
-        return AXUIElementSetAttributeValue(application, Self.manualAccessibility as CFString,
-                                            kCFBooleanTrue) == .success
+        return AXUIElementSetAttributeValue(
+            application, ReadAttribute.manualAccessibility.rawValue as CFString, kCFBooleanTrue
+        ) == .success
     }
 
     /// Metadata only. A failed read is `nil`, never a guess: `FieldEligibility` refuses what it
@@ -294,19 +307,24 @@ public final class SystemFocusedFieldAccess: FocusedFieldAccess, @unchecked Send
         let namesStatus = AXUIElementCopyAttributeNames(element, &names)
         let attributeNames = namesStatus == .success ? names as? [String] : nil
         return FieldFacts(
-            role: string(kAXRoleAttribute, of: element),
-            subrole: string(kAXSubroleAttribute, of: element),
+            role: string(.role, of: element),
+            subrole: string(.subrole, of: element),
             valueSettable: settableStatus == .success ? settable.boolValue : nil,
             // From the list of attribute NAMES: reading the range itself would be reading content.
             hasSelectedTextRange: attributeNames?.contains(kAXSelectedTextRangeAttribute)
         )
     }
 
-    private func string(_ attribute: String, of element: AXUIElement) -> String? {
+    private func string(_ attribute: ReadAttribute, of element: AXUIElement) -> String? {
         var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success
-        else { return nil }
+        guard copy(attribute, of: element, into: &value) == .success else { return nil }
         return value as? String
+    }
+
+    /// The one attribute read, for the attributes `ReadAttribute` lists and no others.
+    private func copy(_ attribute: ReadAttribute, of element: AXUIElement,
+                      into value: inout CFTypeRef?) -> AXError {
+        AXUIElementCopyAttributeValue(element, attribute.rawValue as CFString, &value)
     }
 }
 

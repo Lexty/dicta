@@ -79,6 +79,41 @@ struct FocusedFieldTests {
         #expect(meter.mostAtOnce == 1)
     }
 
+    // MARK: - identity, never content
+
+    @Test("the adapter can copy only identity attributes, never a field's value or selected text")
+    func theAdapterReadsNoContent() throws {
+        // Invariant 14's last clause. No person can see an attribute read, so the adapter funnels
+        // every copy through one function typed by a closed list, and this holds both halves: the
+        // list names no content attribute, and nothing in the sources copies around the funnel.
+        typealias Read = SystemFocusedFieldAccess.ReadAttribute
+        #expect(Read.allCases.map(\.rawValue) == [kAXFocusedUIElementAttribute,
+                                                  "AXManualAccessibility",
+                                                  kAXRoleAttribute, kAXSubroleAttribute])
+        let content = [kAXValueAttribute, kAXSelectedTextAttribute, kAXSelectedTextRangeAttribute,
+                       kAXSelectedTextRangesAttribute, kAXVisibleCharacterRangeAttribute,
+                       kAXNumberOfCharactersAttribute, kAXTitleAttribute, kAXDescriptionAttribute]
+        #expect(Set(Read.allCases.map(\.rawValue)).isDisjoint(with: content))
+
+        var copies: [String: Int] = [:]
+        let sources = BundleTests.repositoryRoot.appendingPathComponent("Sources")
+        let files = try FileManager.default.subpathsOfDirectory(atPath: sources.path)
+            .filter { $0.hasSuffix(".swift") && !$0.hasPrefix("DictaTestRunner/") }
+        #expect(files.contains("DictaRuntime/FocusedField.swift"))
+        for file in files {
+            let text = try String(contentsOf: sources.appendingPathComponent(file), encoding: .utf8)
+            for call in ["AXUIElementCopyAttributeValue(", "AXUIElementCopyAttributeValues(",
+                         "AXUIElementCopyMultipleAttributeValues(",
+                         "AXUIElementCopyParameterizedAttributeValue("] {
+                copies[call, default: 0] += text.components(separatedBy: call).count - 1
+            }
+        }
+        #expect(copies == ["AXUIElementCopyAttributeValue(": 1,
+                           "AXUIElementCopyAttributeValues(": 0,
+                           "AXUIElementCopyMultipleAttributeValues(": 0,
+                           "AXUIElementCopyParameterizedAttributeValue(": 0])
+    }
+
     // MARK: - the events
 
     @Test("a posted chunk is a key-down and a key-up carrying the string with empty flags")
