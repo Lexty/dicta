@@ -593,16 +593,37 @@ below, so `MenuWorldFakes.swift` needs no change.
 
 ### Task 6: Verify acceptance criteria
 
-- [ ] the offer, the checklist and "Set Up…" no longer raise the exception (Task 1 and Task 2
+- [x] the offer, the checklist and "Set Up…" no longer raise the exception (Task 1 and Task 2
       records)
-- [ ] a silently dead watcher frees its slot with the daemon idle, and a fifth watcher is accepted
+  - held in the probe only: Task 1's candidate, the shape Task 2 committed, survived all four
+    scenarios for 60 s with the default `sizingOptions`, where the old code threw in all four.
+    `setupWindowSizeIsSetNotTracked` holds that shape in source, and its mutation fails it (Task 2).
+    ⚠️ Not seen on the installed menu against the real daemon: that repeat needs the user's go-ahead
+    and is H48's to score.
+- [x] a silently dead watcher frees its slot with the daemon idle, and a fifth watcher is accepted
       after four such deaths (Task 3 tests)
-- [ ] a live silent watcher is never ended, and coalescing, `stop` and command latency are unchanged
-- [ ] a refused watch draws amber with the reason and retries, and every other failure still draws
+  - `deadWatcherIsDropped` ("a watcher that goes away is dropped, and the daemon keeps serving") with
+    nothing published, `deadWatchersFreeTheirSlots` and `talkingWatcherIsEnded` pass.
+- [x] a live silent watcher is never ended, and coalescing, `stop` and command latency are unchanged
+  - `silentWatcherIsKept` passes, as do the untouched "a slow reader is given the newest state", "a
+    daemon shutting down ENDS the stream", "past the cap a watcher is REFUSED" and "a watcher
+    connected for the whole test never delays a command".
+- [x] a refused watch draws amber with the reason and retries, and every other failure still draws
       red
-- [ ] run the full suite: `bash Scripts/test.sh`; record the test and suite counts and the toolchain
-- [ ] run `Scripts/lint.sh`
-- [ ] both mutation checks are recorded with their failing test counts
+  - `MenuModelTests.refusedIsNotAFailure` and `failedIsRed`, `barIsQuietWhenIdle` with `.refused`
+    in its loop, and `StatusViewModelTests.refusedWatchIsNotAFailure` (a `timedOut` still `.failed`)
+    and `refusedWatchRetries` pass. No person has looked at the amber banner yet.
+- [x] run the full suite: `bash Scripts/test.sh`; record the test and suite counts and the toolchain
+  - 947 tests in 52 suites pass, `linkage.sh` first. Swift 6.3.3 (swiftlang-6.3.3.1.3), macOS
+    26.6.2.
+- [x] run `Scripts/lint.sh`
+  - exits 1 on the SwiftLint baseline alone: none of the built-in checks reports anything, and
+    SwiftLint 0.65.1 reports 235 violations, the baseline taken at the start of Task 2.
+- [x] both mutation checks are recorded with their failing test counts
+  - Task 3: `next(watching:)` polling the wake pipe alone fails 3 of 9 watch-stream tests (8
+    issues), exactly (a), (b) and (c). Task 4: `watchRefused` mapped back to `.failed` fails 2 of
+    61 tests in the two suites, exactly the two new `StatusViewModelTests`. Task 2's source-check
+    mutation is recorded there too.
 
 ### Task 7: [Final] Update documentation
 
