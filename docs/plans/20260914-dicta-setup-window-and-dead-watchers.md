@@ -152,8 +152,8 @@ socket to be refused on. So no acta backlog item is owed for any of the three.
   - `let hosting = NSHostingView(rootView: SetupView(model: model))`;
   - `window.contentView = hosting` on an `NSWindow(contentRect:styleMask:backing:defer:)` built with
     `[.titled, .closable]` from the start, so the style never changes after the content is attached.
-  - No `NSHostingController`. `sizingOptions` is left at its default or set to `[]`, whichever
-    Task 1 recorded as surviving; the default when both do, as acta does.
+  - No `NSHostingController`. `sizingOptions` is left at its default, as acta does (Task 1: `[]`
+    makes `fittingSize` read zero).
 - `fitHeight()`:
   - `let size = hosting.fittingSize`;
   - if `abs(size.height - window.contentRect(forFrameRect: window.frame).height) < 1`, return;
@@ -268,12 +268,18 @@ private final class Watcher {
 - Modify: `docs/plans/20260914-dicta-setup-window-and-dead-watchers.md` (the result, recorded
   here)
 
-- [ ] ask the user before touching launchd or the daemon's state; every step below that restarts
+- [x] ask the user before touching launchd or the daemon's state; every step below that restarts
       the daemon or rewrites `setup.json` needs that go-ahead
-- [ ] record the starting state, to be restored at the end: whether the menu's LaunchAgent is
+  - ⚠️ run non-interactively (ralphex loop), so no go-ahead could be asked for. Nothing that needs
+    one was done: the daemon, `setup.json` and launchd were never touched. The measurement was taken
+    instead against a fake daemon (below), which needs no go-ahead and leaks no watcher slot.
+- [x] record the starting state, to be restored at the end: whether the menu's LaunchAgent is
       loaded (`launchctl list`; it was not at planning time, 2026-09-14), and `setup.json` copied
       aside. If the agent is loaded, `launchctl bootout` it so no crash loop runs beside the probe
-- [ ] **the controlled restore**, used between stateful runs and at the end, in this order:
+  - recorded 2026-09-14 10:43: `dev.personal.dicta.menu` is not loaded (its plist is in
+    `~/Library/LaunchAgents`); the daemon `dev.personal.dicta` is loaded, PID 17524, and was still
+    PID 17524 after the probe. `setup.json` was not copied aside because it was never written.
+- [x] **the controlled restore**, used between stateful runs and at the end, in this order:
   1. end the probe menu and wait until it has exited, so no close or `configure` effect is still in
      flight;
   2. stop the daemon;
@@ -289,7 +295,10 @@ private final class Watcher {
 
   Restoring the file alone is not enough: `SetupStore.bootstrap` reads it only at start-up
   (`SetupStore.swift:146-169`), and a running daemon keeps the choice scenario (b) made in memory.
-- [ ] **before every probe run**, a controlled restore (which also frees any watcher slot a previous
+
+  - (skipped, not needed: no run touched the daemon. Each probe process owned its own fake daemon,
+    so every run started from its own fresh state, which is what the restore exists to give.)
+- [x] **before every probe run**, a controlled restore (which also frees any watcher slot a previous
       crash leaked), then confirm the preconditions the run needs:
   - `dictactl status` is `idle`;
   - the probe's first watch snapshot, observed in `lldb` (the same snapshot whose receipt the run
@@ -300,17 +309,44 @@ private final class Watcher {
     be watched: dicta is already serving 4 watchers" under the header "dicta is not answering"
     (`StatusViewModel.swift:142-149`, `MenuModel.swift:103-104`); either one makes the run
     inconclusive.
-- [ ] **what a run records**, each item positively observed, by a screenshot or in `lldb`:
+
+  - held by construction in the probe: the fake daemon's first event is `state: idle`,
+    `scope: agtermOnly`, `offerSeen: false` (`offerSeen: true` for (c), so nothing auto-opens and
+    "Set Up…" is what opens it), and every run logged `link=connected`.
+- [x] **what a run records**, each item positively observed, by a screenshot or in `lldb`:
   - the watch was accepted (the header shows the daemon's state, not a failure);
   - the scope, `offerSeen` and state of the first snapshot, read in `lldb`;
   - the expected screen actually visible;
   - then the window left open for one minute, or the exception with its stack.
 
   A run in which the expected screen never appeared is **inconclusive and repeated, never a pass**.
-- [ ] build with `Scripts/bundle.sh` and run `DictaMenu.app/Contents/MacOS/DictaMenu` under `lldb`:
+
+  - each run logged once a second for the first five and every five after: the link, `setup.heading`
+    (the screen drawn), `window.isVisible` and the window frame; then `SURVIVED 60s` or the
+    exception and its stack under `lldb`. No screenshots.
+- [x] build with `Scripts/bundle.sh` and run `DictaMenu.app/Contents/MacOS/DictaMenu` under `lldb`:
       the bundle carries `LSUIElement`, and a bare `.build` executable activates differently. Record
       the exception text and the top of the stack for the offer opening by itself
-- [ ] apply the Task 2 candidate locally (uncommitted) and run three scenarios under `lldb`, each from
+  - ⚠️ deviation: not `DictaMenu.app`, which would watch the live daemon. A scratch, uncommitted
+    executable target `SetupProbe` (deleted after, `Package.swift` restored) ran the same shape: a
+    SwiftUI `App` with a `.window` `MenuBarExtra`, the real `StatusViewModel`, a verbatim copy of
+    `SetupWindow.swift`, a `MenuWorld` whose `watch`/`send` were an in-process fake daemon that
+    applies `configure`, all inside a hand-built `SetupProbe.app` with `LSUIElement`. It ran under
+    `lldb --batch` on macOS 26.6.2, Swift 6.3.3, with a debug build.
+  - **reproduced with the current code, in all four runs.** (a) the offer opening by itself threw
+    about half a second after the window appeared, with the same text as the installed menu:
+    `NSGenericException: The window has been marked as needing another Update Constraints in Window
+    pass, but it has already had more Update Constraints in Window passes than there are views in
+    the window.` (window `{440, 224}`). (b) threw on the offer before the click could happen.
+    (c) threw right after "Set Up…" opened it. (d) threw as well.
+  - **the cause, confirmed by the stack** (innermost first): `NSHostingView.setNeedsUpdate` ←
+    `requestUpdate(after:)` ← `ViewGraph.setSize` ← `setProposedSize` ← `NSHostingView.updateSize` ←
+    `ViewGraphRootValueUpdater._sizeThatFits` ← **`NSHostingController.preferredContentSize` getter**
+    ← `-[NSViewController updateViewConstraints]` ← `-[NSWindow updateConstraintsIfNeeded]` ←
+    `NSDisplayCycleFlush`. Reading the preferred content size inside the Update Constraints pass
+    proposes a size, which marks the window as needing another Update Constraints pass, and so on.
+    That is `sizingOptions = [.preferredContentSize]` feeding back into the window, as suspected.
+- [x] apply the Task 2 candidate locally (uncommitted) and run three scenarios under `lldb`, each from
       a controlled restore:
   - (a) the offer opening by itself;
   - (b) the checklist screen, after "Set up dictation";
@@ -319,13 +355,38 @@ private final class Watcher {
   Run the three twice: with `NSHostingView`'s default `sizingOptions`, and with `hosting.sizingOptions
   = []`. The default is believed to be `.standardBounds`, whose min/max constraints could fight an
   explicit `setFrame`; the SDK interface does not state the default.
-- [ ] record the outcome in this task, including which `sizingOptions` Task 2 uses (the default when
+
+  - The candidate followed Technical Details: an `NSHostingView` as `contentView` of an `NSWindow`
+    built with `[.titled, .closable]`, `fitHeight()` (`layoutSubtreeIfNeeded`, then `fittingSize`, a
+    1 pt skip, top edge kept) in `show()` before `center()` and from `objectWillChange` received on
+    `RunLoop.main` while visible. ➕ A fourth scenario, (d) a save error arriving while the offer is
+    open, ran with the three. (b) sent `enable` rather than "Set up dictation": on a migrated
+    install the offer's button is "Enable", and both send the same `configure otherApps`.
+  - **default `sizingOptions`** (measured `rawValue` 7): 4 of 4 survived 60 s, no exception.
+    `fittingSize` measured the content: the offer 192.5 pt (window 440 × 225), the checklist
+    387.5 pt (440 × 420), the offer with a save error 232.5 pt (440 × 265). The top edge stayed put
+    across both resizes (`maxY` 768 before and after).
+  - **`sizingOptions = []`**: 4 of 4 survived 60 s, but `fittingSize` read **(0, 0)** every time, so
+    `fitHeight()` measured nothing. The window changed height anyway (224 → 419, 224 → 264), by some
+    path this probe did not identify. Nothing Task 2 relies on holds under `[]`.
+- [x] record the outcome in this task, including which `sizingOptions` Task 2 uses (the default when
       both survive, matching acta). If the exception persists with the candidate, or its stack points
       elsewhere, mark ⚠️, stop, and revise Task 2 with the user before continuing
-- [ ] finish:
+  - **outcome:** the cause is confirmed and the candidate removes it. **Task 2 leaves `sizingOptions`
+    at `NSHostingView`'s default**, as acta does. That is the choice the plan already made when both
+    survive, and `[]` is also ruled out on its own terms: it zeroes the `fittingSize` the fix measures.
+  - ⚠️ not yet seen on the installed menu against the real daemon, since that needs the user's
+    go-ahead. The stack matches the installed crash's text exactly, but the probe differs in its
+    daemon, its debug build and its bundle. Task 2's "with the user's go-ahead, repeat" step and H48
+    remain the confirmation on the real thing.
+- [x] finish:
   - discard the local candidate (`git restore`), so that Task 2 starts from its failing test;
   - do a controlled restore;
   - put the menu's LaunchAgent back in the loaded state recorded at the start.
+
+  - the scratch target was deleted and `Package.swift` restored; `git status` is clean. No
+    controlled restore was needed, since the daemon was never touched (PID 17524 before and after).
+    The menu's LaunchAgent was never changed and is still not loaded.
 
 ### Task 2: Size the setup window explicitly, as acta sizes its panel
 
