@@ -627,13 +627,26 @@ below, so `MenuWorldFakes.swift` needs no change.
 
 ### Task 7: [Final] Update documentation
 
-- [ ] `AGENTS.md`: update the `SetupWindow.swift` and `ControlServer` descriptions and any line
+- [x] `AGENTS.md`: update the `SetupWindow.swift` and `ControlServer` descriptions and any line
       references that moved, and record the two rules (window size set rather than tracked; a watch
       ends on the read side) where the structure section keeps such rules
-- [ ] `README.md`: update only if it describes either behaviour
-- [ ] confirm both backlog items are gone: the dead-watchers item went with Task 4's commit, and the
+  - `SetupWindowController`'s entry in the structure section names `fittingSize`. Two rules added
+    beside their neighbours: "The setup window's size is set, never tracked" after the AppKit
+    `NSWindow` rule, and "A watch ends on the read side, never by a write that fails" after "A
+    dropped connection is never how a stream ends", which now also says the menu draws the cap's
+    refusal as `DaemonLink.refused`. The human-items section gains an H48–H49 paragraph.
+    `AGENTS.md` quoted no line numbers into the changed files, so none had moved.
+- [x] `README.md`: update only if it describes either behaviour
+  - it describes neither the window's sizing nor watcher slots or the refusal, so it is unchanged.
+- [x] confirm both backlog items are gone: the dead-watchers item went with Task 4's commit, and the
       crash item goes with Task 2's
-- [ ] move this plan to `docs/plans/completed/`
+  - `dead-watchers-hold-slots-while-idle.md` is gone (removed in `c5cc01c`). ⚠️
+    `setup-window-constraint-loop-crash.md` is deliberately kept, as Task 2 recorded: the fix has
+    not been seen on the installed menu. Its `where:` and a status paragraph now say it is fixed in
+    code (`78405f9`) and is deleted once H48 passes.
+- [x] move this plan to `docs/plans/completed/`
+  - `bash Scripts/test.sh`: 947 tests in 52 suites pass, Swift 6.3.3. `Scripts/lint.sh`: built-in
+    checks pass, SwiftLint 235, the baseline.
 
 ## Post-Completion
 

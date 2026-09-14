@@ -1,9 +1,14 @@
 ---
 worth: yes
-where: Sources/DictaMenu/SetupWindow.swift:49
+where: Sources/DictaMenu/SetupWindow.swift (SetupWindowController.fitHeight)
 added: 2026-09-14
 ---
 # the setup window's layout loops, and AppKit kills DictaMenu when it opens
+
+**Status: fixed in code (`78405f9`), not yet confirmed on hardware.** A probe confirmed the cause,
+and the window now sets its height from `fittingSize` instead of tracking `.preferredContentSize`
+(Tasks 1 and 2 of `docs/plans/completed/20260914-dicta-setup-window-and-dead-watchers.md`). This
+item stays until the installed menu survives **H48**; delete it then.
 
 Observed on 2026-09-14, installing `85665d7` over the build of 2026-08-25. The daemon migrated the
 existing user (`setup: agterm-only, migrated: the record holds 651 entries, so this is an update`),

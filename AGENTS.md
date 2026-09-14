@@ -548,7 +548,8 @@ testing.linker` to the `DictaTests` target — otherwise the failing test cannot
   `DictaMenuKit` plus SwiftUI, and nothing else** — `dictactl`'s dependency budget, one target wider.
   It opens no microphone, loads no model, and links no `DictaRuntime`, which is invariants 8 and 11
   and is asserted by `Scripts/linkage.sh` rather than by any test. Views and wiring only: the SwiftUI
-  views, `SetupWindowController` (the AppKit window, adopting `SetupWindowPresenting`), `MenuRoot`
+  views, `SetupWindowController` (the AppKit window, adopting `SetupWindowPresenting`, whose height
+  it sets from its `NSHostingView`'s `fittingSize`), `MenuRoot`
   (which attaches that presenter before anything can start the model) and `SystemMenuWorld.swift`,
   the one file that turns `MenuWorld` into the socket, the record, the threads, the clock and
   AppKit.
@@ -1145,6 +1146,17 @@ The rules, each of which is either a review finding or a trap:
   unasked. `isRestorable = false` is deliberate. Because the window can take focus while somebody is
   typing elsewhere, no choice is bound to Return. A future settings window must answer the same
   question before reaching for `SettingsLink`.
+- **The setup window's size is set, never tracked.** It was an `NSHostingController` with
+  `sizingOptions = [.preferredContentSize]`, and it killed the menu about three seconds after it
+  opened: AppKit read the preferred size inside its Update Constraints pass, the read proposed a
+  size to the SwiftUI graph, the proposal asked for another pass, and after more passes than views
+  `NSWindow` raised `NSGenericException`. A pending offer opens the window by itself, so launchd's
+  `KeepAlive` turned that into a crash loop. The window now takes acta's `ReminderPanelController`
+  shape: an `NSHostingView` as the content, `fitHeight()` reading `fittingSize` in `show()` before
+  `center()` and on a later main run-loop turn after the model changes, the top edge kept.
+  `sizingOptions` stays at its default, because `[]` reads `fittingSize` as zero. No test draws the
+  window; `test: the setup window sets its size from fittingSize, and never tracks a preferred
+  size` holds the shape in source, and **H48** scores it on hardware.
 - **`SetupModel` is every decision; `SetupWindow.swift` renders.** The screen per state, the payload
   of every button (including what each close sends: the first-time offer records `offerSeen`, the
   others send nothing), and the checklist rows are pure and tested. The wiring between them is
@@ -1181,7 +1193,20 @@ More that is not obvious from the code:
   `closedByPeer` and reports that the daemon died, so a watcher would announce a crash every time
   the daemon shut down cleanly. A shutdown sends `WatchEvent.end` with a reason and the panel says
   "dicta stopped" in amber; the watcher cap is refused with an ordinary short `Response` for the
-  same reason.
+  same reason. The menu draws that refusal as `DaemonLink.refused`: amber, with the daemon's reason
+  and "Restart dicta", and retried with backoff. It was once drawn as `.failed`, and the header said
+  "dicta is not answering" about a daemon that had just answered.
+- **A watch ends on the read side, never by a write that fails.** An idle daemon writes nothing, so
+  a client that died after the handshake used to keep its slot until the daemon restarted, and four
+  such deaths refused every watcher after them. The writer thread now waits in `poll` on the
+  outbox's wake pipe and on the client together: EOF, a byte arriving after the handshake was read,
+  `POLLHUP` or `POLLERR` ends the stream at once and frees the slot, with nothing written. That is
+  acta's `ControlConnection` rule on one thread rather than two racing tasks, and it needs no
+  `shutdown` or join before `close`. "A byte" means one the server has not already read:
+  `Framing.readFrame` discards whatever arrived after the request's newline in the same `read`.
+  `watchIdle` frees no slot of the daemon's: it bounds the other direction, a daemon gone without
+  its socket closing, which a client reading nothing would never notice. **H49** scores it on the
+  installed pair.
 - **Attaching is its own first event, and it was not, which is F9b.** The daemon publishes on
   transitions, so a watcher that attached to an idle daemon was told nothing until somebody
   dictated: after a restart the strip went on saying the daemon was unreachable over a connection
@@ -1250,6 +1275,12 @@ exceptions and leaving the ordinary quiet, with the two symbol names judged on t
 clock and the idle wake-ups stopping when the connection drops with the panel closed, and the label
 observing the model on its own (H46); and the setup window opening through its presenter at exactly
 the doors it had (H47).
+
+The setup-window and dead-watcher fixes add **H48–H49**, also unscored: the setup window opening,
+surviving each screen and resizing with its top edge in place, a minute later still alive (H48,
+scored together with H35, H41 and H47, which the crash kept anyone from scoring); and a menu killed
+five times while the daemon is idle, each time returning connected, with no connection left on
+`control.sock` without a live peer (H49).
 
 **`docs/manual-checklist.md` is the list, and it is complete** — every item states the observation
 that counts as a pass, so two people scoring it agree. In short: that the chords fire and
