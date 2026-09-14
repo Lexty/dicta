@@ -136,6 +136,17 @@ connection, Recent Dictations rolling back to an older read, and a failed record
 the built panel, an unreadable record, the menu-bar clock stopping with the connection, and the
 setup window's doors through its presenter.
 
+**The setup window no longer kills the menu, and dead watchers free their slots —
+`docs/plans/completed/20260914-dicta-setup-window-and-dead-watchers.md`, all seven tasks.** The
+window's content is an `NSHostingView` whose height `SetupWindowController.fitHeight()` sets from
+`fittingSize`, where an `NSHostingController` tracking `.preferredContentSize` looped AppKit's Update
+Constraints pass into `NSGenericException` (confirmed in a probe, not yet on the installed menu). A
+watch now ends on the read side: the writer waits in `poll` on a wake pipe and on the client, so a
+client that closes or talks frees its slot while the daemon is idle. A refused watch is
+`DaemonLink.refused`, drawn amber with the daemon's reason rather than as "dicta is not answering".
+What only a person can score is **H48–H49**, with H35, H41 and H47 scored together with H48;
+`docs/backlog/setup-window-constraint-loop-crash.md` stays until H48 passes.
+
 A plan is written in `docs/plans/` and moved to `docs/plans/completed/` when it finishes, where it
 stays as the record of the run that built it (decided by the user on 2026-09-13).
 

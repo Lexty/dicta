@@ -671,19 +671,20 @@ counts as a pass, so two people scoring it agree.
   seconds after opening (AppKit's "more Update Constraints in Window passes than there are views in
   the window"), so a crash loop under launchd is the failure this item watches for. Note the menu's
   pid (`pgrep DictaMenu`) before each half. (a) On a migrated install with the offer pending,
-  relaunch the menu while idle. Pass: the offer opens by itself. (b) Click "Set up dictation".
-  Pass: the window turns into the checklist. (c) Close it and click "Set Up…" in the panel's footer.
-  Pass: the window opens. (d) With the window on the checklist, make a save fail (`chmod a-w` the
-  support directory as in **H42** (b)) and choose again. Pass: the save error appears. At every
-  screen change the window grows or shrinks with its top edge where it was, and no text is cut off
-  or left with a gap under it. A minute after each half, `pgrep DictaMenu` still prints the pid
+  relaunch the menu while idle. Pass: the offer opens by itself. (b) Click "Enable" (on a fresh
+  install the same button reads "Set up dictation"). Pass: the window turns into the checklist.
+  (c) Close it and click "Set Up…" in the panel's footer. Pass: the window opens. (d) With the
+  window on the checklist, make a save fail (`chmod a-w` the support directory as in **H42** (b))
+  and choose again. Pass: the save error appears. At every screen change the window grows or
+  shrinks with its top edge where it was, and no text is cut off or left with a gap under it. A minute after each half, `pgrep DictaMenu` still prints the pid
   noted, and `log show --last 5m --predicate 'process == "DictaMenu"' | grep -c NSGenericException`
   prints 0. Put the directory back with `chmod u+w` afterwards.
 - **H49 — a menu killed while the daemon is idle leaves no watcher behind.** With the daemon idle
-  and nothing dictated during the item, note the daemon's pid and `lsof -p <daemon pid> | grep -c
-  unix`. Then, five times: `kill -9` the menu's process and wait for launchd to bring it back. Pass,
-  each time: the menu-bar item returns connected, never amber with "dicta is already serving 4
-  watchers" and never red with "not answering". After the fifth, the daemon's pid is unchanged and
-  the `lsof` count is the one noted, so no connection stays open without a live peer; the daemon
-  wrote nothing to find them, because an idle daemon has nothing to write. Fail: a count that grew
-  by one per kill, or a refusal on any return.
+  and nothing dictated during the item, note the daemon's pid and
+  `lsof -p <daemon pid> | grep -cE 'unix|PIPE'`: each watcher holds a connection and the two ends
+  of a wake pipe. Then, five times: `kill -9` the menu's process and wait for launchd to bring it
+  back. Pass, each time: the menu-bar item returns connected, never amber with "dicta is already
+  serving 4 watchers" and never red with "not answering". After the fifth, the daemon's pid is
+  unchanged and the `lsof` count is the one noted, so no connection or wake pipe stays open without
+  a live peer; the daemon wrote nothing to find them, because an idle daemon has nothing to write.
+  Fail: a count that grew with each kill, or a refusal on any return.

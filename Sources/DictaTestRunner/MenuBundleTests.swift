@@ -226,11 +226,17 @@ struct MenuBundleTests {
         #expect(!code.contains("NSHostingController"))
         #expect(code.contains("NSHostingView(rootView: SetupView(model: model))"))
         #expect(code.contains("window.contentView = hosting"))
-        #expect(code.contains(".fittingSize"))
-        #expect(code.contains("layoutSubtreeIfNeeded()"))
 
         let controller = try #require(Self.topLevelDeclarations(in: file.text)
             .first { $0.header.contains("final class SetupWindowController") })
+        // Inside `fitHeight` itself: `make()` reads `fittingSize` too, for the first frame, so a
+        // file-wide match would pass with a `fitHeight` that measures nothing.
+        let fitHeight = try #require(controller.body.range(of: "private func fitHeight() "))
+        let fitHeightBody = try #require(Self.topLevelDeclarations(
+            in: String(controller.body[fitHeight.lowerBound...])).first?.body)
+        #expect(fitHeightBody.contains("hosting.layoutSubtreeIfNeeded()"))
+        #expect(fitHeightBody.contains("hosting.fittingSize.height"))
+        #expect(fitHeightBody.contains("window.setFrame("))
         let show = try #require(controller.body.range(of: "func show() "))
         let showBody = try #require(Self.topLevelDeclarations(
             in: String(controller.body[show.lowerBound...])).first?.body)

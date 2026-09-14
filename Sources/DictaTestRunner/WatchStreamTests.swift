@@ -180,6 +180,37 @@ struct WatchStreamTests {
         #expect(response.kind == .accepted)
     }
 
+    @Test("a dead watcher is still dropped while the daemon publishes without a pause")
+    func deadWatcherIsDroppedUnderContinuousPublishing() throws {
+        let fixture = try Self.makeServer()
+        defer { fixture.tearDown() }
+
+        let raw = try Self.rawWatch(fixture.path)
+        #expect(Self.waitForWatchers(fixture.server, count: 1))
+        close(raw)
+
+        // With an event always ready the writer's `poll` never waits, but it still looks at the
+        // client before each one, and a write into the closed peer ends it too. Either way the
+        // slot frees while the publishing goes on, as it would under a dictation in progress.
+        let publishing = DispatchSemaphore(value: 0)
+        let stopped = DispatchSemaphore(value: 0)
+        let server = fixture.server
+        let publisher = Thread {
+            while publishing.wait(timeout: .now()) == .timedOut {
+                server.publish(.update(state: .recording))
+            }
+            stopped.signal()
+        }
+        publisher.start()
+        let dropped = Self.waitForWatchers(fixture.server, count: 0)
+        publishing.signal()
+        #expect(stopped.wait(timeout: .now() + 5) == .success)
+        #expect(dropped)
+
+        let response = try ControlClient.send(Request(cmd: .status), to: fixture.path)
+        #expect(response.kind == .accepted)
+    }
+
     @Test("watchers that die while the daemon is idle free their slots for the next one")
     func deadWatchersFreeTheirSlots() throws {
         let fixture = try Self.makeServer()

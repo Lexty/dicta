@@ -25,16 +25,15 @@ but it has already had more Update Constraints in Window passes than there are v
 ... +[NSApplication _crashOnException:]
 ```
 
-The 440 × 224 window is the offer screen. **Suspected, not verified:** `hosting.sizingOptions =
-[.preferredContentSize]` feeds the hosting view's size back into the window while the text inside
-it wraps with `.fixedSize(horizontal: false, vertical: true)`, so each window resize changes the
-wrapping, which changes the preferred size again. Candidates: size the window once from
-`fittingSize` per screen change instead of continuously, or drop the vertical `fixedSize` in favour
-of a measured height.
+The 440 × 224 window is the offer screen. **Confirmed** (the plan's Task 1): the stack runs through
+`NSHostingController`'s preferred content size, read inside `-[NSWindow updateConstraintsIfNeeded]`.
+`hosting.sizingOptions = [.preferredContentSize]` fed the hosting view's size back into the window,
+so each read proposed a size that asked for another pass. The fix sizes the window from
+`fittingSize` when it opens and on a later run-loop turn after each model change.
 
 Any fix is scored on hardware, because no test draws this window: the offer opening by itself on a
 migrated install, the checklist screen (taller than the offer), and "Set Up…" from the panel. This
 was the unmeasured half of the plan's Task 12, and H35 and H41 were never scored.
 
-Until it is fixed, a pending offer makes the menu unusable, and each crash also leaks a watch slot
-in the daemon: `dead-watchers-hold-slots-while-idle`.
+Each crash also used to leak a watch slot in the daemon. That is fixed separately (`ad7e8f2`, a
+watch ends on the read side), and **H49** scores it.

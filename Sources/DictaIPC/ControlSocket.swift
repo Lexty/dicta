@@ -552,9 +552,11 @@ public final class ControlServer: @unchecked Sendable {
         }
     }
 
-    /// Why a `watch` was refused before its stream could start. Both are answered with an ordinary
+    /// Why a `watch` was refused before its stream could start. Each is answered with an ordinary
     /// refusal `Response`, never a dropped connection, which the client would read as a crash.
     private enum WatchRefusal: Error {
+        /// `stop` has begun. Not the cap: a daemon going down is not one with its slots taken.
+        case stopping
         /// The cap is reached.
         case full
         /// The watcher's wake pipe could not be opened: `pipe()` or `fcntl`, usually `EMFILE`.
@@ -562,6 +564,8 @@ public final class ControlServer: @unchecked Sendable {
 
         var message: String {
             switch self {
+            case .stopping:
+                "dicta is shutting down"
             case .full:
                 "dicta is already serving \(ControlTimeouts.maxWatchers) watchers"
             case let .cannotOpen(code):
@@ -835,9 +839,8 @@ public final class ControlServer: @unchecked Sendable {
     /// caller answers with, as an ordinary response rather than by closing the connection.
     private func registerWatcher() -> Result<(id: Int, watcher: Watcher), WatchRefusal> {
         stateLock.withLock {
-            guard running, watchers.count < ControlTimeouts.maxWatchers else {
-                return .failure(.full)
-            }
+            guard running else { return .failure(.stopping) }
+            guard watchers.count < ControlTimeouts.maxWatchers else { return .failure(.full) }
             let watcher: Watcher
             do throws(WatchRefusal) {
                 watcher = try Watcher.make()

@@ -27,7 +27,7 @@ exists as a pass-through, which is all `raw` mode needs in order to be *defined*
 skips it.
 Dictating into the focused field of any application is implemented (D31, D32), and is chosen in the
 setup window; what only a person can score about it is H24–H34, and about the setup window H35–H43,
-in `docs/manual-checklist.md`.
+H47 and H48, in `docs/manual-checklist.md`.
 
 ## Requirements
 

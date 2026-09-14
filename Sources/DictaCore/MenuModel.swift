@@ -29,10 +29,11 @@ public enum DaemonLink: Sendable, Equatable {
     case ended(String)
     /// The connection broke. Something is wrong and the user may need to know.
     case failed(String)
-    /// The daemon answered the `watch` handshake and declined it, saying why: the watcher cap,
-    /// today. NOT a failure: the daemon is up and answering, and "dicta is not answering" about it
-    /// would send the user looking for a crash that did not happen. It is retried like a lost link,
-    /// because a slot frees when a watcher goes.
+    /// The daemon answered the `watch` handshake and declined it, saying why: the watcher cap, a
+    /// daemon shutting down, or a watch stream it could not open (usually out of descriptors). NOT
+    /// a broken link: the daemon is up and answering, and "dicta is not answering" about it would
+    /// send the user looking for a crash that did not happen. The reason is the daemon's own, and
+    /// it is retried like a lost link, because a slot frees when a watcher goes.
     case refused(String)
 }
 
@@ -132,8 +133,9 @@ public struct MenuModel: Sendable, Equatable {
             return Banner(text: reason, tint: .red, action: .restartDaemon,
                           actionTitle: "Restart dicta")
         case let .refused(reason):
-            // Amber: the daemon is healthy and said no. A restart is the one action that frees a
-            // slot a dead watcher still holds, so it is still the button.
+            // Amber: the daemon answered and said no, with its reason on the banner. A restart is
+            // the one action that frees a slot a dead watcher still holds, or descriptors a
+            // daemon ran out of, so it is still the button.
             return Banner(text: reason, tint: .amber, action: .restartDaemon,
                           actionTitle: "Restart dicta")
         case .connecting:
@@ -281,7 +283,7 @@ public extension Presentation {
         status: "dicta is not answering"
     )
 
-    /// The daemon answered and declined the watch. Amber, because nothing is broken.
+    /// The daemon answered and declined the watch. Amber, because the link itself is not broken.
     static let refused = Presentation(
         glyph: "exclamationmark.triangle.fill",
         tint: .amber,
