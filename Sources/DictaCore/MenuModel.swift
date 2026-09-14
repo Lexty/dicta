@@ -27,9 +27,13 @@ public enum DaemonLink: Sendable, Equatable {
     /// difference is the whole reason `WatchEvent.end` exists, and reporting it as a crash would be
     /// the false alarm the UI is supposed to avoid raising.
     case ended(String)
-    /// The connection broke, or the daemon refused. Something is wrong and the user may need to
-    /// know.
+    /// The connection broke. Something is wrong and the user may need to know.
     case failed(String)
+    /// The daemon answered the `watch` handshake and declined it, saying why: the watcher cap,
+    /// today. NOT a failure: the daemon is up and answering, and "dicta is not answering" about it
+    /// would send the user looking for a crash that did not happen. It is retried like a lost link,
+    /// because a slot frees when a watcher goes.
+    case refused(String)
 }
 
 /// One line of trouble, with the single thing that would fix it.
@@ -102,6 +106,8 @@ public struct MenuModel: Sendable, Equatable {
             return Presentation.daemonNotRunning
         case .failed:
             return Presentation.unreachable
+        case .refused:
+            return Presentation.refused
         }
     }
 
@@ -124,6 +130,11 @@ public struct MenuModel: Sendable, Equatable {
                           action: .restartDaemon, actionTitle: "Start dicta")
         case let .failed(reason):
             return Banner(text: reason, tint: .red, action: .restartDaemon,
+                          actionTitle: "Restart dicta")
+        case let .refused(reason):
+            // Amber: the daemon is healthy and said no. A restart is the one action that frees a
+            // slot a dead watcher still holds, so it is still the button.
+            return Banner(text: reason, tint: .amber, action: .restartDaemon,
                           actionTitle: "Restart dicta")
         case .connecting:
             return nil
@@ -263,10 +274,17 @@ public extension Presentation {
     /// asked would be wrong exactly when the answer matters, at login.
     static let connecting = Presentation(glyph: "mic", tint: .faint, status: "Connecting…")
 
-    /// The daemon's socket is there but the stream broke or was refused.
+    /// The daemon's socket is there but the stream broke.
     static let unreachable = Presentation(
         glyph: "exclamationmark.triangle.fill",
         tint: .red,
         status: "dicta is not answering"
+    )
+
+    /// The daemon answered and declined the watch. Amber, because nothing is broken.
+    static let refused = Presentation(
+        glyph: "exclamationmark.triangle.fill",
+        tint: .amber,
+        status: "dicta refused to be watched"
     )
 }

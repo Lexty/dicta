@@ -42,6 +42,25 @@ struct MenuModelTests {
         let failed = MenuModel(link: .failed("dicta is not answering — the socket has no listener"))
         #expect(failed.presentation.tint == .red)
         #expect(failed.banner?.tint == .red)
+        #expect(failed.presentation.status == "dicta is not answering")
+        #expect(failed.banner?.action == .restartDaemon)
+    }
+
+    @Test("a refused watch is amber, keeps the daemon's reason, and never says it is not answering")
+    func refusedIsNotAFailure() {
+        let reason = "dicta is already serving 4 watchers"
+        let refused = MenuModel(link: .refused(reason))
+        // The daemon answered and said no. "Not answering" about a daemon that just answered is
+        // wrong in the direction that sends the user looking for a crash that did not happen.
+        #expect(refused.presentation.status != "dicta is not answering")
+        #expect(refused.presentation.status == "dicta refused to be watched")
+        #expect(refused.presentation.tint == .amber)
+        let banner = try? #require(refused.banner)
+        #expect(banner?.tint == .amber)
+        #expect(banner?.text == reason)
+        // A restart is the one action that frees a slot a dead watcher still holds.
+        #expect(banner?.action == .restartDaemon)
+        #expect(banner?.actionTitle == "Restart dicta")
     }
 
     @Test("connecting claims nothing")
@@ -188,7 +207,8 @@ struct MenuModelTests {
     @Test("an idle menu bar is the glyph alone, in the colour the panel would agree with")
     func barIsQuietWhenIdle() {
         let now = Date()
-        for link in [DaemonLink.connecting, .notRunning, .ended("stopped"), .failed("gone")] {
+        for link in [DaemonLink.connecting, .notRunning, .ended("stopped"), .failed("gone"),
+                     .refused("full")] {
             let label = MenuModel(link: link).barLabel(at: now)
             #expect(label.timer == nil)
             // One state, drawn twice, cannot disagree with itself: the strip and the header read

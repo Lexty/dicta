@@ -120,6 +120,45 @@ struct StatusViewModelTests {
         #expect(fake.with { $0.watchedPaths } == [Self.socket, Self.socket])
     }
 
+    @Test("a refused watch is drawn as a refusal, and every other thrown error still as a failure")
+    func refusedWatchIsNotAFailure() {
+        let fake = FakeMenuWorld()
+        let model = Self.model(fake)
+        let reason = "dicta is already serving 4 watchers"
+        fake.script([], then: .throwing(ControlClient.ClientError.watchRefused(reason)))
+        model.start()
+        fake.settle()
+        #expect(model.model.link == .refused(reason))
+        #expect(model.model.snapshot == nil)
+
+        let slow = ControlClient.ClientError.timedOut(seconds: 2)
+        fake.script([], then: .throwing(slow))
+        fake.fireAfter()
+        fake.settle()
+        #expect(model.model.link == .failed(slow.description))
+    }
+
+    @Test("a refused watch retries through after, and a later accepted watch connects")
+    func refusedWatchRetries() {
+        let fake = FakeMenuWorld()
+        let model = Self.model(fake)
+        let refusal = ControlClient.ClientError.watchRefused("dicta is already serving 4 watchers")
+        fake.script([], then: .throwing(refusal))
+        model.start()
+        fake.settle()
+        #expect(model.model.link == .refused("dicta is already serving 4 watchers"))
+        // A slot frees when a watcher goes, so the refusal is retried like any other lost link.
+        #expect(fake.pendingAfterDelays == [Backoff.delay(afterFailures: 0)])
+
+        fake.script([.update(Self.idle)], then: .open)
+        fake.fireAfter()
+        #expect(fake.pendingOffMain == ["watch"])
+        fake.settle()
+        #expect(model.model.link == .connected)
+        #expect(model.model.snapshot == Self.idle)
+        #expect(fake.with { $0.watchedPaths } == [Self.socket, Self.socket])
+    }
+
     @Test("an event resets the backoff, and a leftover after while connected opens nothing")
     func eventResetsTheBackoff() {
         let fake = FakeMenuWorld()

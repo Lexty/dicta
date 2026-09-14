@@ -137,14 +137,16 @@ public final class StatusViewModel: ObservableObject {
         }
     }
 
-    /// Which `DaemonLink` an error means. The distinction that matters: "there is no daemon" is
-    /// ordinary and quiet, "the daemon stopped answering" is not.
+    /// Which `DaemonLink` an error means. The distinctions that matter: "there is no daemon" is
+    /// ordinary and quiet, "the daemon stopped answering" is not, and "the daemon said no" is
+    /// neither.
     nonisolated private static func link(for error: any Error) -> DaemonLink {
         guard let clientError = error as? ControlClient.ClientError else {
             return .failed("\(error)")
         }
         switch clientError {
         case .daemonNotRunning: return .notRunning
+        case let .watchRefused(reason): return .refused(reason)
         default: return .failed(clientError.description)
         }
     }

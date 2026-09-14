@@ -515,32 +515,45 @@ private final class Watcher {
 The seams exist: `FakeMenuWorld.script(_:then: .throwing(...))` and `fireAfter` cover every case
 below, so `MenuWorldFakes.swift` needs no change.
 
-- [ ] write failing `MenuModelTests`:
+- [x] write failing `MenuModelTests`:
   - `.refused` does not present `"dicta is not answering"`;
   - its tint is amber and its status is `"dicta refused to be watched"`;
   - its banner is amber, carries the reason verbatim and offers `.restartDaemon`;
   - `.failed` is unchanged (red, "not answering").
-- [ ] write failing `StatusViewModelTests` through `FakeMenuWorld`:
+  - added as `refusedIsNotAFailure`, with `failedIsRed` extended to pin the status and the action.
+    Against a stub case that drew `.refused` as `.failed`, it failed with 4 issues: status "not
+    answering" (twice), presentation tint red, banner tint red.
+- [x] write failing `StatusViewModelTests` through `FakeMenuWorld`:
   - `watch` throwing `ClientError.watchRefused("dicta is already serving 4 watchers")` gives
     `model.link == .refused(...)`;
   - a `ClientError.timedOut` still gives `.failed`;
   - after a refusal a retry is scheduled through `after`, and a later accepted watch reaches
     `.connected`.
-- [ ] add `.refused` to the loop in `MenuModelTests.barIsQuietWhenIdle` (`:191`), so the strip
+  - added as `refusedWatchIsNotAFailure` and `refusedWatchRetries`. Against the stub both failed:
+    the link was `.failed("dicta refused to be watched: dicta is already serving 4 watchers")`.
+- [x] add `.refused` to the loop in `MenuModelTests.barIsQuietWhenIdle` (`:191`), so the strip
       and the header cannot disagree about it. The compiler does not flag that loop
-- [ ] add `DaemonLink.refused`, `Presentation.refused` and the banner case; fix every `switch` the
+- [x] add `DaemonLink.refused`, `Presentation.refused` and the banner case; fix every `switch` the
       compiler names
-- [ ] correct the two comments that call a refusal a failure: `DaemonLink.failed` ("The connection
+  - the compiler named none outside `MenuModel`: `swift build` of every product, `DictaMenu`
+    included, is clean.
+- [x] correct the two comments that call a refusal a failure: `DaemonLink.failed` ("The connection
       broke, or the daemon refused", `MenuModel.swift:30`) and `Presentation.unreachable` ("broke or
       was refused", `:266`)
-- [ ] map `watchRefused` in `link(for:)`
-- [ ] mutation check: map `watchRefused` back to `.failed`. The `StatusViewModelTests` above must fail;
+- [x] map `watchRefused` in `link(for:)`
+- [x] mutation check: map `watchRefused` back to `.failed`. The `StatusViewModelTests` above must fail;
       then restore it
-- [ ] run `bash Scripts/test.sh` and `Scripts/lint.sh` under the gate in Development Approach before
+  - mapped to `.failed(ClientError.watchRefused(reason).description)`: 2 of 61 tests in the two
+    suites fail, exactly the two new `StatusViewModelTests`. Restored, all 61 pass.
+- [x] run `bash Scripts/test.sh` and `Scripts/lint.sh` under the gate in Development Approach before
       Task 5
-- [ ] if the user has asked for commits, commit Task 4 together with
+  - `bash Scripts/test.sh`: 947 tests in 52 suites pass (944 + 3 new), Swift 6.3.3.
+    `Scripts/lint.sh`: built-in checks pass and SwiftLint reports 235, the baseline; the existing
+    `type_body_length` of `StatusViewModelTests` grew 654 → 688 lines, and none was added.
+- [x] if the user has asked for commits, commit Task 4 together with
       `git rm docs/backlog/dead-watchers-hold-slots-while-idle.md`: both halves of that item have now
       landed
+  - committed with the backlog file removed.
 
 ### Task 5: SPEC §7, the manual checklist and the human items
 
