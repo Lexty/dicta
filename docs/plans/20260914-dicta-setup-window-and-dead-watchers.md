@@ -92,6 +92,7 @@ socket to be refused on. So no acta backlog item is owed for any of the three.
     this plan, so the script exits 1 before any change here.
   - Until the user decides what to do with that baseline, the gate for this plan is: built-in checks
     pass, and the SwiftLint count does not rise above the baseline taken at the start of Task 2.
+    Every later "run `Scripts/lint.sh`" and "must pass" in this plan means exactly this gate.
 - Work on a branch off `main` (`fa89b69`), e.g. `dicta-setup-window-and-watchers`.
 
 ## Testing Strategy
@@ -192,19 +193,30 @@ private final class Watcher {
 ```
 
 - `cancel()` has no caller today and is deleted rather than carried over.
-- `wake()` does `write(wakeWrite, &byte, 1)` and ignores `EAGAIN`: a full pipe is a writer already
-  woken.
+- `make()` creates the pipe and sets `O_NONBLOCK` and `FD_CLOEXEC` on **both** ends. Any failure
+  closes whatever it opened and throws `.cannotOpen(code:)`; a watcher never runs with a blocking
+  write end, which is the premise that `publish` never blocks.
+- `wake()` writes one byte to `wakeWrite`:
+  - it retries on `EINTR`, so an interrupted write can never leave `pending` set with no wake;
+  - `EAGAIN`/`EWOULDBLOCK` means the pipe is full, and a full pipe is a writer already woken;
+  - any other error is ignored, because both ends are closed only in `deinit`, which no caller of
+    `wake()` can outlive.
+- Both pipe ends are closed **only** in `deinit`, never on `next`'s exit paths. `serve` holds the
+  registration through the stream, and `publish`/`stop` hold strong copies, so no `post` can write to
+  a closed or reused descriptor.
 - `next(watching:)` loops:
   1. Under `lock`, note whether an event is ready (`pending` or `ending`), or return `nil` when
      `done`.
   2. `poll([wakeRead POLLIN, client POLLIN], 2, ready ? 0 : -1)`. `EINTR` goes back to 2; any other
      error returns `nil`.
   3. If `client`'s `revents` is nonzero, return `nil`. That covers `POLLIN` (EOF or a byte: the peer
-     closed or talked, and a watcher does not talk, which is acta's rule), `POLLHUP`, `POLLERR` and
+     closed or talked after the handshake, and a watcher does not talk, which is acta's rule),
+     `POLLHUP`, `POLLERR` and
      `POLLNVAL`. Treating any bit as the end is what keeps a `POLLNVAL`, which `poll` reports
      unasked, from spinning the thread. Nothing is read from `client`.
-  4. If `wakeRead`'s `revents` has anything but `POLLIN`, return `nil`; if it has `POLLIN`, drain it
-     with `read` until `EAGAIN`.
+  4. If `wakeRead`'s `revents` has anything but `POLLIN`, return `nil`. If it has `POLLIN`, drain it:
+     `read` retries `EINTR` and stops at `EAGAIN`/`EWOULDBLOCK`; a `0` (EOF) or any other error
+     returns `nil`, never a retry that would spin.
   5. Under `lock`, return `pending` (cleared), else `ending` (cleared, `done = true`); otherwise go
      back to 1.
 - **The client is checked before every event, not only while idle.** The zero-timeout `poll` in step
@@ -216,6 +228,14 @@ private final class Watcher {
     `WatchRefusal` is `.full` or `.cannotOpen(code: Int32)`;
   - `serve` builds the message from it: the existing "dicta is already serving \(maxWatchers)
     watchers", or "dicta could not open a watch stream: <strerror>".
+- **"Any byte" means any byte the server has not already read.** `serve` reads the request with
+  `Framing.readFrame` (`ControlSocket.swift:265-284`), which discards whatever arrived after the
+  newline in the same `read`. A client that sends `watch` plus a newline plus more bytes in one
+  write has that tail swallowed, and stays watched while it keeps the socket open.
+  - acta has the same boundary: its `FrameReader` and that reader's buffer live only inside
+    `readRequestFrame` (`ControlConnection.swift:66`).
+  - So the rule is stated, in code comments and SPEC, as bytes arriving after the handshake is read,
+    and the test sends its byte only after reading the accepted response. No stronger promise is made.
 - `stream(to:watcher:)` calls `watcher.next(watching: client)`; the write path and the `.end` return
   are unchanged.
 - **Cost of an idle watcher:** one parked thread in one `poll` and two descriptors. With
@@ -250,36 +270,62 @@ private final class Watcher {
 
 - [ ] ask the user before touching launchd or the daemon's state; every step below that restarts
       the daemon or rewrites `setup.json` needs that go-ahead
-- [ ] check that the menu's LaunchAgent is not loaded (`launchctl list`), so that no crash loop runs
-      beside the probe. It was not loaded on 2026-09-14 at planning time; if it is, `launchctl
-      bootout` it and restore it with `launchctl bootstrap` when done
-- [ ] confirm the pending-offer state (`setup.json` has `offerSeen: false`) and copy `setup.json`
-      aside. Scenario (b) below chooses on the checklist and writes the file, so restore the copy
-      and restart the daemon before any later run that needs the offer pending
-- [ ] **before every probe run**:
-  - restart the daemon (`launchctl kickstart -k`), because each crash and each killed `lldb`
-    session leaks a watcher slot until Task 3 lands;
-  - confirm the probe's header is not "dicta refused to be watched" / "already serving 4 watchers".
+- [ ] record the starting state, to be restored at the end: whether the menu's LaunchAgent is
+      loaded (`launchctl list`; it was not at planning time, 2026-09-14), and `setup.json` copied
+      aside. If the agent is loaded, `launchctl bootout` it so no crash loop runs beside the probe
+- [ ] **the controlled restore**, used between stateful runs and at the end, in this order:
+  1. end the probe menu and wait until it has exited, so no close or `configure` effect is still in
+     flight;
+  2. stop the daemon;
+  3. restore `setup.json` from the copy;
+  4. start the daemon;
+  5. confirm the daemon is up with `dictactl status` (`idle`).
 
-  A refused probe never gets its first snapshot and never opens the window, and would read as "no
-  crash" for the wrong reason.
+  This checks the restored file and a confirmed restart, **not** the live choice: `dictactl status`
+  prints only the state or a message (`Sources/dictactl/main.swift:176-181`), never `scope` or
+  `offerSeen`. The live choice is read from the probe's own first watch snapshot, below. No
+  `dictactl watch` is added as a diagnostic before Task 3: each one that is ended leaks another
+  slot.
+
+  Restoring the file alone is not enough: `SetupStore.bootstrap` reads it only at start-up
+  (`SetupStore.swift:146-169`), and a running daemon keeps the choice scenario (b) made in memory.
+- [ ] **before every probe run**, a controlled restore (which also frees any watcher slot a previous
+      crash leaked), then confirm the preconditions the run needs:
+  - `dictactl status` is `idle`;
+  - the probe's first watch snapshot, observed in `lldb` (the same snapshot whose receipt the run
+    records), carries `state: idle`, `scope: agtermOnly` and `offerSeen: false`. `shouldAutoOpen`
+    (`SetupModel.swift:150-157`) needs all three in the first snapshot; `otherApps` never auto-opens.
+    Scenarios (b) and (c) record the snapshot they start from the same way;
+  - the probe accepts its watch. Before Task 4, a refusal is drawn as the red banner "dicta refused to
+    be watched: dicta is already serving 4 watchers" under the header "dicta is not answering"
+    (`StatusViewModel.swift:142-149`, `MenuModel.swift:103-104`); either one makes the run
+    inconclusive.
+- [ ] **what a run records**, each item positively observed, by a screenshot or in `lldb`:
+  - the watch was accepted (the header shows the daemon's state, not a failure);
+  - the scope, `offerSeen` and state of the first snapshot, read in `lldb`;
+  - the expected screen actually visible;
+  - then the window left open for one minute, or the exception with its stack.
+
+  A run in which the expected screen never appeared is **inconclusive and repeated, never a pass**.
 - [ ] build with `Scripts/bundle.sh` and run `DictaMenu.app/Contents/MacOS/DictaMenu` under `lldb`:
       the bundle carries `LSUIElement`, and a bare `.build` executable activates differently. Record
       the exception text and the top of the stack for the offer opening by itself
-- [ ] apply the Task 2 candidate locally (uncommitted) and run three scenarios under `lldb`:
+- [ ] apply the Task 2 candidate locally (uncommitted) and run three scenarios under `lldb`, each from
+      a controlled restore:
   - (a) the offer opening by itself;
   - (b) the checklist screen, after "Set up dictation";
   - (c) "Set Up…" from the panel.
 
   Run the three twice: with `NSHostingView`'s default `sizingOptions`, and with `hosting.sizingOptions
   = []`. The default is believed to be `.standardBounds`, whose min/max constraints could fight an
-  explicit `setFrame`; the SDK interface does not state the default. Record for each run whether it
-  crashed.
+  explicit `setFrame`; the SDK interface does not state the default.
 - [ ] record the outcome in this task, including which `sizingOptions` Task 2 uses (the default when
       both survive, matching acta). If the exception persists with the candidate, or its stack points
       elsewhere, mark ⚠️, stop, and revise Task 2 with the user before continuing
-- [ ] discard the local candidate (`git restore`) so that Task 2 starts from its failing test, and
-      restore `setup.json` from the copy
+- [ ] finish:
+  - discard the local candidate (`git restore`), so that Task 2 starts from its failing test;
+  - do a controlled restore;
+  - put the menu's LaunchAgent back in the loaded state recorded at the start.
 
 ### Task 2: Size the setup window explicitly, as acta sizes its panel
 
@@ -304,9 +350,10 @@ private final class Watcher {
 - [ ] set `sizingOptions` as Task 1 recorded
 - [ ] rewrite the file's header comment on sizing: why the size is set rather than tracked, and
       acta's `ReminderPanelController` as the shape
-- [ ] run `bash Scripts/test.sh` and `Scripts/lint.sh`; both must pass before Task 3
-- [ ] with the user's go-ahead, repeat Task 1's three scenarios with this code (same daemon restart
-      and `setup.json` restore before each run) and record the result here
+- [ ] run `bash Scripts/test.sh` and `Scripts/lint.sh` under the gate in Development Approach
+      (tests pass; lint's built-in checks pass and SwiftLint stays at its baseline) before Task 3
+- [ ] with the user's go-ahead, repeat Task 1's three scenarios with this code, under Task 1's
+      controlled restore, preconditions and recording rules, and record the result here
 - [ ] if the user has asked for commits, commit Task 2 together with
       `git rm docs/backlog/setup-window-constraint-loop-crash.md`, only once the repeat above
       survived all three scenarios
@@ -382,7 +429,8 @@ below, so `MenuWorldFakes.swift` needs no change.
 - [ ] map `watchRefused` in `link(for:)`
 - [ ] mutation check: map `watchRefused` back to `.failed`. The `StatusViewModelTests` above must fail;
       then restore it
-- [ ] run `bash Scripts/test.sh` and `Scripts/lint.sh`; both must pass before Task 5
+- [ ] run `bash Scripts/test.sh` and `Scripts/lint.sh` under the gate in Development Approach before
+      Task 5
 - [ ] if the user has asked for commits, commit Task 4 together with
       `git rm docs/backlog/dead-watchers-hold-slots-while-idle.md`: both halves of that item have now
       landed
@@ -394,8 +442,9 @@ below, so `MenuWorldFakes.swift` needs no change.
 - Modify: `docs/manual-checklist.md`
 
 - [ ] SPEC §7, amend the existing row "a watcher goes away mid-stream" (`SPEC.md:1454`) rather than
-      add a near-duplicate: the daemon notices the close, or a byte from a watcher, without writing
-      anything, including while idle, and frees the slot at once; no dictation outcome changes.
+      add a near-duplicate: the daemon notices the close, or a byte arriving after the handshake
+      was read, without writing anything, including while idle, and frees the slot at once; no
+      dictation outcome changes.
       Keep the event cell verbatim, because `ChecklistTests` matches it against the checklist
 - [ ] SPEC §7, the watcher-cap row (`:1455`): the menu shows the refusal as a refusal (amber, the
       daemon's reason, "Restart dicta"), never as "not answering", and retries with backoff
