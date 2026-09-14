@@ -166,20 +166,80 @@ struct WatchStreamTests {
         defer { fixture.tearDown() }
 
         // A raw connection that asks to watch and then vanishes mid-stream.
-        let raw = try ControlSocketTests.rawConnect(to: fixture.path)
-        try Framing.write(try Wire.encode(Request(cmd: .watch)), to: raw)
-        _ = try Framing.readFrame(from: raw)
+        let raw = try Self.rawWatch(fixture.path)
         #expect(Self.waitForWatchers(fixture.server, count: 1))
         close(raw)
 
-        // The write that fails is what discovers the peer is gone; a dead watcher is not an event
-        // and is never retried.
-        fixture.server.publish(.update(state: .recording))
+        // Nothing is published, and that is the point: an idle daemon writes nothing, so a write
+        // that fails can never be what finds the peer gone. The close is noticed on the read side,
+        // as acta's `ControlConnection` notices it, and a dead watcher is never retried.
         #expect(Self.waitForWatchers(fixture.server, count: 0))
 
         // And the daemon is unharmed: an ordinary command still answers.
         let response = try ControlClient.send(Request(cmd: .status), to: fixture.path)
         #expect(response.kind == .accepted)
+    }
+
+    @Test("watchers that die while the daemon is idle free their slots for the next one")
+    func deadWatchersFreeTheirSlots() throws {
+        let fixture = try Self.makeServer()
+        defer { fixture.tearDown() }
+
+        // The crash loop that filled every slot in minutes: each client dies without a word, and
+        // the daemon has nothing to say to any of them.
+        var raws: [Int32] = []
+        for _ in 0 ..< ControlTimeouts.maxWatchers { raws.append(try Self.rawWatch(fixture.path)) }
+        #expect(Self.waitForWatchers(fixture.server, count: ControlTimeouts.maxWatchers))
+        for raw in raws { close(raw) }
+        // Removal happens in `serve`'s `defer`, on each connection's own thread, so a fifth watcher
+        // connecting at once would race it rather than test it.
+        #expect(Self.waitForWatchers(fixture.server, count: 0))
+
+        let next = Watcher()
+        next.start(path: fixture.path)
+        #expect(Self.waitForWatchers(fixture.server, count: 1))
+        fixture.server.publish(.update(state: .warming))
+        #expect(next.waitForEvents(1))
+        #expect(next.error == nil, "the next watcher was refused: \(next.error ?? "")")
+        #expect(next.events.first?.snapshot?.state == .warming)
+    }
+
+    @Test("a watcher that talks after the handshake has its watch ended and its slot freed")
+    func talkingWatcherIsEnded() throws {
+        let fixture = try Self.makeServer()
+        defer { fixture.tearDown() }
+
+        // The byte goes only after the accepted response has been read: bytes that arrive with the
+        // request frame are consumed by the handshake read, and no promise is made about them.
+        let raw = try Self.rawWatch(fixture.path)
+        defer { close(raw) }
+        #expect(Self.waitForWatchers(fixture.server, count: 1))
+        ControlSocketTests.rawWrite(Data([0x0A]), to: raw)
+
+        #expect(Self.waitForWatchers(fixture.server, count: 0))
+        // The server closed its end, so the client reads the end of the connection, not an event.
+        var byte: UInt8 = 0
+        #expect(read(raw, &byte, 1) == 0)
+    }
+
+    @Test("a live watcher that says nothing is never taken for a dead one")
+    func silentWatcherIsKept() throws {
+        let fixture = try Self.makeServer()
+        defer { fixture.tearDown() }
+
+        let raw = try Self.rawWatch(fixture.path)
+        defer { close(raw) }
+        #expect(Self.waitForWatchers(fixture.server, count: 1))
+
+        // Silence is what a healthy watcher sounds like; only a close or a byte ends it.
+        usleep(500_000)
+        #expect(fixture.server.watcherCount == 1)
+
+        fixture.server.publish(.update(state: .recording))
+        let frame = try Framing.readFrame(from: raw)
+        let event = try Wire.decode(WatchEvent.self, from: frame)
+        #expect(event.kind == .update)
+        #expect(event.snapshot?.state == .recording)
     }
 
     // MARK: - the cap
@@ -242,6 +302,22 @@ struct WatchStreamTests {
     }
 
     // MARK: - helpers
+
+    /// A raw connection that has asked to watch and read its accepted response, so a test can close
+    /// it, or talk on it, without a client in the way. It carries `rawConnect`'s 2-second read
+    /// timeout, so a read that is never answered fails rather than hangs.
+    static func rawWatch(_ path: String) throws -> Int32 {
+        let raw = try ControlSocketTests.rawConnect(to: path)
+        do {
+            try Framing.write(try Wire.encode(Request(cmd: .watch)), to: raw)
+            let response = try Wire.decode(Response.self, from: try Framing.readFrame(from: raw))
+            try #require(response.kind == .accepted, "watch refused: \(response.message ?? "")")
+        } catch {
+            close(raw)
+            throw error
+        }
+        return raw
+    }
 
     /// Polls the server's watcher count. Reaching into `publish` is not enough: registration
     /// happens on the connection's thread, so a test that published immediately would be asserting

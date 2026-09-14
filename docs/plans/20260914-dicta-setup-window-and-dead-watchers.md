@@ -445,15 +445,19 @@ private final class Watcher {
 - Modify: `Sources/DictaIPC/ControlSocket.swift`
 - Modify: `Sources/DictaTestRunner/WatchStreamTests.swift`
 
-- [ ] reuse the raw-connection pattern `deadWatcherIsDropped` already has
+- [x] reuse the raw-connection pattern `deadWatcherIsDropped` already has
       (`ControlSocketTests.rawConnect`, a manual `watch` frame, `Framing.readFrame`), factored into a
       small helper only if a third test needs it
-- [ ] turn the existing `deadWatcherIsDropped` into test (a). Keep its `@Test` name, which
+  - factored as `WatchStreamTests.rawWatch(_:)` (connect, `watch` frame, accepted response read,
+    `rawConnect`'s 2 s read timeout kept), since four tests use it.
+- [x] turn the existing `deadWatcherIsDropped` into test (a). Keep its `@Test` name, which
       `docs/manual-checklist.md:106` cites and `ChecklistTests` resolves. Remove its
       `publish(.update(state: .recording))`, and rewrite the comment claiming "the write that fails
       is what discovers the peer is gone". With nothing published, `watcherCount` must still reach
       0. Watch it fail
-- [ ] write the other failing tests:
+  - the `@Test` display name, which is what the checklist cites, and the function name are both
+    kept. Against the old code it failed at `waitForWatchers(count: 0)` after 5 s.
+- [x] write the other failing tests:
   - (b) `maxWatchers` raw watchers close silently, `waitForWatchers(count: 0)` (removal happens in
     `serve`'s `defer`, so a fifth connecting at once would race it), then a fifth ordinary `Watcher`
     is accepted and receives a published event;
@@ -461,22 +465,44 @@ private final class Watcher {
     with nothing published.
 
   Watch (b) and (c) fail for the stated reason.
-- [ ] write the guard test: a live, silent raw watcher is still registered after 0.5 s and still
+  - (b) `deadWatchersFreeTheirSlots`, (c) `talkingWatcherIsEnded`, which also reads EOF on the raw
+    end once the slot is gone. Against the old code (b) failed with 5 issues, ending in the fifth
+    watcher refused with "dicta is already serving 4 watchers", and (c) with 2: the count never
+    reached 0 and the read timed out (`-1`) instead of reading EOF.
+- [x] write the guard test: a live, silent raw watcher is still registered after 0.5 s and still
       receives the next published event, so no false end is taken for EOF
-- [ ] replace `Watcher`'s `NSCondition` with the lock, the wake pipe and `next(watching:)` as in
+  - `silentWatcherIsKept`; it passed against the old code too, as a guard should.
+- [x] replace `Watcher`'s `NSCondition` with the lock, the wake pipe and `next(watching:)` as in
       Technical Details; delete `cancel()`; `stream(to:watcher:)` passes `client`
-- [ ] give `registerWatcher` its `WatchRefusal` result and build both refusal messages in `serve`.
+  - the wait is split into `next(watching:)`, `wait(watching:blocking:)`, `take()` and
+    `drainWake()`, which keeps the new code under SwiftLint's complexity limit. `Watcher.make()` uses
+    typed throws, and `registerWatcher` catches it with `do throws(WatchRefusal)`. `publish`'s
+    comment now describes a `post` as a lock plus one byte written to a non-blocking pipe.
+- [x] give `registerWatcher` its `WatchRefusal` result and build both refusal messages in `serve`.
       The pipe-failure path has no seam and no test; say so in the task record rather than invent
       one
-- [ ] mutation check: make `next(watching:)` ignore the client (outbox only, as the `NSCondition`
+  - `WatchRefusal.message` builds both messages; the `.full` text is unchanged, and
+    `watcherCapIsRefusedPolitely` still passes. The pipe-failure path (`.cannotOpen`) has no seam and
+    no test: nothing in the suite can make `pipe()` or `fcntl` fail inside the server.
+- [x] mutation check: make `next(watching:)` ignore the client (outbox only, as the `NSCondition`
       did). Tests (a)–(c) must fail; record the count, then restore it
-- [ ] rewrite the comments that state the old rule: `stream(to:)` ("a peer that has gone away is
+  - mutation: `poll` over the wake pipe alone (count 1 instead of 2). 3 of 9 watch-stream tests
+    fail, with 8 issues: (a), (b) and (c). The guard and the other five pass. Restored, and 9 of 9
+    pass again.
+- [x] rewrite the comments that state the old rule: `stream(to:)` ("a peer that has gone away is
       discovered by the write that fails", "no syscalls") and `ControlTimeouts.watchIdle` ("What
       actually detects a dead peer is the write that fails")
-- [ ] run `bash Scripts/test.sh` and `Scripts/lint.sh`. The existing cap, coalescing, `stop` and
+  - both rewritten; `Watcher`'s own header now carries the rule and acta's shape.
+- [x] run `bash Scripts/test.sh` and `Scripts/lint.sh`. The existing cap, coalescing, `stop` and
       command-latency tests must pass unchanged
-- [ ] if the user has asked for commits, commit Task 3 on its own. The backlog item stays: its
+  - 944 tests in 52 suites pass (`Scripts/test.sh`, `linkage.sh` first), Swift 6.3.3, macOS
+    26.6.2. The cap, coalescing, `stop` and command-latency tests passed unchanged. Lint: the
+    built-in checks pass, and SwiftLint reports 235, the baseline. As in Task 2, three existing
+    violations in `ControlSocket.swift` grew but none were added: `file_length` 1092 → 1216 lines,
+    `ControlServer`'s `type_body_length` 317 → 395, and `serve`'s `cyclomatic_complexity` 11 → 12.
+- [x] if the user has asked for commits, commit Task 3 on its own. The backlog item stays: its
       misdrawn refusal is Task 4's
+  - committed on its own, as the loop commits every task; the backlog item stays.
 
 ### Task 4: Draw a refused watch as a refusal
 

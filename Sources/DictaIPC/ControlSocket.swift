@@ -84,10 +84,11 @@ public enum ControlTimeouts {
     /// seconds.
     ///
     /// So it is generous, and it is not a heartbeat interval: the daemon sends nothing when nothing
-    /// happens. What actually detects a dead peer is the write that fails, in whichever direction
-    /// moves first. This bounds the case where the daemon's process is gone without its socket
-    /// having been closed — a `SIGKILL` with a descriptor inherited by a child, say — which no
-    /// write from the client's side would otherwise reveal.
+    /// happens. The daemon notices a dead client on the read side, at once and while idle (see
+    /// `ControlServer.stream(to:watcher:)`), so this number frees no slot of the daemon's. It
+    /// bounds the other direction: the daemon's process gone without its socket having been closed
+    /// — a `SIGKILL` with a descriptor inherited by a child, say — which the client, reading
+    /// nothing, would otherwise never notice.
     public static let watchIdle: TimeInterval = 3600.0
 
     /// How many `watch` connections the daemon serves at once (D27).
@@ -393,64 +394,179 @@ public final class ControlServer: @unchecked Sendable {
     private var watchers: [Int: Watcher] = [:]
     private var nextWatcherID = 0
 
-    /// One `watch` stream's outbox.
+    /// One `watch` stream's outbox, and the wait that notices the stream's client is gone.
     ///
     /// It holds at most ONE event, and that is the coalescing rule rather than an optimisation: a
     /// UI wants the daemon's state now, never the history of how it got there, and a reader that
     /// fell behind must not be handed a queue to replay. `post` overwrites; the writer thread picks
     /// up whatever is there when it next looks.
     ///
-    /// An `NSCondition` rather than a semaphore because two different things wake the writer — a
-    /// new event, and the end of the stream — and they must be distinguishable when both are
-    /// pending. The writer is the connection's own thread, which already exists and is already a
-    /// real `Thread`; nothing new is spawned per watcher.
+    /// The writer waits in `poll` on two things at once: a wake pipe that `post` and `finish` write
+    /// a byte to, and the client itself. A lock and a condition could wait for the first, but never
+    /// for the second, and the second is the one an idle daemon needs. A watcher whose client died
+    /// used to be found only by the write that failed, and an idle daemon writes nothing, so every
+    /// dead watcher kept its slot until the cap refused everyone. This is acta's rule, from its
+    /// `ControlConnection`: the stream ends on the read side, at once, with no deadline on an idle
+    /// one. One thread per watcher rather than acta's two racing tasks, because connections here
+    /// are served on real threads (see `acceptLoop`), and one `poll` needs no second reader to shut
+    /// down and join before the descriptor is closed.
+    ///
+    /// Both pipe ends are closed only in `deinit`. `serve` holds the registration for as long as
+    /// the stream runs, and `publish` and `stop` hold strong copies while they post, so no `wake`
+    /// can ever write to a closed or reused descriptor.
     private final class Watcher {
-        private let condition = NSCondition()
-        private var pending: WatchEvent?
-        private var ending: WatchEvent?
-        private var done = false
+        private let lock = NSLock()
+        private var pending: WatchEvent?  // guarded by lock
+        private var ending: WatchEvent?  // guarded by lock
+        private var done = false  // guarded by lock
+        private let wakeRead: Int32
+        private let wakeWrite: Int32
+
+        private init(wakeRead: Int32, wakeWrite: Int32) {
+            self.wakeRead = wakeRead
+            self.wakeWrite = wakeWrite
+        }
+
+        deinit {
+            close(wakeRead)
+            close(wakeWrite)
+        }
+
+        /// A watcher with its wake pipe, both ends non-blocking and close-on-exec. It never runs
+        /// with a blocking write end: that is the premise on which `publish` never blocks.
+        static func make() throws(WatchRefusal) -> Watcher {
+            var ends: [Int32] = [-1, -1]
+            guard pipe(&ends) == 0 else { throw .cannotOpen(code: errno) }
+            for end in ends {
+                let flags = fcntl(end, F_GETFL)
+                guard flags >= 0,
+                      fcntl(end, F_SETFL, flags | O_NONBLOCK) == 0,
+                      fcntl(end, F_SETFD, FD_CLOEXEC) == 0
+                else {
+                    let code = errno
+                    close(ends[0])
+                    close(ends[1])
+                    throw .cannotOpen(code: code)
+                }
+            }
+            return Watcher(wakeRead: ends[0], wakeWrite: ends[1])
+        }
 
         /// The newest state. Replaces anything not yet written.
         func post(_ event: WatchEvent) {
-            condition.lock()
-            defer { condition.unlock() }
-            guard !done else { return }
-            pending = event
-            condition.signal()
+            let posted = lock.withLock { () -> Bool in
+                guard !done else { return false }
+                pending = event
+                return true
+            }
+            if posted { wake() }
         }
 
         /// Ends the stream after at most one more update. Idempotent.
         func finish(_ event: WatchEvent) {
-            condition.lock()
-            defer { condition.unlock() }
-            guard !done, ending == nil else { return }
-            ending = event
-            condition.signal()
+            let posted = lock.withLock { () -> Bool in
+                guard !done, ending == nil else { return false }
+                ending = event
+                return true
+            }
+            if posted { wake() }
         }
 
-        /// Blocks until there is a frame to write, or the stream is over (`nil`).
-        func next() -> WatchEvent? {
-            condition.lock()
-            defer { condition.unlock() }
-            while pending == nil, ending == nil, !done { condition.wait() }
-            if let event = pending {
-                pending = nil
-                return event
-            }
-            if let event = ending {
-                ending = nil
-                done = true
-                return event
-            }
-            return nil
+        /// One byte on the wake pipe. `EINTR` is retried, so an interrupted write never leaves an
+        /// event with nobody woken for it. A full pipe (`EAGAIN`) is a writer already woken. Any
+        /// other error cannot mean a closed end, since both close only in `deinit`.
+        private func wake() {
+            var byte: UInt8 = 1
+            while Darwin.write(wakeWrite, &byte, 1) < 0, errno == EINTR {}
         }
 
-        /// Wakes the writer with nothing to say, so it can leave.
-        func cancel() {
-            condition.lock()
-            defer { condition.unlock() }
-            done = true
-            condition.signal()
+        /// Blocks until there is a frame to write (the event) or the stream is over (`nil`).
+        ///
+        /// Over means: `finish`'s event was already returned, or `client` became readable or
+        /// reported anything at all. A watcher says nothing after the handshake, so a readable
+        /// client is either the end of the connection or a byte it had no business sending, and
+        /// both end the watch, as acta's do. "Anything at all" covers `POLLHUP`, `POLLERR` and the
+        /// `POLLNVAL` that `poll` reports unasked, which would otherwise spin this thread. Nothing
+        /// is read from `client`.
+        ///
+        /// The client is checked before EVERY event, not only while idle: with an event ready the
+        /// `poll` does not wait, but it still looks, so a daemon that publishes continuously still
+        /// notices a gone client, and drops the event rather than writing it into a failing write.
+        func next(watching client: Int32) -> WatchEvent? {
+            while true {
+                let ready = lock.withLock { () -> Bool? in
+                    done ? nil : (pending != nil || ending != nil)
+                }
+                guard let ready, wait(watching: client, blocking: !ready) else { return nil }
+                if let event = take() { return event }
+            }
+        }
+
+        /// One `poll` over the wake pipe and the client, draining the pipe if it was written to.
+        /// `false` means the stream is over: the client reported anything, or the pipe or `poll`
+        /// failed in a way a retry would only spin on.
+        private func wait(watching client: Int32, blocking: Bool) -> Bool {
+            var descriptors = [
+                pollfd(fd: wakeRead, events: Int16(POLLIN), revents: 0),
+                pollfd(fd: client, events: Int16(POLLIN), revents: 0)
+            ]
+            while poll(&descriptors, 2, blocking ? -1 : 0) < 0 {
+                guard errno == EINTR else { return false }
+            }
+            if descriptors[1].revents != 0 { return false }
+            let woken = descriptors[0].revents
+            if woken & ~Int16(POLLIN) != 0 { return false }
+            return woken & Int16(POLLIN) == 0 || drainWake()
+        }
+
+        /// The pending event, else the ending one (after which the stream is done), else `nil`.
+        private func take() -> WatchEvent? {
+            lock.withLock {
+                if let event = pending {
+                    pending = nil
+                    return event
+                }
+                if let event = ending {
+                    ending = nil
+                    done = true
+                    return event
+                }
+                return nil
+            }
+        }
+
+        /// Empties the wake pipe. `false` for an end-of-file or an error other than `EINTR` and
+        /// "empty", so the caller ends the stream rather than retrying into a spin.
+        private func drainWake() -> Bool {
+            var buffer = [UInt8](repeating: 0, count: 64)
+            while true {
+                let count = Darwin.read(wakeRead, &buffer, buffer.count)
+                if count > 0 { continue }
+                if count == 0 { return false }
+                switch errno {
+                case EINTR: continue
+                case EAGAIN, EWOULDBLOCK: return true
+                default: return false
+                }
+            }
+        }
+    }
+
+    /// Why a `watch` was refused before its stream could start. Both are answered with an ordinary
+    /// refusal `Response`, never a dropped connection, which the client would read as a crash.
+    private enum WatchRefusal: Error {
+        /// The cap is reached.
+        case full
+        /// The watcher's wake pipe could not be opened: `pipe()` or `fcntl`, usually `EMFILE`.
+        case cannotOpen(code: Int32)
+
+        var message: String {
+            switch self {
+            case .full:
+                "dicta is already serving \(ControlTimeouts.maxWatchers) watchers"
+            case let .cannotOpen(code):
+                "dicta could not open a watch stream: \(String(cString: strerror(code)))"
+            }
         }
     }
 
@@ -701,10 +817,10 @@ public final class ControlServer: @unchecked Sendable {
     /// Hands the newest state to every live `watch` stream (D27).
     ///
     /// Safe to call from any thread and from inside a transition's aftermath: it takes `stateLock`
-    /// only long enough to copy the list, and each `post` is a lock and a signal over one pointer.
-    /// It never blocks on a socket — the writing happens on each watcher's own connection thread —
-    /// so a wedged UI cannot slow a dictation down. That property is the reason this is a fan-out
-    /// to outboxes rather than a loop of writes.
+    /// only long enough to copy the list, and each `post` is a lock and one byte to a non-blocking
+    /// pipe. It never blocks on a socket — the writing happens on each watcher's own connection
+    /// thread — so a wedged UI cannot slow a dictation down. That property is the reason this is a
+    /// fan-out to outboxes rather than a loop of writes.
     /// How many `watch` streams are live. Exposed because registration happens on the connection's
     /// own thread, so a test that published immediately after connecting would be asserting on a
     /// race; and because "how many watchers are there" is the question the cap exists to answer.
@@ -715,15 +831,22 @@ public final class ControlServer: @unchecked Sendable {
         for watcher in live { watcher.post(event) }
     }
 
-    /// Registers a watcher if there is room. `nil` means the cap is reached, and the caller answers
-    /// with an ordinary refusal rather than by closing the connection.
-    private func registerWatcher() -> (id: Int, watcher: Watcher)? {
+    /// Registers a watcher if there is room and its wake pipe opens. A failure is the refusal the
+    /// caller answers with, as an ordinary response rather than by closing the connection.
+    private func registerWatcher() -> Result<(id: Int, watcher: Watcher), WatchRefusal> {
         stateLock.withLock {
-            guard running, watchers.count < ControlTimeouts.maxWatchers else { return nil }
+            guard running, watchers.count < ControlTimeouts.maxWatchers else {
+                return .failure(.full)
+            }
+            let watcher: Watcher
+            do throws(WatchRefusal) {
+                watcher = try Watcher.make()
+            } catch {
+                return .failure(error)
+            }
             nextWatcherID += 1
-            let watcher = Watcher()
             watchers[nextWatcherID] = watcher
-            return (nextWatcherID, watcher)
+            return .success((nextWatcherID, watcher))
         }
     }
 
@@ -733,12 +856,15 @@ public final class ControlServer: @unchecked Sendable {
 
     /// Writes frames to one watcher until the stream ends or the peer goes away.
     ///
-    /// This runs on the connection's own thread, which would otherwise have returned. Nothing is
-    /// read from the socket after the handshake: the client says nothing more, and a peer that has
-    /// gone away is discovered by the write that fails — `EPIPE`, with `SIGPIPE` already silenced
-    /// on this descriptor. A watcher that is simply idle costs one parked thread and no syscalls.
+    /// This runs on the connection's own thread, which would otherwise have returned. A peer that
+    /// has gone away is noticed on the read side, by `Watcher.next(watching:)`, whether or not the
+    /// daemon has anything to say: an idle daemon writes nothing, so waiting for a write to fail
+    /// would keep a dead watcher's slot forever. A peer that sends a byte after the handshake has
+    /// been read is ended the same way. A write that fails (`EPIPE`, with `SIGPIPE` silenced on
+    /// this descriptor) still ends it too. A watcher that is simply idle costs one thread parked in
+    /// one `poll`, and the two descriptors of its wake pipe.
     private func stream(to client: Int32, watcher: Watcher) {
-        while let event = watcher.next() {
+        while let event = watcher.next(watching: client) {
             guard let frame = try? Wire.encode(event) else { continue }
             do {
                 try Framing.write(frame, to: client)
@@ -774,13 +900,11 @@ public final class ControlServer: @unchecked Sendable {
         // never starts.
         var registration: (id: Int, watcher: Watcher)?
         if case let .request(request) = incoming, request.cmd == .watch {
-            registration = registerWatcher()
-            if registration == nil {
-                let refusal = Response(
-                    kind: .rejected,
-                    state: .idle,
-                    message: "dicta is already serving \(ControlTimeouts.maxWatchers) watchers"
-                )
+            switch registerWatcher() {
+            case let .success(registered):
+                registration = registered
+            case let .failure(refused):
+                let refusal = Response(kind: .rejected, state: .idle, message: refused.message)
                 if let frame = try? Wire.encode(refusal) {
                     try? Framing.write(frame, to: client)
                 }
