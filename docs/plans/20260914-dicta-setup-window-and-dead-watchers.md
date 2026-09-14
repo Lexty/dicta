@@ -561,14 +561,14 @@ below, so `MenuWorldFakes.swift` needs no change.
 - Modify: `SPEC.md`
 - Modify: `docs/manual-checklist.md`
 
-- [ ] SPEC §7, amend the existing row "a watcher goes away mid-stream" (`SPEC.md:1454`) rather than
+- [x] SPEC §7, amend the existing row "a watcher goes away mid-stream" (`SPEC.md:1454`) rather than
       add a near-duplicate: the daemon notices the close, or a byte arriving after the handshake
       was read, without writing anything, including while idle, and frees the slot at once; no
       dictation outcome changes.
       Keep the event cell verbatim, because `ChecklistTests` matches it against the checklist
-- [ ] SPEC §7, the watcher-cap row (`:1455`): the menu shows the refusal as a refusal (amber, the
+- [x] SPEC §7, the watcher-cap row (`:1455`): the menu shows the refusal as a refusal (amber, the
       daemon's reason, "Restart dicta"), never as "not answering", and retries with backoff
-- [ ] add **H48**: the setup window opens and survives each screen, and a screen change while it is
+- [x] add **H48**: the setup window opens and survives each screen, and a screen change while it is
       open:
   - (a) the offer opening by itself on a migrated install;
   - (b) "Set up dictation" turning it into the checklist;
@@ -576,14 +576,20 @@ below, so `MenuWorldFakes.swift` needs no change.
   - (d) a save error appearing.
 
   Each resizes with the top edge in place, and the menu is still alive a minute later.
-- [ ] add **H49**: with the daemon idle, `kill -9` the menu five times. Each time the menu returns
+- [x] add **H49**: with the daemon idle, `kill -9` the menu five times. Each time the menu returns
       connected, and `lsof` on `control.sock` shows no connection without a live peer
-- [ ] update the Audit 2 lines in `docs/manual-checklist.md` that `ChecklistTests` pairs with §7:
+- [x] update the Audit 2 lines in `docs/manual-checklist.md` that `ChecklistTests` pairs with §7:
   - "a watcher goes away mid-stream" (`:106`) cites Task 3's tests (a), (b) and (c) and the guard,
     by their exact `@Test` names, plus H49;
   - "the watcher cap is reached" (`:107`) adds Task 4's refusal tests.
-- [ ] note in H35, H41 and H47 that they are scored together with H48
-- [ ] run `bash Scripts/test.sh` (`ChecklistTests` gates these edits) and `Scripts/lint.sh`
+- [x] note in H35, H41 and H47 that they are scored together with H48
+- [x] run `bash Scripts/test.sh` (`ChecklistTests` gates these edits) and `Scripts/lint.sh`
+  - `bash Scripts/test.sh`: 947 tests in 52 suites pass, `checklist` included, so every new
+    `test:` citation resolves and the two amended §7 rows still pair by their verbatim events.
+    Swift 6.3.3. `Scripts/lint.sh`: the built-in checks pass; SwiftLint reports 235, the baseline.
+  - H48 (d) makes the save error with the `chmod a-w` of H42 (b). H49's pass is the daemon's
+    `lsof ... | grep -c unix` count unchanged after five kills, beside the menu returning connected.
+    H35, H41 and H47 each end with a note that they are scored together with H48.
 
 ### Task 6: Verify acceptance criteria
 
