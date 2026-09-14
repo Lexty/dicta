@@ -228,6 +228,8 @@ private final class Watcher {
     `WatchRefusal` is `.full` or `.cannotOpen(code: Int32)`;
   - `serve` builds the message from it: the existing "dicta is already serving \(maxWatchers)
     watchers", or "dicta could not open a watch stream: <strerror>".
+  - Added in review: a third case, `.stopping`, answers a watch that arrives after `stop()` with
+    "dicta is shutting down" rather than the cap message, which would be false then.
 - **"Any byte" means any byte the server has not already read.** `serve` reads the request with
   `Framing.readFrame` (`ControlSocket.swift:265-284`), which discards whatever arrived after the
   newline in the same `read`. A client that sends `watch` plus a newline plus more bytes in one

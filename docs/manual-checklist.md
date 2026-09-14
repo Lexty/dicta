@@ -669,16 +669,18 @@ counts as a pass, so two people scoring it agree.
 - **H48 — the setup window opens, survives each screen, and resizes in place.** The window is sized
   by its controller from the content's fitting height, and it once killed the menu about three
   seconds after opening (AppKit's "more Update Constraints in Window passes than there are views in
-  the window"), so a crash loop under launchd is the failure this item watches for. Note the menu's
-  pid (`pgrep DictaMenu`) before each half. (a) On a migrated install with the offer pending,
-  relaunch the menu while idle. Pass: the offer opens by itself. (b) Click "Enable" (on a fresh
-  install the same button reads "Set up dictation"). Pass: the window turns into the checklist.
-  (c) Close it and click "Set Up…" in the panel's footer. Pass: the window opens. (d) With the
-  window on the checklist, make a save fail (`chmod a-w` the support directory as in **H42** (b))
-  and choose again. Pass: the save error appears. At every screen change the window grows or
-  shrinks with its top edge where it was, and no text is cut off or left with a gap under it. A minute after each half, `pgrep DictaMenu` still prints the pid
-  noted, and `log show --last 5m --predicate 'process == "DictaMenu"' | grep -c NSGenericException`
-  prints 0. Put the directory back with `chmod u+w` afterwards.
+  the window"), so a crash loop under launchd is the failure this item watches for. (a) On a
+  migrated install with the offer pending, relaunch the menu while idle. Pass: the offer opens by
+  itself. Only now note the menu's pid (`pgrep DictaMenu`), since the relaunch gave it a new one.
+  (b) Click "Enable" (on a fresh install the same button reads "Set up dictation"). Pass: the
+  window turns into the checklist. (c) Close it and click "Set Up…" in the panel's footer. Pass:
+  the window opens. (d) With the window on the checklist, make a save fail (`chmod a-w` the
+  support directory as in **H42** (b)) and choose again. Pass: the save error appears. At every
+  screen change the window grows or shrinks with its top edge where it was, and no text is cut off
+  or left with a gap under it. A minute after each of (a) to (d), `pgrep DictaMenu` still prints
+  the pid noted after (a), and
+  `log show --last 5m --predicate 'process == "DictaMenu"' | grep -c NSGenericException` prints 0.
+  Put the directory back with `chmod u+w` afterwards.
 - **H49 — a menu killed while the daemon is idle leaves no watcher behind.** With the daemon idle
   and nothing dictated during the item, note the daemon's pid and
   `lsof -p <daemon pid> | grep -cE 'unix|PIPE'`: each watcher holds a connection and the two ends

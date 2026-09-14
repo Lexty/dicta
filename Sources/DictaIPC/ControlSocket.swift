@@ -818,6 +818,11 @@ public final class ControlServer: @unchecked Sendable {
         if !askedToStop { onUnexpectedExit?() }
     }
 
+    /// How many `watch` streams are live. Exposed because registration happens on the connection's
+    /// own thread, so a test that published immediately after connecting would be asserting on a
+    /// race; and because "how many watchers are there" is the question the cap exists to answer.
+    public var watcherCount: Int { stateLock.withLock { watchers.count } }
+
     /// Hands the newest state to every live `watch` stream (D27).
     ///
     /// Safe to call from any thread and from inside a transition's aftermath: it takes `stateLock`
@@ -825,11 +830,6 @@ public final class ControlServer: @unchecked Sendable {
     /// pipe. It never blocks on a socket — the writing happens on each watcher's own connection
     /// thread — so a wedged UI cannot slow a dictation down. That property is the reason this is a
     /// fan-out to outboxes rather than a loop of writes.
-    /// How many `watch` streams are live. Exposed because registration happens on the connection's
-    /// own thread, so a test that published immediately after connecting would be asserting on a
-    /// race; and because "how many watchers are there" is the question the cap exists to answer.
-    public var watcherCount: Int { stateLock.withLock { watchers.count } }
-
     public func publish(_ event: WatchEvent) {
         let live = stateLock.withLock { Array(watchers.values) }
         for watcher in live { watcher.post(event) }
