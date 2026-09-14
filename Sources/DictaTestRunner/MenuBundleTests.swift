@@ -209,6 +209,41 @@ struct MenuBundleTests {
         #expect(sources.contains("setupPresenter?.show()"))
     }
 
+    @Test("the setup window sets its size from fittingSize, and never tracks a preferred size")
+    func setupWindowSizeIsSetNotTracked() throws {
+        // The menu died about three seconds after the window opened: `NSHostingController`'s
+        // `preferredContentSize`, read inside AppKit's Update Constraints pass, proposed a size
+        // that asked for another pass, until `NSWindow` gave up with `NSGenericException`
+        // (measured in the plan's Task 1). No test draws the window, so the shape that removes the
+        // loop is held here, and H48 scores that it survives.
+        let menu = try Self.sourceFiles(in: "Sources/DictaMenu")
+        let file = try #require(menu.first { $0.name == "SetupWindow.swift" })
+        let code = file.text.split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+        // `sizingOptions` itself is not banned: only the option that feeds the size back.
+        #expect(!code.contains(".preferredContentSize"))
+        #expect(!code.contains("NSHostingController"))
+        #expect(code.contains("NSHostingView(rootView: SetupView(model: model))"))
+        #expect(code.contains("window.contentView = hosting"))
+        #expect(code.contains(".fittingSize"))
+        #expect(code.contains("layoutSubtreeIfNeeded()"))
+
+        let controller = try #require(Self.topLevelDeclarations(in: file.text)
+            .first { $0.header.contains("final class SetupWindowController") })
+        let show = try #require(controller.body.range(of: "func show() "))
+        let showBody = try #require(Self.topLevelDeclarations(
+            in: String(controller.body[show.lowerBound...])).first?.body)
+        let fit = try #require(showBody.range(of: "fitHeight()"))
+        let center = try #require(showBody.range(of: "center()"))
+        #expect(fit.lowerBound < center.lowerBound, "show() centres before it measures")
+        // A content change is measured on a later main run-loop turn, never inside the change or a
+        // layout pass: `objectWillChange` fires before the model has changed.
+        #expect(controller.body.contains("objectWillChange"))
+        #expect(controller.body.contains("RunLoop.main"))
+        #expect(controller.body.contains("[weak self]"))
+    }
+
     // MARK: - Who owns and starts the model
 
     /// Each Swift file of a menu directory, by name, in a stable order.

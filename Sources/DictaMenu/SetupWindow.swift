@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import DictaCore
 import DictaMenuKit
 import SwiftUI
@@ -23,9 +24,25 @@ import SwiftUI
 /// The presenter `StatusViewModel` asks to `show()`, in acta's `ReminderPresenting` shape: it
 /// holds the model weakly, draws it, and reports the window's two events back through the model's
 /// public methods. `MenuRoot` owns it and attaches it before the model starts.
+///
+/// **The size is set, never tracked.** `NSHostingController` with `.preferredContentSize` killed
+/// the menu about three seconds after the window opened: AppKit read the preferred size inside its
+/// Update Constraints pass, the read proposed a size to the SwiftUI graph, the proposal marked the
+/// window as needing another pass, and after more passes than views `NSWindow` raised
+/// `NSGenericException` (measured 2026-09-14, the stack in the setup-window plan). So the window
+/// follows acta's `ReminderPanelController` instead: an `NSHostingView` as the content, its height
+/// read from `fittingSize`, and the frame set by this controller. `sizingOptions` stays at the
+/// default, as acta leaves it; `[]` reads `fittingSize` as zero.
+///
+/// Where acta measures only at `show`, this window also measures when the model changes, because
+/// it changes screen in place (the offer becomes the checklist, a save error appears) where acta
+/// builds a new panel per prompt. That measurement runs on a later main run-loop turn, never inside
+/// a change or a layout pass, so nothing a layout pass does can ask for another one.
 @MainActor
 final class SetupWindowController: NSObject, NSWindowDelegate, SetupWindowPresenting {
     private var window: NSWindow?
+    private var hosting: NSHostingView<SetupView>?
+    private var observation: AnyCancellable?
     private weak var model: StatusViewModel?
 
     init(model: StatusViewModel) {
@@ -38,24 +55,52 @@ final class SetupWindowController: NSObject, NSWindowDelegate, SetupWindowPresen
         guard let model else { return }
         let window = self.window ?? make(model)
         self.window = window
+        fitHeight()
         if !window.isVisible { window.center() }
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
     }
 
     private func make(_ model: StatusViewModel) -> NSWindow {
-        let hosting = NSHostingController(rootView: SetupView(model: model))
-        // The window follows the screen it draws: a checklist is taller than an offer.
-        hosting.sizingOptions = [.preferredContentSize]
-        let window = NSWindow(contentViewController: hosting)
-        window.styleMask = [.titled, .closable]
+        let hosting = NSHostingView(rootView: SetupView(model: model))
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: hosting.fittingSize),
+            // The final style from the start: nothing about the frame changes once content is in.
+            styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.contentView = hosting
         window.title = "Set Up Dicta"
         // Kept after a close, so reopening from "Set Up…" does not rebuild it.
         window.isReleasedWhenClosed = false
         // Nothing restores it at login: the first snapshot of a launch decides that, and only that.
         window.isRestorable = false
         window.delegate = self
+        self.hosting = hosting
+        // `objectWillChange` fires before the change, so the new screen can only be measured on a
+        // later turn anyway. `now` ticks once a second too; each tick is one measurement that the
+        // 1 pt skip turns into nothing, and a layout pass changes no model, so it cannot loop.
+        observation = model.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, self.window?.isVisible == true else { return }
+                    self.fitHeight()
+                }
+            }
         return window
+    }
+
+    /// Sets the window's height to what the content measures, keeping its top edge where it is, so
+    /// the title bar does not jump when the checklist replaces the offer.
+    private func fitHeight() {
+        guard let window, let hosting else { return }
+        hosting.layoutSubtreeIfNeeded()
+        let height = hosting.fittingSize.height
+        let content = window.contentRect(forFrameRect: window.frame)
+        guard abs(height - content.height) >= 1 else { return }
+        var frame = window.frameRect(forContentRect: NSRect(
+            x: content.minX, y: content.minY, width: content.width, height: height))
+        frame.origin.y = window.frame.maxY - frame.height
+        window.setFrame(frame, display: true)
     }
 
     func windowDidBecomeKey(_ notification: Notification) {

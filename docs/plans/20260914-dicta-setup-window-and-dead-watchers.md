@@ -394,30 +394,50 @@ private final class Watcher {
 - Modify: `Sources/DictaMenu/SetupWindow.swift`
 - Modify: `Sources/DictaTestRunner/MenuBundleTests.swift` (or a new source-check test beside it)
 
-- [ ] write the source-check test first:
+- [x] write the source-check test first:
   - `Sources/DictaMenu/SetupWindow.swift` contains neither `.preferredContentSize` nor
     `NSHostingController`. The text `sizingOptions` is not banned: Task 1 may choose `= []`;
   - it builds an `NSHostingView` and reads `fittingSize`;
   - `fitHeight()` is called in `show()` before `center()`.
 
   Watch the test fail against the current file.
-- [ ] replace `NSHostingController` with `NSHostingView` as the window's `contentView`, built with its
+
+  - `MenuBundleTests.setupWindowSizeIsSetNotTracked`. Comment lines are dropped before the banned
+    words are looked for, so the header comment can still name `NSHostingController`. It also holds
+    `window.contentView = hosting`, `layoutSubtreeIfNeeded()`, and an `objectWillChange`
+    observation received on `RunLoop.main` with `[weak self]`. Against the old file it failed with
+    7 issues, stopping at the missing `fitHeight()` in `show()`.
+- [x] replace `NSHostingController` with `NSHostingView` as the window's `contentView`, built with its
       final style mask
-- [ ] add `fitHeight()`, which measures `fittingSize`, skips a change under 1 pt and keeps the top
+- [x] add `fitHeight()`, which measures `fittingSize`, skips a change under 1 pt and keeps the top
       edge; call it from `show()` before `center()`
-- [ ] observe `model.objectWillChange` with `[weak self]`, and call `fitHeight()` on a later main
+- [x] observe `model.objectWillChange` with `[weak self]`, and call `fitHeight()` on a later main
       run-loop turn while the window is visible. `fitHeight()` calls
       `hosting.layoutSubtreeIfNeeded()` before reading `fittingSize`, so it measures the new state
-- [ ] set `sizingOptions` as Task 1 recorded
-- [ ] rewrite the file's header comment on sizing: why the size is set rather than tracked, and
+- [x] set `sizingOptions` as Task 1 recorded
+- [x] rewrite the file's header comment on sizing: why the size is set rather than tracked, and
       acta's `ReminderPanelController` as the shape
-- [ ] run `bash Scripts/test.sh` and `Scripts/lint.sh` under the gate in Development Approach
+- [x] run `bash Scripts/test.sh` and `Scripts/lint.sh` under the gate in Development Approach
       (tests pass; lint's built-in checks pass and SwiftLint stays at its baseline) before Task 3
-- [ ] with the user's go-ahead, repeat Task 1's three scenarios with this code, under Task 1's
+  - 941 tests in 52 suites pass (`Scripts/test.sh`, which ran `linkage.sh` first), Swift 6.3.3,
+    macOS 26.6.2. `swift build -c release --product DictaMenu` builds with no warning from the menu.
+    Lint: the built-in checks pass; SwiftLint reports 235, the baseline. Two existing
+    `MenuBundleTests` violations grew rather than new ones appearing: `file_length` 443 → 478
+    lines and `type_body_length` 304 → 329.
+  - mutation: with `fitHeight()` moved after `center()` in `show()`, the test fails ("show()
+    centres before it measures"); restored.
+- [x] with the user's go-ahead, repeat Task 1's three scenarios with this code, under Task 1's
       controlled restore, preconditions and recording rules, and record the result here
-- [ ] if the user has asked for commits, commit Task 2 together with
+  - ⚠️ (skipped - not automatable here: the loop runs non-interactively, so no go-ahead could be
+    asked for, and the installed menu against the real daemon was not run.) The nearest evidence is
+    Task 1's probe, whose candidate had this shape and survived all four scenarios for 60 s. H48
+    stays the confirmation.
+- [x] if the user has asked for commits, commit Task 2 together with
       `git rm docs/backlog/setup-window-constraint-loop-crash.md`, only once the repeat above
       survived all three scenarios
+  - committed on its own, as the loop commits every task. ⚠️ The backlog item was **not** removed:
+    the repeat on the real menu has not run. It goes once H48, or that repeat, has passed; Task 7's
+    check that it is gone must wait for that too.
 
 ### Task 3: End a watch when its client closes or talks
 
