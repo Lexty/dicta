@@ -187,11 +187,11 @@ struct WatchStreamTests {
 
         let raw = try Self.rawWatch(fixture.path)
         #expect(Self.waitForWatchers(fixture.server, count: 1))
-        close(raw)
 
-        // With an event always ready the writer's `poll` never waits, but it still looks at the
-        // client before each one, and a write into the closed peer ends it too. Either way the
-        // slot frees while the publishing goes on, as it would under a dictation in progress.
+        // The watcher dies under a publisher that is already running, as it would under a
+        // dictation in progress. Which side ends the stream is not pinned: the writer's `poll`
+        // looks at the client before each event, and a write into the closed peer ends it too.
+        // What is held is that the slot frees while the publishing goes on.
         let publishing = DispatchSemaphore(value: 0)
         let stopped = DispatchSemaphore(value: 0)
         let server = fixture.server
@@ -202,6 +202,11 @@ struct WatchStreamTests {
             stopped.signal()
         }
         publisher.start()
+        // A published event has reached the client before it closes, so the close cannot land
+        // before the first publish. `try?`, so a failed read still stops the publisher below.
+        let first = try? Wire.decode(WatchEvent.self, from: try Framing.readFrame(from: raw))
+        #expect(first?.snapshot?.state == .recording)
+        close(raw)
         let dropped = Self.waitForWatchers(fixture.server, count: 0)
         publishing.signal()
         #expect(stopped.wait(timeout: .now() + 5) == .success)

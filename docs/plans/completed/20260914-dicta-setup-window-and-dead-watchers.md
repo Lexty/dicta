@@ -618,6 +618,11 @@ below, so `MenuWorldFakes.swift` needs no change.
 - [x] run the full suite: `bash Scripts/test.sh`; record the test and suite counts and the toolchain
   - 947 tests in 52 suites pass, `linkage.sh` first. Swift 6.3.3 (swiftlang-6.3.3.1.3), macOS
     26.6.2.
+  - ➕ after the code review: 948 tests in 52 suites pass. The review added
+    `deadWatcherIsDroppedUnderContinuousPublishing` (`b7dbf99`), after the mutation run above. As
+    first written it closed the client before the publisher started, so it could pass with no
+    publish overlapping the watcher (found by Codex); the client now reads a published event
+    before it closes. It does not pin which side ends the stream.
 - [x] run `Scripts/lint.sh`
   - exits 1 on the SwiftLint baseline alone: none of the built-in checks reports anything, and
     SwiftLint 0.65.1 reports 235 violations, the baseline taken at the start of Task 2.
@@ -647,8 +652,8 @@ below, so `MenuWorldFakes.swift` needs no change.
     not been seen on the installed menu. Its `where:` and a status paragraph now say it is fixed in
     code (`78405f9`) and is deleted once H48 passes.
 - [x] move this plan to `docs/plans/completed/`
-  - `bash Scripts/test.sh`: 947 tests in 52 suites pass, Swift 6.3.3. `Scripts/lint.sh`: built-in
-    checks pass, SwiftLint 235, the baseline.
+  - `bash Scripts/test.sh`: 947 tests in 52 suites pass, Swift 6.3.3, and 948 after the code
+    review added one (Task 6). `Scripts/lint.sh`: built-in checks pass, SwiftLint 235, the baseline.
 
 ## Post-Completion
 

@@ -47,7 +47,7 @@ struct MenuModelTests {
     }
 
     @Test("a refused watch is amber, keeps the daemon's reason, and never says it is not answering")
-    func refusedIsNotAFailure() {
+    func refusedIsNotAFailure() throws {
         let reason = "dicta is already serving 4 watchers"
         let refused = MenuModel(link: .refused(reason))
         // The daemon answered and said no. "Not answering" about a daemon that just answered is
@@ -55,12 +55,12 @@ struct MenuModelTests {
         #expect(refused.presentation.status != "dicta is not answering")
         #expect(refused.presentation.status == "dicta refused to be watched")
         #expect(refused.presentation.tint == .amber)
-        let banner = try? #require(refused.banner)
-        #expect(banner?.tint == .amber)
-        #expect(banner?.text == reason)
+        let banner = try #require(refused.banner)
+        #expect(banner.tint == .amber)
+        #expect(banner.text == reason)
         // A restart is the one action that frees a slot a dead watcher still holds.
-        #expect(banner?.action == .restartDaemon)
-        #expect(banner?.actionTitle == "Restart dicta")
+        #expect(banner.action == .restartDaemon)
+        #expect(banner.actionTitle == "Restart dicta")
     }
 
     @Test("connecting claims nothing")

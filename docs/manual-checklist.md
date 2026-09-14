@@ -684,9 +684,14 @@ counts as a pass, so two people scoring it agree.
 - **H49 — a menu killed while the daemon is idle leaves no watcher behind.** With the daemon idle
   and nothing dictated during the item, note the daemon's pid and
   `lsof -p <daemon pid> | grep -cE 'unix|PIPE'`: each watcher holds a connection and the two ends
-  of a wake pipe. Then, five times: `kill -9` the menu's process and wait for launchd to bring it
-  back. Pass, each time: the menu-bar item returns connected, never amber with "dicta is already
-  serving 4 watchers" and never red with "not answering". After the fifth, the daemon's pid is
-  unchanged and the `lsof` count is the one noted, so no connection or wake pipe stays open without
+  of a wake pipe. Short-lived connections move that count too (the menu's `configure` and
+  accessibility commands, including the setup window becoming key, and any `dictactl`), so keep
+  the setup window closed, run no `dictactl` during the item, and count only once the menu is
+  connected and has settled: take the count a few times a few seconds apart, and note it when
+  successive counts agree. Then, five times: `kill -9` the menu's process and wait for launchd to
+  bring it back. Pass, each time: the menu-bar item returns connected, never amber with "dicta is
+  already serving 4 watchers" and never red with "not answering". After the fifth, once the menu
+  has reconnected and settled, the daemon's pid is unchanged and successive `lsof` counts agree
+  with the one noted, so no connection or wake pipe stays open without
   a live peer; the daemon wrote nothing to find them, because an idle daemon has nothing to write.
   Fail: a count that grew with each kill, or a refusal on any return.
