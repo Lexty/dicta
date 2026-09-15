@@ -439,8 +439,9 @@ recogniser produced, and the replacement the term you actually said:
 <id>         | <what the recogniser wrote>   | <what you meant>
 ```
 
-The example file carries real entries from this user's vocabulary; it is also the one file exempt
-from the repository's English-only check, because every pattern in it is Cyrillic by construction.
+The example file's rules and check sentences are illustrations, not anybody's vocabulary; it is
+also the one file exempt from the repository's English-only check, because every pattern in it is
+Cyrillic by construction.
 
 - The **id** is yours and never changes on its own; it is what the record names when the rule fires,
   so a rule written months ago is still identifiable.
@@ -544,3 +545,18 @@ to recording by default, and stop to injection behind `--stop`. The second one *
 a pane**, because the interval being measured ends at the last keystroke. It **exits non-zero when
 either criterion misses its budget** — a scorer that exits 0 on a FAIL it printed is D18 again, in
 the one place a budget is actually scored.
+
+## License
+
+dicta is released under the MIT License (`LICENSE`).
+
+It builds against and downloads software under its own terms, which the MIT License does not change:
+
+- [FluidAudio](https://github.com/FluidInference/FluidAudio), the Swift package that runs
+  recognition, is Apache-2.0 and carries its own third-party notices. A distributed `Dicta.app`
+  links it, so those notices go with the app.
+- The speech model, NVIDIA's
+  [Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), is licensed under
+  [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). dicta downloads its CoreML conversion
+  ([FluidInference/parakeet-tdt-0.6b-v3-coreml](https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-coreml))
+  at install time and never commits the weights.

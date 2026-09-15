@@ -418,9 +418,9 @@ struct ReplacementsTests {
         // which is a comment to the parser and an assertion here. `exampleFileHasNoDeadRules`
         // above catches only the case where a rule cannot fire on its OWN pattern; the cascade's
         // other failure -- a rule rewriting the sentence a later rule was written for, with both
-        // rules still looking correct on the page -- needs a whole sentence to show up in. Every
-        // check line runs through the whole book in file order, so what is pinned here is the
-        // behaviour of every rule with the rest of the book in front of it.
+        // rules still looking correct on the page -- needs a whole sentence to show up in. The
+        // sentences are invented for the file; what is pinned here is that each rule still does
+        // its job with every other rule in front of it.
         let text = try String(contentsOf: Self.exampleFile, encoding: .utf8)
         let book = Replacements.parse(text, version: "example")
         var checks = 0

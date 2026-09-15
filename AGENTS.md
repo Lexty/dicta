@@ -737,7 +737,7 @@ Distilled from SPEC.md §3. Each one is a mistake already made, or one the spec 
   rewrites the sentence a rule below was written for, and both still look right on the page; the
   dead-rule test only covers a rule that cannot fire on its **own** pattern. Two rules of the file
   itself: a pattern that is also an ordinary Russian word is a `misfire` waiting for a sentence — so
-  two garbles observed in the record have no rule on purpose, and the file says which and why — and
+  such a garble gets a rule on a phrase or none at all, and the file says so — and
   a pattern with **letters** but no Cyrillic in it cannot be added at all — `test: the example
   dictionary that ships parses with no problems` requires one, so recogniser garbles that come back
   in pure Latin (`n-to-end` for "end-to-end") have no rule available and are a known gap rather than
@@ -747,17 +747,14 @@ Distilled from SPEC.md §3. Each one is a mistake already made, or one the spec 
   exemption list, because that is what keeps the edge — a rule matching an English word is still
   refused, whatever it is called.
 - **The merge request is repaired in two passes, because writing out the pairs does not converge.**
-  Fifteen entries in the record carry the term and eleven spell it differently: the recogniser
-  garbles the first word, splits the pair where it likes, and inflects whichever half it lands on.
-  Five rules covered five spellings and three more arrived the same week. So pass 1 repairs the
-  first word on its own and pass 2 matches the pair -- nine garbles times fourteen endings is 126
-  phrasings out of 23 rules, and tomorrow's garble is one line rather than one line per ending. The
-  boundary rule is what makes pass 2 safe to list flat, since a pattern ending in a letter cannot
-  fire inside a longer word. One spelling is refused on purpose and the file says so: the recogniser
-  once heard the first word as an ordinary Russian pronoun, and a rule on that would rewrite the
-  pronoun everywhere.
+  The recogniser garbles the first word, splits the pair where it likes, and inflects whichever half
+  it lands on, so rules spelling out each pair kept falling behind the spellings. Pass 1 repairs the
+  first word on its own and pass 2 matches the pair, and tomorrow's garble is one line rather than
+  one line per ending. The boundary rule is what makes pass 2 safe to list flat, since a pattern
+  ending in a letter cannot fire inside a longer word. A garble that is an ordinary Russian word
+  gets no pass-1 rule, because it would rewrite that word everywhere.
 - **Spoken version numbers are three passes over the same dictionary, and the reason is the space.**
-  A version dictated as words — "one tochka six tochka zero" — becomes `1.6.0` through thirty rules:
+  A version dictated as words — "three tochka two tochka one" — becomes `3.2.1` through thirty rules:
   `tochka <word>` → `.<digit>`, then `<word> .` → `<digit>.`, then the same join once the left side
   is already a digit. A literal rule cannot bridge a space unless its pattern contains **both**
   sides, and a pattern may not begin with one (the fields are trimmed), so the alternative to the
